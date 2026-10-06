@@ -1,0 +1,10 @@
+# Dependencies (built by scripts/fetch-deps.sh)
+deps/
+
+# Zig
+zig-out/
+.zig-cache/
+zig-cache/
+
+# Logs
+*.log
