@@ -187,6 +187,10 @@ build_skia() {
   fetch_skia
   mkdir -p "$out"
   write_skia_args "$out/args.gn"
+  if [ ! -x "$SKIA/bin/gn" ]; then
+    log "fetch gn binary (bin/fetch-gn)"
+    (cd "$SKIA" && python3 bin/fetch-gn)
+  fi
   log "gn gen out/$TAG"
   (cd "$SKIA" && ./bin/gn gen "out/$TAG")
   log "ninja ($JOBS jobs) — the long step, ~15-45 min on first run"
