@@ -96,6 +96,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 | ADR-0006 | WASM plugins (app-level, signed Git registries) |
 | ADR-0007 | WAMR 2.4.4 fast-interp (no-Rust policy) |
 | ADR-0008 | Performance gates as CI contract |
+| ADR-0009 | Public API contract = C ABI (language-agnostic bindings) |
 
 ## Target metrics (v1)
 
