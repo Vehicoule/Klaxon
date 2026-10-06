@@ -5,7 +5,7 @@
 const std = @import("std");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
-const demo = @import("demo.zig");
+const demo_mod = @import("demo.zig");
 const host_mod = @import("host.zig");
 
 const width: c_int = 640;
@@ -32,13 +32,12 @@ fn optsFromArgs(args: std.process.Args) Options {
     return .{ .backend = backend, .ppm = ppm };
 }
 
-/// App tick: pulse the root background → markDirty → the host renders a frame.
+/// App tick: set the background signal → subscribers fire → root.markDirty →
+/// the host renders a frame (fine-grained reactivity, Phase 1a).
 fn animate(ctx: ?*anyopaque, frame: u64) void {
-    const root: *ui.node.Node = @ptrCast(@alignCast(ctx.?));
-    const s: *demo.ColumnState = @ptrCast(@alignCast(root.state.?));
+    const bg: *ui.state.Signal(u32) = @ptrCast(@alignCast(ctx.?));
     const pulse: u32 = @intCast(frame % 200);
-    s.bg = 0x181828FF + (pulse << 24);
-    root.markDirty();
+    bg.set(0x181828FF + (pulse << 24));
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -51,13 +50,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var host = try host_mod.Host.init(allocator, width, height, opts.backend, opts.ppm);
     defer host.deinit();
 
-    const root = try demo.buildTree(allocator);
-    defer root.deinit();
+    var demo = try demo_mod.buildTree(allocator);
+    defer demo.deinit();
+    const root = demo.root;
 
     root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) });
 
-    std.debug.print("klaxon hello (Skia {s}) — widget tree: {d} nodes\n", .{ host.stats.backend, countNodes(root) });
-    try host.run(root, max_frames, animate, root);
+    std.debug.print("klaxon hello (Skia {s}) — widget tree: {d} nodes, reactive bg\n", .{ host.stats.backend, countNodes(root) });
+    try host.run(root, max_frames, animate, demo.bg);
     std.debug.print("rendered {d} frames, last frame {d:.2} ms, done\n", .{ host.stats.frames, host.stats.frame_time_ms });
 }
 

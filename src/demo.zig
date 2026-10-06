@@ -88,7 +88,7 @@ pub fn label(allocator: std.mem.Allocator, text: []const u8, size: f32, color: u
 pub const ColumnState = struct {
     gap: f32,
     padding: f32,
-    bg: ?ui.paint.Color = null,
+    bg: ?*ui.state.Signal(u32) = null, // reactive background (Phase 1a)
 };
 
 fn columnMeasure(n: *Node, c: Constraints) Size {
@@ -102,7 +102,7 @@ fn columnLayout(n: *Node, bounds: Rect) void {
 fn columnPaint(n: *Node, ctx: *kx.Ctx) void {
     const s: *ColumnState = @ptrCast(@alignCast(n.state.?));
     if (s.bg) |bg| {
-        kx.c.kx_fill_rect(ctx, n.bounds.x, n.bounds.y, n.bounds.w, n.bounds.h, bg);
+        kx.c.kx_fill_rect(ctx, n.bounds.x, n.bounds.y, n.bounds.w, n.bounds.h, bg.get());
     }
 }
 fn columnDeinit(n: *Node) void {
@@ -110,7 +110,7 @@ fn columnDeinit(n: *Node) void {
 }
 const column_vtable = ui.node.VTable{ .measure = columnMeasure, .layout = columnLayout, .paint = columnPaint, .deinit = columnDeinit };
 
-pub fn column(allocator: std.mem.Allocator, gap: f32, padding: f32, bg: ?ui.paint.Color) !*Node {
+pub fn column(allocator: std.mem.Allocator, gap: f32, padding: f32, bg: ?*ui.state.Signal(u32)) !*Node {
     const node = try Node.create(allocator, &column_vtable);
     const s = try allocator.create(ColumnState);
     s.* = .{ .gap = gap, .padding = padding, .bg = bg };
@@ -120,14 +120,27 @@ pub fn column(allocator: std.mem.Allocator, gap: f32, padding: f32, bg: ?ui.pain
 
 // --- Demo tree ---
 
-/// The Phase 0 showcase tree: Column[ Box, Label, Label, Box ].
-pub fn buildTree(allocator: std.mem.Allocator) !*Node {
-    const root = try column(allocator, 16, 24, 0x181828FF);
+pub const Demo = struct {
+    root: *Node,
+    bg: *ui.state.Signal(u32), // owned; the root is bound to it
+
+    pub fn deinit(demo: *Demo) void {
+        demo.root.deinit();
+        demo.bg.deinit();
+    }
+};
+
+/// The Phase 0/1a showcase tree: Column[ Box, Label, Label, Box ] with a
+/// reactive background (set() → subscribers fire → root.markDirty → re-render).
+pub fn buildTree(allocator: std.mem.Allocator) !Demo {
+    const bg = try ui.state.Signal(u32).init(allocator, 0x181828FF);
+    const root = try column(allocator, 16, 24, bg);
     root.add(try box(allocator, 592, 96, 0x3B5BDBFF, 12));
     root.add(try label(allocator, "Hello from Klaxon", 28, 0xFFFFFFFF));
     root.add(try label(allocator, "rendered by the Skia widget tree", 16, 0xFFAAAAAA));
     root.add(try box(allocator, 592, 48, 0x282838FF, 8));
-    return root;
+    ui.state.bindNode(root, bg);
+    return .{ .root = root, .bg = bg };
 }
 
 test "flex measure: column sums child heights + gap" {
@@ -138,6 +151,17 @@ test "flex measure: column sums child heights + gap" {
     const size = root.measure(.{});
     try std.testing.expectEqual(@as(f32, 90), size.h); // 50 + 10 + 30
     try std.testing.expectEqual(@as(f32, 100), size.w);
+}
+
+test "node bind: signal set marks the node dirty" {
+    const sig = try ui.state.Signal(u32).init(std.testing.allocator, 0);
+    defer sig.deinit();
+    const b = try box(std.testing.allocator, 10, 10, 0xFF000000, 0);
+    defer b.deinit();
+    ui.state.bindNode(b, sig);
+    b.dirty = false;
+    sig.set(1);
+    try std.testing.expect(b.dirty);
 }
 
 test "flex layout: children stack with gap, stretched cross-axis" {
