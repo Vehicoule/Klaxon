@@ -204,10 +204,14 @@ build_sdl3() {
   local src="$DEPS/SDL"
   local build="$src/build-$TAG"
   git_clone_at "$src" "$SDL3_URL" "$SDL3_PIN"
-  log "cmake SDL3 ($TAG, static)"
+  log "cmake SDL3 ($TAG, static, trimmed)"
+  # Trimmed: camera/sensors are V2 platform services, SDL_GPU is unused (Skia renders).
+  # Audio + haptics stay ON (v1 platform services, ADR-0005).
   cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
     -DSDL_SHARED=OFF -DSDL_STATIC=ON \
-    -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF
+    -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+    -DSDL_CAMERA=OFF -DSDL_SENSOR=OFF \
+    -DSDL_GPU=OFF -DSDL_RENDER_GPU=OFF -DSDL_RENDER_VULKAN=OFF
   cmake --build "$build" --parallel "$JOBS"
   ls -la "$build"/libSDL3.a
 }
@@ -230,7 +234,8 @@ build_wamr() {
     -DWAMR_BUILD_SIMD=0 -DWAMR_BUILD_BULK_MEMORY=1 -DWAMR_BUILD_REF_TYPES=1 \
     -DWAMR_BUILD_INSTRUCTION_METERING=1
   cmake --build "$build" --parallel "$JOBS"
-  find "$build" -name 'libvmlib.a' -exec ls -la {} +
+  # The vmlib target is renamed on output (set_target_properties OUTPUT_NAME iwasm).
+  find "$build" -maxdepth 1 -name 'lib*.a' -exec ls -la {} +
 }
 
 # --- main -------------------------------------------------------------------
