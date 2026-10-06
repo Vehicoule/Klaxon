@@ -114,9 +114,14 @@ skia_use_direct3d = false
 skia_use_x11 = false
 skia_use_egl = false
 skia_use_vma = false
+skia_enable_ganesh = true
+skia_enable_graphite = true
 EOF
       ;;
     linux-x64|linux-arm64)
+      # Phase 0: raster-only Skia on Linux — the Linux shim is raster-only
+      # (gpu_init returns false). Phase 3a enables graphite-vulkan + ganesh-gl
+      # (fetch the vma + vulkan-headers externals from DEPS, apt libgl-dev on CI).
       cat > "$out" <<EOF
 is_debug = false
 is_official_build = true
@@ -126,14 +131,16 @@ target_os = "linux"
 cc = "clang"
 cxx = "clang++"
 
-skia_use_gl = true
-skia_use_egl = true
+skia_use_gl = false
+skia_use_egl = false
 skia_use_x11 = false
-skia_use_vulkan = true
+skia_use_vulkan = false
 skia_use_dawn = false
 skia_use_metal = false
 skia_use_direct3d = false
-skia_use_vma = true
+skia_use_vma = false
+skia_enable_ganesh = false
+skia_enable_graphite = false
 EOF
       ;;
   esac
@@ -165,8 +172,6 @@ skia_use_expat = false
 skia_use_fontconfig = false
 skia_use_partition_alloc = false
 
-skia_enable_ganesh = true
-skia_enable_graphite = true
 skia_enable_skottie = false
 skia_enable_skshaper = true
 skia_enable_skparagraph = true
