@@ -35,11 +35,19 @@ pub fn build(b: *std.Build) void {
         .flags = shim_flags,
         .language = .cpp,
     });
-    kx_skia.root_module.addCSourceFiles(.{
-        .files = &.{"kx_skia/src/kx_skia_macos.mm"},
-        .flags = shim_flags,
-        .language = .objective_cpp,
-    });
+    switch (target.result.os.tag) {
+        .macos => kx_skia.root_module.addCSourceFiles(.{
+            .files = &.{"kx_skia/src/kx_skia_macos.mm"},
+            .flags = shim_flags,
+            .language = .objective_cpp,
+        }),
+        .linux => kx_skia.root_module.addCSourceFiles(.{
+            .files = &.{"kx_skia/src/kx_skia_linux.cpp"},
+            .flags = shim_flags,
+            .language = .cpp,
+        }),
+        else => @panic("no kx_skia platform impl for this OS yet (add kx_skia/src/kx_skia_<os>)"),
+    }
     kx_skia.root_module.addIncludePath(b.path("kx_skia/include"));
     kx_skia.root_module.addIncludePath(b.path("deps/skia"));
     kx_skia.root_module.addIncludePath(b.path("deps/skia/include"));

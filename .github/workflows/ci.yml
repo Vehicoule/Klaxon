@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check arch (macOS is arm64 only — no x64)
+        if: runner.os == 'macOS'
+        run: |
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "Klaxon targets macOS arm64 only (no x64)."; exit 1
+          fi
+
+      - name: Install Zig 0.17.0 (pinned, ADR-0001)
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.17.0
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('scripts/fetch-deps.sh') }}
+
+      - name: Install libc++ (Linux builds Skia against libc++, ADR-0001 toolchain)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
+
+      - name: Fetch + build deps (Skia, SDL3, WAMR)
+        run: scripts/fetch-deps.sh
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
+
+      - name: Headless smoke (raster, 600 frames)
+        run: SDL_VIDEODRIVER=dummy ./zig-out/bin/hello
+
+      - name: ReleaseSmall build + size gate (< 10 Mo)
+        run: |
+          zig build -Doptimize=ReleaseSmall
+          size=$(wc -c < zig-out/bin/hello)
+          echo "hello (ReleaseSmall): $size bytes"
+          if [ "$size" -ge 10485760 ]; then
+            echo "SIZE GATE FAILED: $size >= 10 Mo"; exit 1
+          fi

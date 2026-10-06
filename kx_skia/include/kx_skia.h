@@ -46,6 +46,10 @@ void kx_end_frame(kx_ctx* ctx); // GPU backends: submit + present. Raster: flush
 void kx_clear(kx_ctx* ctx, uint32_t rgba);
 // Simple unshaped text (hello / debug). Shaped text (SkParagraph) comes in Phase 1.
 void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, uint32_t rgba);
+// Fill an axis-aligned rectangle with a solid color.
+void kx_fill_rect(kx_ctx* ctx, float x, float y, float w, float h, uint32_t rgba);
+// Fill a rounded rectangle with a solid color.
+void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, uint32_t rgba);
 
 // Readback — raster backend only. Copies the frame as RGBA (memory order R,G,B,A)
 // into dst. dst_size must be >= width*height*4. Returns false on GPU backends

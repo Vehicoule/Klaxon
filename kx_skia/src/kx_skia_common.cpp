@@ -11,6 +11,7 @@
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkRect.h"
 #include "include/core/SkSurface.h"
 #include "include/core/SkTypeface.h"
 
@@ -103,6 +104,22 @@ void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, u
     paint.setColor(kx_to_skcolor(rgba));
     paint.setAntiAlias(true);
     ctx->canvas->drawSimpleText(text, std::strlen(text), SkTextEncoding::kUTF8, x, y, font, paint);
+}
+
+void kx_fill_rect(kx_ctx* ctx, float x, float y, float w, float h, uint32_t rgba) {
+    if (!ctx || !ctx->canvas) return;
+    SkPaint paint;
+    paint.setColor(kx_to_skcolor(rgba));
+    paint.setAntiAlias(true);
+    ctx->canvas->drawRect(SkRect::MakeXYWH(x, y, w, h), paint);
+}
+
+void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, uint32_t rgba) {
+    if (!ctx || !ctx->canvas) return;
+    SkPaint paint;
+    paint.setColor(kx_to_skcolor(rgba));
+    paint.setAntiAlias(true);
+    ctx->canvas->drawRoundRect(SkRect::MakeXYWH(x, y, w, h), radius, radius, paint);
 }
 
 bool kx_readback_rgba(kx_ctx* ctx, void* dst, size_t dst_size, int* out_width, int* out_height) {

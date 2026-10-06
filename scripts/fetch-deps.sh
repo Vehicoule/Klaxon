@@ -174,7 +174,9 @@ skia_enable_pdf = false
 skia_enable_tools = false
 
 extra_cflags = [ "-Wno-error" ]
-extra_cflags_cc = [ "-Wno-error" ]
+# Linux: compile Skia against libc++ to match zig's bundled libc++ at link time
+# (CI installs libc++-dev). macOS: libc++ is the default anyway.
+extra_cflags_cc = [ "-Wno-error", "-stdlib=libc++" ]
 EOF
 }
 
