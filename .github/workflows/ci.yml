@@ -44,9 +44,15 @@ jobs:
           path: deps
           key: deps-${{ runner.os }}-${{ hashFiles('scripts/fetch-deps.sh') }}
 
-      - name: Install libc++ (Linux builds Skia against libc++, ADR-0001 toolchain)
+      - name: Install Linux build deps (libc++ + X11/Wayland dev — SDL3 cmake requires them)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libc++-dev libc++abi-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxinerama-dev libxss-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libegl1-mesa-dev libgles2-mesa-dev \
+            libasound2-dev libdbus-1-dev libudev-dev libusb-1.0-0-dev libibus-1.0-dev
 
       - name: Fetch + build deps (Skia, SDL3, WAMR)
         run: scripts/fetch-deps.sh
