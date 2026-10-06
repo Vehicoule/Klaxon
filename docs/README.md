@@ -25,6 +25,7 @@
 | [ADR-0006](adr/ADR-0006-wasm-plugins.md) | WASM plugins (app-level, signed Git registries) |
 | [ADR-0007](adr/ADR-0007-wamr-runtime.md) | WAMR 2.4.4 fast-interp (no-Rust policy) |
 | [ADR-0008](adr/ADR-0008-perf-gates.md) | Performance gates as CI contract |
+| [ADR-0009](adr/ADR-0009-c-abi-contract.md) | Public API contract = C ABI (language-agnostic bindings) |
 
 ### Deep-dive documents (written during development)
 

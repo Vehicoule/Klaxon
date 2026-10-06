@@ -59,6 +59,8 @@ bool kx_readback_rgba(kx_ctx* ctx, void* dst, size_t dst_size, int* out_width, i
 // Introspection.
 kx_backend kx_backend_of(const kx_ctx* ctx);
 const char* kx_backend_name(kx_backend backend);
+// ABI version (semver). Breaking changes bump the major version. (ADR-0009)
+const char* kx_abi_version(void);
 
 #ifdef __cplusplus
 }

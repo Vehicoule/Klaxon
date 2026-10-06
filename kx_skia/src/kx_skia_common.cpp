@@ -137,6 +137,10 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
     return ctx ? ctx->backend : KX_BACKEND_RASTER;
 }
 
+const char* kx_abi_version(void) {
+    return "0.1.0";
+}
+
 const char* kx_backend_name(kx_backend backend) {
     switch (backend) {
         case KX_BACKEND_RASTER: return "raster";
