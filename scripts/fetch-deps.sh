@@ -201,7 +201,8 @@ build_skia() {
 # --- SDL3 -------------------------------------------------------------------
 
 build_sdl3() {
-  local src="$DEPS/SDL" build="$src/build-$TAG"
+  local src="$DEPS/SDL"
+  local build="$src/build-$TAG"
   git_clone_at "$src" "$SDL3_URL" "$SDL3_PIN"
   log "cmake SDL3 ($TAG, static)"
   cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
@@ -216,7 +217,8 @@ build_sdl3() {
 # Plugin runtime for klaxon-plugin-sdk — the framework itself does not link it.
 
 build_wamr() {
-  local src="$DEPS/wamr" build="$src/build-$TAG"
+  local src="$DEPS/wamr"
+  local build="$src/build-$TAG"
   git_clone_at "$src" "$WAMR_URL" "$WAMR_PIN"
   log "cmake WAMR ($TAG, fast-interp)"
   cmake -S "$src/product-mini/platforms/$WAMR_PLATFORM" -B "$build" \
