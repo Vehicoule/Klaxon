@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-06 (Phase 0 — Foundations, 0.1 + 0.2 done)
+**Last updated**: 2026-10-06 (Phase 0 — Foundations, 0.1 + 0.2 + 0.3/0.4 done)
 
 ## Current phase
 
@@ -10,13 +10,16 @@
 
 - **0.1 done** — `scripts/fetch-deps.sh` builds Skia (11 static libs: graphite + ganesh + raster + Metal), SDL3 (3.6 Mo, trimmed), WAMR (`libiwasm.a`) into `deps/` on macOS arm64. Idempotent, host-aware (macOS arm64 / Linux x64-arm64).
 - **0.2 done** — `build.zig` + SDL3 hello: `zig build` links, headless smoke (`SDL_VIDEODRIVER=dummy`) renders 600 frames and exits clean, `zig build test` green.
-- **Next** — 0.3/0.4: `kx_skia/` shim (`kx_skia.h` + `kx_skia_common.cpp` + `kx_skia_macos.mm`), raster first → hello renders text via Skia. Then 0.5 `ui/` core, 0.6 `host.zig`, 0.7 CI.
+- **0.3/0.4 done** — `kx_skia/` shim: `kx_skia.h` (C ABI) + `kx_skia_common.cpp` (raster, draw, readback) + `kx_skia_platform.h` + `kx_skia_macos.mm` (Graphite-Metal onscreen + CoreText fonts). Hello renders **text via Skia raster** — verified by PPM dump: 2821 white title pixels + 993 gray subtitle pixels on the animated background. Metal path compiles + links; fails gracefully headless; runtime check on a real GPU window pending (`zig build run -- metal`).
+- **Next** — 0.5 `ui/` core (`node.zig`, `paint.zig`, `layout.zig`), 0.6 `host.zig`, 0.7 CI (macOS + Linux runners).
 
 ## What exists (code, this repo)
 
-- ✅ `build.zig` — exe + test + run steps, SDL3 static link, macOS frameworks
-- ✅ `src/main.zig` — hello app (window + animated frames, self-terminating smoke)
+- ✅ `build.zig` — exe + test + run steps, kx_skia shim (C++/ObjC++), Skia + SDL3 static link, macOS frameworks
+- ✅ `src/main.zig` — hello app: renders text via Skia, presents via SDL3 (raster → texture blit, metal → onscreen), `--ppm=<path>` frame dump
 - ✅ `src/sdl.zig` + `src/sdl_c.h` — SDL3 bindings via `b.addTranslateC`
+- ✅ `src/kx.zig` — Skia ABI bindings via `b.addTranslateC`
+- ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI), `src/kx_skia_common.cpp` (raster), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
 - ✅ `docs/` — planning set (ARCHITECTURE, ROADMAP, PERF-BUDGETS, STATUS, README, 8 ADRs)
 - ✅ `deps/` (gitignored) — built artifacts, macos-arm64
@@ -39,7 +42,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 ## What does NOT exist (greenfield)
 
-- ❌ `kx_skia/` factorized shim (to be written)
 - ❌ `ui/` modules (to be written)
 - ❌ `widgets/` (to be written)
 - ❌ Gallery (to be written)
@@ -59,11 +61,15 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 ## Toolchain quirks (learned 2026-10-06, macOS arm64 + Zig 0.17.0)
 
-- **Zig 0.17 removed `@cImport`** → C bindings via `b.addTranslateC` over a C header (`src/sdl_c.h`) + `root_module.addImport("sdl_c", ...)`.
-- **Zig 0.17 build API**: `linkLibC()` gone → `module.link_libc = true`. `addIncludePath` / `addObjectFile` / `linkFramework(name, .{})` moved from `Compile` to `root_module`. `b.args` gone.
-- **Skia @ pin 8643b1d6**: no `bin/gn` wrapper → run `python3 bin/fetch-gn` first (downloads `bin/gn`). Host has `python3` only, no `python`.
+- **Zig 0.17 removed `@cImport`** → C bindings via `b.addTranslateC` over a C header + `root_module.addImport`.
+- **Zig 0.17 build API**: `linkLibC()` gone → `module.link_libc = true`. `addIncludePath` / `addObjectFile` / `linkFramework(name, .{})` / `addCSourceFiles(language)` / `linkLibrary` moved from `Compile` to `root_module`. `b.args` gone.
+- **Zig 0.17 process args**: `std.process.args()` gone → `pub fn main(init: std.process.Init.Minimal)`, iterate via `std.process.Args.Iterator.init(init.args)`.
+- **Zig 0.17 stdlib**: `std.fs.cwd()` gone, `std.fmt.bufPrintZ` → `bufPrintSentinel` (len excludes the sentinel).
+- **Skia @ pin 8643b1d6**: no `bin/gn` wrapper → run `python3 bin/fetch-gn` first (downloads `bin/gn`). Host has `python3` only, no `python`. Requires `-std=c++20`; shim flags: `-fno-exceptions -fno-rtti -DSK_GANESH -DSK_GRAPHITE -DNDEBUG`.
+- **Skia @ pin**: `SkSurface::flush()` no longer exists (raster is synchronous). Graphite-Metal: `ContextFactory::MakeMetal(MtlBackendContext, ContextOptions)`, `BackendTextures::MakeMetal(SkISize, CFTypeRef)`, `SkSurfaces::WrapBackendTexture`, `InsertRecordingInfo{.fRecording, .fTargetSurface}`, `submit()` default. `SkFontMgr_New_CoreText` is in libskia.a (`include/ports/SkFontMgr_mac_ct.h`).
 - **WAMR darwin**: the `vmlib` target is renamed on output → static lib is `libiwasm.a`.
 - **SDL3 macOS link**: needs frameworks Cocoa, IOKit, CoreVideo, CoreAudio, AudioToolbox, AudioUnit, ForceFeedback, GameController, Metal, QuartzCore, CoreHaptics, AVFoundation, UniformTypeIdentifiers, CoreBluetooth, CoreFoundation, CoreGraphics, Carbon. The camera backend pulls CoreMedia — avoided by trimming (`-DSDL_CAMERA=OFF -DSDL_SENSOR=OFF -DSDL_GPU=OFF -DSDL_RENDER_GPU=OFF -DSDL_RENDER_VULKAN=OFF`).
+- **Pixel formats**: Skia `kRGBA_8888` readback (memory R,G,B,A) == `SDL_PIXELFORMAT_ABGR8888`.
 - **Headless smoke test**: `SDL_VIDEODRIVER=dummy ./zig-out/bin/hello` renders without opening a window.
 
 ## Decisions made (see ADR/)
@@ -83,7 +89,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 | Metric | Target |
 |---|---|
-| fps p99 (real scenes) | ≥ 120 |
+| fps p99 (real scenes, incl. video_playback) | ≥ 120 |
 | frame p99 | ≤ 8.3 ms |
 | RSS hello | < 40 Mo |
 | TTFF | < 100 ms |
@@ -99,6 +105,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 2. ~~Copy `klaxon-docs/` into `docs/`~~ done
 3. ~~`scripts/fetch-deps.sh`~~ done — Skia + SDL3 (trimmed) + WAMR built into `deps/` (macos-arm64)
 4. ~~`build.zig` hello (SDL3)~~ done — links, headless smoke 600 frames OK, `zig build test` green
-5. `kx_skia/` shim: `kx_skia.h` + `kx_skia_common.cpp` + `kx_skia_macos.mm` — raster first, then Metal; hello renders text via Skia
+5. ~~`kx_skia/` shim~~ done — raster renders text (PPM-verified: 2821 white + 993 gray pixels); Metal compiles+links, runtime check pending on real GPU (`zig build run -- metal`)
 6. `ui/` core modules (`node.zig`, `paint.zig`, `layout.zig`) + `host.zig`
 7. CI green (macOS + Linux runners)

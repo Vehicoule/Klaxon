@@ -261,7 +261,7 @@ Rendering shim done in Phase 0. Remaining:
 
 | # | Task |
 |---|---|
-| 4c.1 | 8 canonical scenes (hello, scroll_10k, text_cjk, glass_blur, anim_100, gallery, resize, input_ime) |
+| 4c.1 | 9 canonical scenes (hello, scroll_10k, text_cjk, glass_blur, anim_100, gallery, resize, input_ime, video_playback) |
 | 4c.2 | Metrics collector (fps, frame time, draw calls, RSS, TTFF, binary size) |
 | 4c.3 | `klaxon bench` command — runs all scenes, outputs JSON |
 | 4c.4 | Runners for Flutter, Qt, Compose (same scenes, same metrics) |
@@ -349,7 +349,7 @@ API reference: generated from Zig doc comments (English).
 - [ ] A11y (6 bridges: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA)
 - [ ] DevTools (overlay, inspector, memory ledger, frame timeline)
 - [ ] Testing (unit, widget, golden ×150, integration)
-- [ ] Benchmarks (8 scenes, cross-framework comparison, published)
+- [ ] Benchmarks (9 scenes, cross-framework comparison, published)
 - [ ] Conformance suite (behavioral spec + scores for Klaxon/Flutter/Qt/Compose, published)
 - [ ] CLI (create, run, build, test, bench, package, doctor, gallery)
 - [ ] Packaging (AppImage, deb, rpm, Flatpak, exe, msi, app, dmg, apk, aab, ipa, wasm)

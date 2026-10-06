@@ -81,6 +81,18 @@ Gates migrate toward the North Star at each major version.
 | draw_calls | < 200 | < 100 |
 | RSS peak | < 100 Mo | < 60 Mo |
 
+### Scene: video_playback (4K60 video, GPU zero-copy texture composited over UI)
+
+The Vehicoule app is a media hub (music, video, books, manga) — **120 fps must hold during video playback**. Decode runs on the OS codec (AVFoundation / MediaCodec), frames arrive as GPU textures, composited by Graphite. Decode is off the critical path; UI + compositor stay at 120 fps p99.
+
+| Metric | Gate CI v1 | North Star |
+|---|---|---|
+| fps p99 (playback) | ≥ 120 (device) / ≥ 60 (proxy) | 120 everywhere |
+| frame p99 (composite) | ≤ 8.3 ms | ≤ 8.3 ms |
+| dropped UI frames during decode | 0 | 0 |
+| RSS (codec + textures) | < 80 Mo | < 60 Mo |
+| texture path | GPU zero-copy (no CPU round-trip) | zero-copy |
+
 ### Scene: resize (window resize, layout reflow)
 
 | Metric | Gate CI v1 | North Star |

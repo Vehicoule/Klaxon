@@ -88,7 +88,7 @@ Categories:
 - **Scroll** (4): ListView, GridView, ScrollView, Scrollbar
 - **Navigation** (6): AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog
 - **Feedback** (4): ProgressIndicator (linear/circular), Badge, Tooltip, SnackBar
-- **Media** (2): Video (GPU zero-copy texture), Audio (player controls)
+- **Media** (2): Video (GPU zero-copy texture, 120 fps-gated scene), Audio (player controls)
 - **Advanced** (12): Table, Tree, Calendar, DatePicker, ColorPicker, Avatar, Card, ExpansionPanel, Stepper, SegmentedControl, SearchBar, Menu
 
 ### `platform/` — Platform integration (14 services)
@@ -254,6 +254,17 @@ Static map platform→backend. **Never probing** (creators crash instead of retu
 | Web (WASM) | graphite-webgpu | ganesh-webgl2 | raster |
 
 **No macOS x64.** Apple Silicon only.
+
+**Renderer discipline (GPU rules)** — adopted from SDL_gpu's performance guidance. SDL_GPU stays **off** (Skia Graphite is the GPU layer), but the principles are the contract for our renderer:
+
+1. **Few render passes.** One render pass per frame where possible; batch everything into a single Skia display list.
+2. **Minimal state changes.** Sort/batch draw calls by paint state; a pipeline bind is cheap, hundreds per frame is not.
+3. **Upload early.** Vertex/uniform/texture uploads at frame start, never mid-pass.
+4. **No resource churn.** Textures, atlases, buffers are created up front and cached (pool allocators). Creating/releasing per frame is a bug.
+5. **No large per-frame buffers.** Small uniforms only; big data goes through cached storage.
+6. **Cycle correctly.** Frame-in-flight management (vsync-aligned pacing, no driver stalls).
+7. **Cull.** Dirty-rect + viewport culling: redraw only what moved and what is visible. Virtualized lists materialize only visible items.
+8. **Don't Touch The Driver.** The golden rule: doing things is more expensive than not doing things. Fewer draw calls, fewer flushes, fewer presents.
 
 ## Animation system — 3 layers
 
