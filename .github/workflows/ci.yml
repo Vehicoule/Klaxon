@@ -25,9 +25,16 @@ jobs:
           fi
 
       - name: Install Zig 0.17.0 (pinned, ADR-0001)
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.17.0
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Darwin-arm64)  zig_target=aarch64-macos ;;
+            Linux-x86_64)  zig_target=x86_64-linux ;;
+            *) echo "unsupported CI host: $(uname -s)-$(uname -m)"; exit 1 ;;
+          esac
+          curl -fsSL -o zig.tar.xz "https://ziglang.org/download/0.17.0/zig-${zig_target}-0.17.0.tar.xz"
+          tar -xf zig.tar.xz
+          echo "$(pwd)/zig-${zig_target}-0.17.0" >> "$GITHUB_PATH"
+          zig version
 
       - name: Cache deps
         uses: actions/cache@v4
