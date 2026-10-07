@@ -181,10 +181,14 @@ pub const Host = struct {
                     }
                 }
             }
-            // App tick every iteration (may mark nodes dirty).
+            // App tick every iteration (may mark nodes dirty). An app tick
+            // means the app drives a continuous animation: render EVERY
+            // iteration — a tick that changes nothing (e.g. an animation
+            // value quantized to the same integer) must not stall the loop
+            // (frames < max_frames with frames frozen = infinite loop).
             if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
-            // Render only when the tree is dirty.
-            if (!quit and root.dirty) host.renderFrame(root);
+            // Render when the tree is dirty (or the app ticks: continuous).
+            if (!quit and (root.dirty or on_frame != null)) host.renderFrame(root);
             // Pace the whole iteration to the frame budget (~120 fps active).
             host.paceIteration(iter_start_ns);
         }

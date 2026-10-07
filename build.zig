@@ -58,18 +58,6 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // --- hello app ---
-    const exe = b.addExecutable(.{
-        .name = "hello",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .link_libcpp = true,
-        }),
-    });
-
     // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c
     // (Zig 0.17 removed @cImport — b.addTranslateC is the replacement).
     const translate_sdl = b.addTranslateC(.{
@@ -78,23 +66,30 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     translate_sdl.addIncludePath(b.path("deps/SDL/include"));
-    exe.root_module.addImport("sdl_c", translate_sdl.createModule());
 
     const translate_kx = b.addTranslateC(.{
         .root_source_file = b.path("kx_skia/include/kx_skia.h"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("kx_c", translate_kx.createModule());
 
-    linkRuntime(b, exe.root_module, kx_skia, is_macos, tag);
-
+    // --- hello app ---
+    const exe = addApp(b, target, optimize, "hello", "src/main.zig", translate_sdl, translate_kx, kx_skia, is_macos, tag);
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     const run_step = b.step("run", "Build and run the hello app");
     run_step.dependOn(&run.step);
+
+    // --- gallery app (Phase 1g) ---
+    const gallery_exe = addApp(b, target, optimize, "gallery", "src/gallery_main.zig", translate_sdl, translate_kx, kx_skia, is_macos, tag);
+    b.installArtifact(gallery_exe);
+
+    const run_gallery = b.addRunArtifact(gallery_exe);
+    run_gallery.step.dependOn(b.getInstallStep());
+    const gallery_step = b.step("gallery", "Build and run the gallery app");
+    gallery_step.dependOn(&run_gallery.step);
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -112,6 +107,56 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    // Golden tests only. The 0.17 compile-time --test-filter only matches
+    // tests declared in the ROOT module, and this repo's tests live in the
+    // widget modules (pulled in via refAllDecls) — so the golden suite uses
+    // a custom test runner that filters by test name at runtime.
+    const golden_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .link_libcpp = true,
+        }),
+        .test_runner = .{ .path = b.path("src/test_runner_golden.zig"), .mode = .simple },
+    });
+    golden_tests.root_module.addImport("sdl_c", translate_sdl.createModule());
+    golden_tests.root_module.addImport("kx_c", translate_kx.createModule());
+    linkRuntime(b, golden_tests.root_module, kx_skia, is_macos, tag);
+    const run_golden = b.addRunArtifact(golden_tests);
+    const golden_step = b.step("test-golden", "Run golden tests only");
+    golden_step.dependOn(&run_golden.step);
+}
+
+/// Create an app executable: module + C bindings + runtime link.
+fn addApp(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    root_src: []const u8,
+    translate_sdl: *std.Build.Step.TranslateC,
+    translate_kx: *std.Build.Step.TranslateC,
+    kx_skia: *std.Build.Step.Compile,
+    is_macos: bool,
+    tag: []const u8,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(root_src),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .link_libcpp = true,
+        }),
+    });
+    exe.root_module.addImport("sdl_c", translate_sdl.createModule());
+    exe.root_module.addImport("kx_c", translate_kx.createModule());
+    linkRuntime(b, exe.root_module, kx_skia, is_macos, tag);
+    return exe;
 }
 
 /// Link the runtime (SDL3 static + kx_skia shim + Skia static libs + macOS

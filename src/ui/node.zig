@@ -120,6 +120,23 @@ pub const Node = struct {
         node.markDirty();
     }
 
+    /// Remove a child. The child is NOT deinited (the caller owns it) and its
+    /// parent pointer is cleared. Returns false if it was not a child.
+    /// Dynamic UI (conditional children, theme rebuilds) needs this: the tree
+    /// is retained, but subtrees come and go.
+    pub fn remove(node: *Node, child: *Node) bool {
+        for (node.children.items, 0..) |c, i| {
+            if (c == child) {
+                _ = node.children.orderedRemove(i);
+                child.parent = null;
+                node.markLayoutDirty();
+                node.markDirty();
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn markDirtyUp(node: *Node) void {
         var n = node;
         while (true) {
@@ -313,6 +330,23 @@ fn testNode(w: f32, h: f32) !*Node {
     s.* = .{ .w = w, .h = h };
     node.state = s;
     return node;
+}
+
+test "remove detaches a child without deiniting it" {
+    const root = try testNode(100, 100);
+    defer root.deinit();
+    const a = try testNode(10, 10);
+    const b = try testNode(10, 10);
+    root.add(a);
+    root.add(b);
+    try std.testing.expectEqual(@as(usize, 2), root.children.items.len);
+    try std.testing.expect(root.remove(a));
+    try std.testing.expectEqual(@as(usize, 1), root.children.items.len);
+    try std.testing.expectEqual(b, root.children.items[0]);
+    try std.testing.expect(a.parent == null);
+    try std.testing.expect(!root.remove(a)); // already detached
+    a.deinit(); // caller owns the detached child
+    // the remaining subtree still deinits cleanly
 }
 
 test "markDirty propagates up to the root" {

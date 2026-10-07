@@ -585,6 +585,13 @@ pub fn textField(allocator: std.mem.Allocator, opts: TextFieldOptions, on_change
     return node;
 }
 
+/// Current TextField text — borrowed from the widget's buffer (valid until
+/// the next edit or deinit). Apps read it from on_changed/on_submitted.
+pub fn textFieldText(n: *Node) [:0]const u8 {
+    const s = stateOf(TextFieldState, n);
+    return s.text();
+}
+
 // --- Dropdown (popup menu) ---
 
 pub const DropdownOptions = struct {
@@ -806,6 +813,13 @@ pub fn dropdown(allocator: std.mem.Allocator, items: []const []const u8, opts: D
         node.add(try menuItem(allocator, label, i, node));
     }
     return node;
+}
+
+/// Index of the selected Dropdown item (0 before any selection; the closed
+/// box always shows it). Read it from on_changed.
+pub fn dropdownSelected(n: *Node) usize {
+    const s = stateOf(DropdownState, n);
+    return s.selected;
 }
 
 // --- Chip ---

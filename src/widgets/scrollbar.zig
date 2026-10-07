@@ -7,6 +7,10 @@
 // P0: visible while the content overflows (thumb only when scrollable);
 // thumb height = viewport/content fraction (min `min_thumb`); dragging the
 // thumb maps the pointer position to the scroll offset.
+//
+// Fill semantics: natural height = max_h (like the scrollables). Inside a
+// vertically unbounded container (e.g. a ScrollView's content) it measures
+// infinity — bound it with a ConstrainedBox, same as the scrollable.
 const std = @import("std");
 const kx = @import("../kx.zig");
 const ui = @import("../ui.zig");
