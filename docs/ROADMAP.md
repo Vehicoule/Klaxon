@@ -335,7 +335,7 @@ API reference: generated from Zig doc comments (English).
 - [ ] 50 widgets (P0 + P1 + P2)
 - [ ] State management (Signal, Memo, Effect, Store)
 - [ ] Gestures (tap, double-tap, long-press, pan, swipe, pinch, rotate)
-- [ ] Animations (Spring, Tween, staggered, hero, SIMD, dirty-rect)
+- [x] Animations (Spring M3E closed-form, Tween, staggered, SIMD, dirty-rect) — Phase 1e; hero/opacity land with the layer ABI
 - [ ] Navigation (declarative + imperative, transitions, deep links)
 - [ ] i18n (tr, ARB, RTL, pluralization, ICU)
 - [ ] A11y (6 bridges: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA)

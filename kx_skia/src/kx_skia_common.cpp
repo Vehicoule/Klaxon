@@ -187,6 +187,32 @@ void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius
     ctx->canvas->drawRoundRect(SkRect::MakeXYWH(x, y, w, h), radius, radius, paint);
 }
 
+void kx_save(kx_ctx* ctx) {
+    if (ctx && ctx->canvas) ctx->canvas->save();
+}
+
+void kx_restore(kx_ctx* ctx) {
+    if (ctx && ctx->canvas) ctx->canvas->restore();
+}
+
+void kx_translate(kx_ctx* ctx, float dx, float dy) {
+    if (ctx && ctx->canvas) ctx->canvas->translate(dx, dy);
+}
+
+void kx_scale(kx_ctx* ctx, float sx, float sy) {
+    if (ctx && ctx->canvas) ctx->canvas->scale(sx, sy);
+}
+
+void kx_clip_rect(kx_ctx* ctx, float x, float y, float w, float h) {
+    if (!ctx || !ctx->canvas) return;
+    ctx->canvas->save();
+    ctx->canvas->clipRect(SkRect::MakeXYWH(x, y, w, h), SkClipOp::kIntersect, true);
+}
+
+void kx_clip_reset(kx_ctx* ctx) {
+    if (ctx && ctx->canvas) ctx->canvas->restore();
+}
+
 bool kx_readback_rgba(kx_ctx* ctx, void* dst, size_t dst_size, int* out_width, int* out_height) {
     if (!ctx || !ctx->raster || !dst) return false;
     if (out_width) *out_width = ctx->width;
@@ -203,7 +229,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.2.0";
+    return "0.3.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {

@@ -7,7 +7,7 @@
 | Metric | Target | Measured (retail, Adreno 750) | Status |
 |---|---|---|---|
 | **fps p99** (scroll_10k, real scenes) | ≥ 120 | ~135 avg on empty app — **too easy, target real scenes** | 🎯 Target real scenes (gallery, scroll, anim) |
-| **frame p99** | ≤ 8.3 ms (120 Hz budget) | 10.6 ms — jank to eliminate | 🔧 dirty-rect in progress |
+| **frame p99** | ≤ 8.3 ms (120 Hz budget) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
 | **RSS hello** | < 40 Mo | ~45 Mo estimated (Skia floor ~14 + app ~5 + overhead) | 🎯 Ambitious. Gate v1 = < 40 Mo. May take time. |
 | **TTFF** (time to first frame) | < 100 ms | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
 | **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip + ICU-trim |

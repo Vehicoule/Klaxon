@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-07 (Phase 1d — Gestures, COMPLETE)
+**Last updated**: 2026-10-07 (Phase 1e — Animations, COMPLETE)
 
 ## Current phase
 
@@ -22,9 +22,11 @@
 
 - **1c done** — Input system + 8 input widgets (22/50). `ui/input.zig`: `InputRouter` — pointer dispatch (hit-test → deepest node, capture for drags, bubbling until handled), hover enter/leave, keyboard focus routing, open-popup barrier (click outside closes + consumes). Events are platform-agnostic (`PointerEvent`/`KeyEvent`); the host maps SDL mouse/finger/text/key into them. `Node.visible` (invisible subtrees skip paint + hit-test) and `VTable.on_pointer`/`on_key` (optional, backward compatible). Widgets (`src/widgets/input.zig`): Button (pressed/hover states + onPressed), Toggle/Checkbox/Radio/Slider/Chip — signal-driven (Phase 1a), unsubscribe on deinit — TextField (focus, UTF-8 editing with multi-byte-safe backspace, placeholder, cursor, onChanged/onSubmitted), Dropdown (overlay menu as child nodes, `hitTestSubtree` for out-of-bounds popup children). Golden tooling grew `Renderer` for interactive multi-frame tests (dispatch input between frames). 78 tests green.
 
-- **1d done** — Gestures: `ui/gestures.zig` (GestureArena + 7 recognizers: tap, double-tap, long-press, pan, swipe/fling, pinch, rotate; tuned constants: slop 12, tap 200ms, double-tap 300ms, long-press 500ms, swipe 500px/s) + `widgets/gestures.zig` (`GestureDetector` wrapper). Router is now multi-pointer (per-pointer capture, pointer ids + timestamps from SDL; pinch/rotate need them). P0 deviations documented in `docs/GESTURES.md` (long-press fires on first event after threshold — no platform timers; single tap fires immediately). 92 tests green.
+- **1d done** — Gestures: `ui/gestures.zig` (GestureArena + 7 recognizers: tap, double-tap, long-press, pan, swipe/fling, pinch, rotate; tuned constants: slop 12, tap 200ms, double-tap 300ms, long-press 500ms, swipe 500px/s) + `widgets/gestures.zig` (`GestureDetector` wrapper). Router is now multi-pointer (per-pointer capture, pointer ids + timestamps from SDL; pinch/rotate need them). P0 deviations documented in `docs/GESTURES.md` (long-press fires on first event after threshold — no platform timers; single tap fires immediately). Merged as PR #6. 97 tests green.
 
-**Next: Phase 1e — animations (Spring M3E, Tween, SIMD @Vector, 240 Hz timeline, dirty-rect, frame budget).**
+- **1e done** — Animations: `ui/anim.zig` (Spring M3E closed-form — under/critical/overdamped, exact at any tick rate; Tween with Ease curves incl. M3 standard/emphasized cubic-bezier + custom fn; SIMD `@Vector(4,f32)` lerp4/lerpColor; Timeline: process-global, time-based, stagger, channels, priority + frame_overrun) + `widgets/anim.zig` (`AnimatedContainer` w/h/color, `AnimatedOffset`, `AnimatedScale` — signal-driven implicit animations, retarget cancels via channels, teardown cancels in-flight). Host: timeline tick every loop iteration, layout pass, **dirty-rect** (retained surface + damage accumulator + `kx_clip_rect`), **frame budget** 8.3 ms (~120 fps pacing; overrun pauses low-priority anims). kx_skia ABI **0.3.0** (additive): `kx_save/restore/translate/scale/clip_rect/clip_reset`. Node: `markDirtyRect` + root damage accumulator + `pre/post_children_paint` vtable hooks (canvas transform around children). Gestures: arena tick → long-press fires exactly at 500 ms (detector registers a timeline ticker). Widgets 26/50. 127 tests green. `docs/ANIMATION.md`.
+
+**Next: Phase 1f — scroll (ListView/GridView virtualized, ScrollView, Scrollbar).**
 
 ## What exists (code, this repo)
 
@@ -36,12 +38,14 @@
 - ✅ `src/ui.zig` — ui core re-exports
 - ✅ `src/demo.zig` — demo widgets (Box, Label, Column) + showcase tree + flex tests
 - ✅ `src/host.zig` — window, dirty-flag event loop (0-frame idle), stats, PPM dump
-- ✅ `src/widgets/` — widget library (14 P0 + 8 input = 22, Phases 1b/1c) + `src/widgets.zig` re-exports
+- ✅ `src/widgets/` — widget library (14 P0 + 8 input + 1 gesture + 3 animated = 26, Phases 1b/1c/1d/1e) + `src/widgets.zig` re-exports
 - ✅ `src/ui/input.zig` — input router (pointer/keyboard/popup, Phase 1c; multi-pointer capture, Phase 1d)
 - ✅ `src/ui/gestures.zig` — GestureArena + recognizers (Phase 1d) + `docs/GESTURES.md`
 - ✅ `src/widgets/gestures.zig` — GestureDetector wrapper (Phase 1d)
+- ✅ `src/ui/anim.zig` — Spring (M3E closed-form), Tween, curves, SIMD lerp, Timeline (Phase 1e) + `docs/ANIMATION.md`
+- ✅ `src/widgets/anim.zig` — AnimatedContainer / AnimatedOffset / AnimatedScale (Phase 1e)
 - ✅ `src/golden.zig` — offscreen render + pixel assertions + interactive `Renderer` (golden tests; gallery/conformance reuse)
-- ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.2.0: raster, text+metrics, images, readback), `src/kx_skia_common.cpp` (raster + image registry), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
+- ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.3.0: raster, text+metrics, images, readback, canvas state/transforms/clip), `src/kx_skia_common.cpp` (raster + image registry + canvas state), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
 - ✅ `.github/workflows/ci.yml` — build + test + smoke + size gate on ubuntu + macOS
 - ✅ `docs/` — planning set (ARCHITECTURE, ROADMAP, PERF-BUDGETS, STATUS, README, STATE.md, 9 ADRs)
@@ -66,9 +70,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 ## What does NOT exist (greenfield)
 
 - ❌ Gallery (to be written — Phase 1g)
-- ❌ Animations (Spring/Tween, SIMD) — Phase 1e, next
 - ❌ Scroll (ListView/GridView virtualized, Scrollbar) — Phase 1f
-- ❌ Animations
 - ❌ Navigation
 - ❌ i18n
 - ❌ All 50 widgets
@@ -135,5 +137,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 8. ~~Phase 1a: `ui/state.zig` — Signal/Memo/Effect/Store (fine-grained reactivity) + unit tests~~ done (PR #2)
 9. ~~Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider) + golden tests~~ done (PR #3)
 10. ~~Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip) + input router~~ done (PR #4)
-11. ~~Phase 1d: gestures (GestureArena: tap/double-tap/long-press/pan/swipe/pinch/rotate) + GestureDetector~~ done (this PR)
-12. **Phase 1e: animations (Spring M3E, Tween, SIMD, 240 Hz timeline, dirty-rect, frame budget)**
+11. ~~Phase 1d: gestures (GestureArena: tap/double-tap/long-press/pan/swipe/pinch/rotate) + GestureDetector~~ done (PR #6)
+12. ~~Phase 1e: animations (Spring M3E closed-form, Tween, SIMD, timeline, dirty-rect, frame budget) + AnimatedContainer/Offset/Scale~~ done (this PR)
+13. **Phase 1f: scroll (ListView/GridView virtualized, ScrollView, Scrollbar)**
