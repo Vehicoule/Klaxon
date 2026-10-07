@@ -128,10 +128,12 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 | Metric | Target |
 |---|---|
 | fps p99 (real scenes, incl. video_playback) | ≥ 120 |
-| frame p99 | ≤ 8.3 ms |
-| RSS hello | < 40 Mo |
-| TTFF | < 100 ms |
-| Binary size hello | < 5 Mo (CI gate < 10 Mo — current 6.0 Mo) |
+| frame p99 | ≤ 4 ms (tightened 2026-10-08 from 8.3 ms) |
+| RSS hello | < 40 Mo (measured 24.0 Mo — continuous improvement target) |
+| TTFF | < 50 ms (tightened 2026-10-08 from 100 ms; measured 42–45 ms) |
+| Binary size hello | < 5 Mo (CI gate < 7 Mo — tightened from 10 Mo; current 6.0 Mo) |
+| Input latency (key/tap → repaint) | ≤ 1 frame |
+| Nav transition duration | ≤ 350 ms (target 300 ms) |
 | WASM size hello | < 5 Mo |
 | allocs_per_frame | 0 |
 | Widget count | 50 |

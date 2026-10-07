@@ -72,11 +72,11 @@ jobs:
       - name: Gallery headless smoke (raster, 600 frames)
         run: SDL_VIDEODRIVER=dummy ./zig-out/bin/gallery
 
-      - name: ReleaseSmall build + size gate (< 10 Mo)
+      - name: ReleaseSmall build + size gate (< 7 Mo)
         run: |
           zig build -Doptimize=ReleaseSmall
           size=$(wc -c < zig-out/bin/hello)
           echo "hello (ReleaseSmall): $size bytes"
-          if [ "$size" -ge 10485760 ]; then
-            echo "SIZE GATE FAILED: $size >= 10 Mo"; exit 1
+          if [ "$size" -ge 7340032 ]; then
+            echo "SIZE GATE FAILED: $size >= 7 Mo"; exit 1
           fi
