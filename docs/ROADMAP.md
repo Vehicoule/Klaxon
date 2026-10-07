@@ -333,9 +333,10 @@ API reference: generated from Zig doc comments (English).
 
 - [ ] 6 platforms: Linux x64/arm64, Windows x64, macOS arm64, Android arm64/x64, iOS arm64, Web WASM
 - [ ] 50 widgets (P0 + P1 + P2)
-- [ ] State management (Signal, Memo, Effect, Store)
-- [ ] Gestures (tap, double-tap, long-press, pan, swipe, pinch, rotate)
+- [x] State management (Signal, Memo, Effect, Store) — Phase 1a
+- [x] Gestures (tap, double-tap, long-press, pan, swipe, pinch, rotate) — Phase 1d
 - [x] Animations (Spring M3E closed-form, Tween, staggered, SIMD, dirty-rect) — Phase 1e; hero/opacity land with the layer ABI
+- [x] Scroll (ListView/GridView virtualized, ScrollView, Scrollbar, wheel + drag) — Phase 1f
 - [ ] Navigation (declarative + imperative, transitions, deep links)
 - [ ] i18n (tr, ARB, RTL, pluralization, ICU)
 - [ ] A11y (6 bridges: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA)

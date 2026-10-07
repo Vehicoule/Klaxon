@@ -10,6 +10,8 @@
 // Input (8): Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip.
 // Gestures (1): GestureDetector (wrapper, feeds ui/gestures.zig's arena).
 // Animations (3): AnimatedContainer, AnimatedOffset, AnimatedScale.
+// Scroll (4): ListView (virtualized), GridView (virtualized), ScrollView,
+// Scrollbar.
 // 50 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -20,3 +22,7 @@ pub const divider = @import("widgets/divider.zig");
 pub const input = @import("widgets/input.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
+pub const list_view = @import("widgets/list_view.zig");
+pub const grid_view = @import("widgets/grid_view.zig");
+pub const scroll_view = @import("widgets/scroll_view.zig");
+pub const scrollbar = @import("widgets/scrollbar.zig");

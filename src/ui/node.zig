@@ -6,6 +6,7 @@ const kx = @import("../kx.zig");
 const paint_mod = @import("paint.zig");
 const layout_mod = @import("layout.zig");
 const input_mod = @import("input.zig");
+const scroll_mod = @import("scroll.zig");
 
 pub const Paint = paint_mod.Paint;
 pub const Constraints = layout_mod.Constraints;
@@ -56,6 +57,13 @@ pub const VTable = struct {
     on_pointer: ?*const fn (node: *Node, ev: input_mod.PointerEvent) bool = null,
     /// Keyboard input (Phase 1c) — delivered to the focused node's chain.
     on_key: ?*const fn (node: *Node, ev: input_mod.KeyEvent) bool = null,
+    /// Scroll (wheel) input (Phase 1f) — bubbles up until a scrollable
+    /// reports it handled.
+    on_scroll: ?*const fn (node: *Node, ev: input_mod.ScrollEvent) bool = null,
+    /// Scrollable interface (Phase 1f): the Scrollbar drives any scrollable
+    /// through these hooks — no direct widget-to-widget dependency.
+    scroll_info: ?*const fn (node: *Node) scroll_mod.ScrollInfo = null,
+    scroll_set_offset: ?*const fn (node: *Node, offset: f32) void = null,
     /// Paint-time wrapper around the children's paint (Phase 1e): called
     /// after this node's own paint, before the children's — e.g. save +
     /// translate for an animated offset. Must be balanced with

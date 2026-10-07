@@ -48,6 +48,16 @@ pub const KeyEvent = struct {
     text: []const u8 = "", // text_input (UTF-8, borrowed from the event source)
 };
 
+/// Scroll (mouse wheel / touchpad) event — Phase 1f.
+pub const ScrollEvent = struct {
+    x: f32, // pointer position (window px) — hit-test target
+    y: f32,
+    delta_x: f32 = 0, // wheel deltas (clicks; y positive = scroll up/away)
+    delta_y: f32 = 0,
+    pointer: u64 = 0,
+    time_ms: u64 = 0,
+};
+
 /// Max simultaneously captured pointers (mouse + fingers). Fixed slots: the
 /// router never allocates.
 pub const MAX_POINTERS = 8;
@@ -157,6 +167,14 @@ pub const InputRouter = struct {
         if (self.focused) |f| _ = sendKey(f, ev);
     }
 
+    /// Scroll: hit-test at the pointer position, deliver to the node's
+    /// chain (bubbles until a scrollable reports it handled).
+    pub fn dispatchScroll(self: *InputRouter, root: *Node, ev: ScrollEvent) void {
+        _ = self;
+        const hit = root.hitTest(ev.x, ev.y) orelse return;
+        _ = sendScroll(hit, ev);
+    }
+
     pub fn focus(self: *InputRouter, node: ?*Node) void {
         self.focused = node;
     }
@@ -197,6 +215,17 @@ fn sendKey(node: *Node, ev: KeyEvent) bool {
     return false;
 }
 
+/// Deliver a scroll event to `node`, bubbling up to the root until handled.
+fn sendScroll(node: *Node, ev: ScrollEvent) bool {
+    var n: ?*Node = node;
+    while (n) |cur| : (n = cur.parent) {
+        if (cur.vtable.on_scroll) |h| {
+            if (h(cur, ev)) return true;
+        }
+    }
+    return false;
+}
+
 fn isDescendant(node: *Node, ancestor: *Node) bool {
     var n: ?*Node = node;
     while (n) |cur| : (n = cur.parent) {
@@ -231,26 +260,31 @@ fn hitTestSubtree(node: *Node, px: f32, py: f32) ?*Node {
 
 // --- process-global current router (single-window P0) ---
 
-var current: ?*InputRouter = null;
+var current_router: ?*InputRouter = null;
 
 pub fn setCurrent(r: ?*InputRouter) void {
-    current = r;
+    current_router = r;
+}
+
+/// The process-global router (setCurrent), or null (tests without a host).
+pub fn current() ?*InputRouter {
+    return current_router;
 }
 
 pub fn requestFocus(node: ?*Node) void {
-    if (current) |r| r.focus(node);
+    if (current_router) |r| r.focus(node);
 }
 
 pub fn isFocused(node: *Node) bool {
-    return if (current) |r| r.focused == node else false;
+    return if (current_router) |r| r.focused == node else false;
 }
 
 pub fn setOpenPopup(node: ?*Node) void {
-    if (current) |r| r.open_popup = node;
+    if (current_router) |r| r.open_popup = node;
 }
 
 pub fn releaseNode(node: *Node) void {
-    if (current) |r| r.releaseNode(node);
+    if (current_router) |r| r.releaseNode(node);
 }
 
 // --- tests (recording stub widget) ---

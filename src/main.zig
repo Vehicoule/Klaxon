@@ -79,8 +79,9 @@ test "smoke" {
 test "widgets" {
     const widgets = @import("widgets.zig");
     std.testing.refAllDecls(widgets);
-    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input, widgets.gestures, widgets.anim }) |mod| {
+    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input, widgets.gestures, widgets.anim, widgets.list_view, widgets.grid_view, widgets.scroll_view, widgets.scrollbar }) |mod| {
         std.testing.refAllDecls(mod);
     }
     std.testing.refAllDecls(ui.anim);
+    std.testing.refAllDecls(ui.scroll);
 }

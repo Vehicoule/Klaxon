@@ -313,6 +313,15 @@ pub const Host = struct {
                 .pointer = @intCast(event.tfinger.fingerID),
                 .time_ms = time_ms,
             }),
+            // Wheel → scroll event (Phase 1f): routed like pointer input.
+            sdl.c.SDL_EVENT_MOUSE_WHEEL => host.input.dispatchScroll(root, .{
+                .x = event.wheel.mouse_x,
+                .y = event.wheel.mouse_y,
+                .delta_x = event.wheel.x,
+                .delta_y = event.wheel.y,
+                .pointer = event.wheel.which,
+                .time_ms = time_ms,
+            }),
             sdl.c.SDL_EVENT_TEXT_INPUT => host.input.dispatchKey(.{
                 .kind = .text_input,
                 .text = std.mem.span(event.text.text),
