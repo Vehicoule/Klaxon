@@ -6,11 +6,13 @@
 // the container semantics contract (fill vs positioning containers).
 //
 // P0 (14): Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox,
-// Text, RichText, Icon, Image, Container, Divider. 50 widgets at v1
-// (see docs/ROADMAP.md).
+// Text, RichText, Icon, Image, Container, Divider.
+// Input (8): Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip.
+// 50 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
 pub const icon = @import("widgets/icon.zig");
 pub const image = @import("widgets/image.zig");
 pub const container = @import("widgets/container.zig");
 pub const divider = @import("widgets/divider.zig");
+pub const input = @import("widgets/input.zig");

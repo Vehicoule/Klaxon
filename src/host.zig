@@ -1,8 +1,11 @@
 // Host — window, event loop (dirty-flag, 0-frame idle), stats (Phase 0.6).
+// Converts SDL platform events into ui/input events and routes them into
+// the widget tree (Phase 1c).
 const std = @import("std");
 const sdl = @import("sdl.zig");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
+const input_mod = @import("ui/input.zig");
 
 const Node = ui.node.Node;
 
@@ -25,6 +28,7 @@ pub const Host = struct {
     height: c_int,
     ppm_path: ?[:0]const u8,
     stats: Stats,
+    input: input_mod.InputRouter,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -44,6 +48,10 @@ pub const Host = struct {
             return error.SdlWindow;
         };
         errdefer sdl.c.SDL_DestroyWindow(window);
+
+        // Text input events flow from window creation (TextField focus is
+        // managed by the input router; refine per-platform later).
+        _ = sdl.c.SDL_StartTextInput(window);
 
         const ctx = kx.create(@ptrCast(window), width, height, backend) orelse {
             std.debug.print("kx_create failed (backend {s})\n", .{kx.c.kx_backend_name(backend)});
@@ -85,6 +93,7 @@ pub const Host = struct {
             .height = height,
             .ppm_path = ppm_path,
             .stats = .{ .backend = backend_name },
+            .input = .{},
         };
     }
 
@@ -107,22 +116,22 @@ pub const Host = struct {
             if (root.dirty) {
                 // Active: drain events without blocking.
                 while (sdl.c.SDL_PollEvent(&event)) {
-                    if (host.handleEvent(&event)) quit = true;
+                    if (host.handleEvent(root, &event)) quit = true;
                 }
             } else if (on_frame != null) {
                 // Clean but the app ticks (may animate): poll at 60 Hz, render nothing.
                 if (sdl.c.SDL_WaitEventTimeout(&event, 16)) {
-                    if (host.handleEvent(&event)) quit = true;
+                    if (host.handleEvent(root, &event)) quit = true;
                     while (sdl.c.SDL_PollEvent(&event)) {
-                        if (host.handleEvent(&event)) quit = true;
+                        if (host.handleEvent(root, &event)) quit = true;
                     }
                 }
             } else {
                 // True idle: block until an event arrives (0 wakeups).
                 if (sdl.c.SDL_WaitEvent(&event)) {
-                    if (host.handleEvent(&event)) quit = true;
+                    if (host.handleEvent(root, &event)) quit = true;
                     while (sdl.c.SDL_PollEvent(&event)) {
-                        if (host.handleEvent(&event)) quit = true;
+                        if (host.handleEvent(root, &event)) quit = true;
                     }
                 }
             }
@@ -149,14 +158,77 @@ pub const Host = struct {
     }
 
     /// Returns true if the event requests quit.
-    fn handleEvent(host: *Host, event: *sdl.c.SDL_Event) bool {
+    fn handleEvent(host: *Host, root: *Node, event: *sdl.c.SDL_Event) bool {
         if (event.type == sdl.c.SDL_EVENT_QUIT) return true;
         if (event.type == sdl.c.SDL_EVENT_WINDOW_RESIZED) {
             const w: c_int = @intCast(event.window.data1);
             const h: c_int = @intCast(event.window.data2);
             if (w > 0 and h > 0) host.resize(w, h);
         }
+        // Input routing (Phase 1c): platform events → router → widget tree.
+        switch (event.type) {
+            sdl.c.SDL_EVENT_MOUSE_MOTION => host.input.dispatchPointer(root, .{
+                .phase = .move,
+                .x = event.motion.x,
+                .y = event.motion.y,
+            }),
+            sdl.c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                if (event.button.button == sdl.c.SDL_BUTTON_LEFT) {
+                    host.input.dispatchPointer(root, .{
+                        .phase = .down,
+                        .x = event.button.x,
+                        .y = event.button.y,
+                    });
+                }
+            },
+            sdl.c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (event.button.button == sdl.c.SDL_BUTTON_LEFT) {
+                    host.input.dispatchPointer(root, .{
+                        .phase = .up,
+                        .x = event.button.x,
+                        .y = event.button.y,
+                    });
+                }
+            },
+            // Touch: normalized finger coords → window pixels (single-pointer P0).
+            sdl.c.SDL_EVENT_FINGER_DOWN => host.input.dispatchPointer(root, .{
+                .phase = .down,
+                .x = event.tfinger.x * @as(f32, @floatFromInt(host.width)),
+                .y = event.tfinger.y * @as(f32, @floatFromInt(host.height)),
+            }),
+            sdl.c.SDL_EVENT_FINGER_MOTION => host.input.dispatchPointer(root, .{
+                .phase = .move,
+                .x = event.tfinger.x * @as(f32, @floatFromInt(host.width)),
+                .y = event.tfinger.y * @as(f32, @floatFromInt(host.height)),
+            }),
+            sdl.c.SDL_EVENT_FINGER_UP => host.input.dispatchPointer(root, .{
+                .phase = .up,
+                .x = event.tfinger.x * @as(f32, @floatFromInt(host.width)),
+                .y = event.tfinger.y * @as(f32, @floatFromInt(host.height)),
+            }),
+            sdl.c.SDL_EVENT_TEXT_INPUT => host.input.dispatchKey(.{
+                .kind = .text_input,
+                .text = std.mem.span(event.text.text),
+            }),
+            sdl.c.SDL_EVENT_KEY_DOWN => host.input.dispatchKey(.{
+                .kind = .key_down,
+                .key = sdlKeyToKey(event.key.key),
+            }),
+            else => {},
+        }
         return false;
+    }
+
+    fn sdlKeyToKey(k: u32) input_mod.Key {
+        return switch (k) {
+            sdl.c.SDLK_BACKSPACE => .backspace,
+            sdl.c.SDLK_DELETE => .delete,
+            sdl.c.SDLK_RETURN, sdl.c.SDLK_KP_ENTER => .enter,
+            sdl.c.SDLK_ESCAPE => .escape,
+            sdl.c.SDLK_LEFT => .left,
+            sdl.c.SDLK_RIGHT => .right,
+            else => .unknown,
+        };
     }
 
     fn resize(host: *Host, w: c_int, h: c_int) void {

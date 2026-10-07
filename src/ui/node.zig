@@ -5,6 +5,7 @@ const std = @import("std");
 const kx = @import("../kx.zig");
 const paint_mod = @import("paint.zig");
 const layout_mod = @import("layout.zig");
+const input_mod = @import("input.zig");
 
 pub const Paint = paint_mod.Paint;
 pub const Constraints = layout_mod.Constraints;
@@ -41,6 +42,11 @@ pub const VTable = struct {
     layout: *const fn (node: *Node, bounds: Rect) void,
     paint: *const fn (node: *Node, ctx: *kx.Ctx) void,
     deinit: ?*const fn (node: *Node) void = null,
+    /// Pointer input (Phase 1c, dispatched by ui/input.zig). Returns true if
+    /// handled — bubbling to the parent stops.
+    on_pointer: ?*const fn (node: *Node, ev: input_mod.PointerEvent) bool = null,
+    /// Keyboard input (Phase 1c) — delivered to the focused node's chain.
+    on_key: ?*const fn (node: *Node, ev: input_mod.KeyEvent) bool = null,
 };
 
 pub const Node = struct {
@@ -50,6 +56,7 @@ pub const Node = struct {
     bounds: Rect = .{},
     dirty: bool = true,
     layout_dirty: bool = true,
+    visible: bool = true, // invisible subtrees are neither painted nor hit-tested
     vtable: *const VTable,
     state: ?*anyopaque = null,
 
@@ -94,13 +101,15 @@ pub const Node = struct {
     /// Paint the subtree and clear dirty flags. Phase 0 paints the whole tree;
     /// dirty-rect (paint only dirty subtrees) lands with animations in Phase 1e.
     pub fn paint(node: *Node, ctx: *kx.Ctx) void {
+        if (!node.visible) return;
         node.vtable.paint(node, ctx);
         for (node.children.items) |child| child.paint(ctx);
         node.dirty = false;
     }
 
-    /// Deepest node containing the point (children are painted last, on top).
+    /// Deepest visible node containing the point (children are painted last, on top).
     pub fn hitTest(node: *Node, px: f32, py: f32) ?*Node {
+        if (!node.visible) return null;
         if (!node.bounds.contains(px, py)) return null;
         var i = node.children.items.len;
         while (i > 0) {
