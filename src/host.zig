@@ -1,17 +1,29 @@
 // Host — window, event loop (dirty-flag, 0-frame idle), stats (Phase 0.6).
 // Converts SDL platform events into ui/input events and routes them into
-// the widget tree (Phase 1c).
+// the widget tree (Phase 1c). Phase 1e: owns the animation Timeline (ticked
+// every loop iteration), repaints clipped to the damage region (dirty-rect,
+// the surface is retained between frames), and paces rendering to the
+// 8.3 ms frame budget (~120 fps).
 const std = @import("std");
 const sdl = @import("sdl.zig");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
 const input_mod = @import("ui/input.zig");
+const anim = @import("ui/anim.zig");
 
 const Node = ui.node.Node;
 
+/// Frame budget: 8.33 ms → 120 fps target (the metrics gate). The whole loop
+/// iteration is paced to the budget (slow iterations run unthrottled and flag
+/// the timeline's frame_overrun — low-priority animations pause).
+const FRAME_BUDGET_NS: u64 = 8_333_333;
+const FRAME_BUDGET_MS: f32 = 8.333;
+const FRAME_BUDGET_WAIT_MS: u32 = 8; // integer wait granularity for the budget
+
 pub const Stats = struct {
     frames: u64 = 0,
-    frame_time_ms: f32 = 0,
+    frame_time_ms: f32 = 0, // begin_frame → present (total frame)
+    paint_time_ms: f32 = 0, // begin_frame → end_frame (drives frame_overrun)
     backend: [*:0]const u8 = "unknown",
 };
 
@@ -29,6 +41,8 @@ pub const Host = struct {
     ppm_path: ?[:0]const u8,
     stats: Stats,
     input: input_mod.InputRouter,
+    timeline: anim.Timeline,
+    frame_start_ns: u64 = 0,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -94,10 +108,12 @@ pub const Host = struct {
             .ppm_path = ppm_path,
             .stats = .{ .backend = backend_name },
             .input = .{},
+            .timeline = anim.Timeline.init(allocator),
         };
     }
 
     pub fn deinit(host: *Host) void {
+        host.timeline.deinit();
         if (host.texture) |t| sdl.c.SDL_DestroyTexture(t);
         if (host.renderer) |r| sdl.c.SDL_DestroyRenderer(r);
         kx.c.kx_destroy(host.ctx);
@@ -108,10 +124,25 @@ pub const Host = struct {
 
     /// Frame loop. Renders only when the tree is dirty; at idle it blocks on
     /// SDL_WaitEvent — 0 frames, 0 wakeups. `on_frame` is the app tick (it may
-    /// mark nodes dirty, e.g. animations).
+    /// mark nodes dirty). The animation timeline is ticked every iteration:
+    /// active animations update signals → nodes mark dirty → the frame
+    /// renders below (time-based values — the tick rate is the loop rate,
+    /// ~120 Hz while animating).
     pub fn run(host: *Host, root: *Node, max_frames: u64, on_frame: ?OnFrame, on_frame_ctx: ?*anyopaque) !void {
         var quit = false;
         while (!quit and host.stats.frames < max_frames) {
+            const iter_start_ns = sdl.c.SDL_GetTicksNS();
+            // Animations (1e): advance the timeline — active animations update
+            // signals → nodes mark dirty → the frame renders below. The clock
+            // never runs past a queued event: a release stamped before a
+            // long-press deadline is processed before the deadline fires.
+            const now = sdl.c.SDL_GetTicks();
+            var peek: sdl.c.SDL_Event = undefined;
+            const tick_time: u64 = if (sdl.c.SDL_PeepEvents(&peek, 1, @intCast(sdl.c.SDL_PEEKEVENT), @intCast(sdl.c.SDL_EVENT_FIRST), @intCast(sdl.c.SDL_EVENT_LAST)) > 0)
+                @min(now, peek.common.timestamp / 1_000_000)
+            else
+                now;
+            host.timeline.tick(tick_time);
             var event: sdl.c.SDL_Event = undefined;
             if (root.dirty) {
                 // Active: drain events without blocking.
@@ -119,8 +150,23 @@ pub const Host = struct {
                     if (host.handleEvent(root, &event)) quit = true;
                 }
             } else if (on_frame != null) {
-                // Clean but the app ticks (may animate): poll at 60 Hz, render nothing.
-                if (sdl.c.SDL_WaitEventTimeout(&event, 16)) {
+                // Clean but the app ticks: wait out the rest of the frame
+                // budget (the app may mark nodes dirty → rendered below).
+                const elapsed_ms = (sdl.c.SDL_GetTicksNS() - iter_start_ns) / 1_000_000;
+                if (elapsed_ms < FRAME_BUDGET_WAIT_MS) {
+                    const wait_ms = FRAME_BUDGET_WAIT_MS - @as(u32, @intCast(elapsed_ms));
+                    if (sdl.c.SDL_WaitEventTimeout(&event, @intCast(wait_ms))) {
+                        if (host.handleEvent(root, &event)) quit = true;
+                        while (sdl.c.SDL_PollEvent(&event)) {
+                            if (host.handleEvent(root, &event)) quit = true;
+                        }
+                    }
+                }
+            } else if (host.timeline.hasTimedWork()) {
+                // Timed work pending (running animation / held pointer waiting
+                // for a long-press deadline): wake at the timeline's
+                // granularity (~240 Hz) instead of blocking indefinitely.
+                if (sdl.c.SDL_WaitEventTimeout(&event, 4)) {
                     if (host.handleEvent(root, &event)) quit = true;
                     while (sdl.c.SDL_PollEvent(&event)) {
                         if (host.handleEvent(root, &event)) quit = true;
@@ -135,26 +181,63 @@ pub const Host = struct {
                     }
                 }
             }
-            // App tick every iteration (animations mark nodes dirty here).
+            // App tick every iteration (may mark nodes dirty).
             if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
             // Render only when the tree is dirty.
-            if (!quit and root.dirty) {
-                host.renderFrame(root);
-                sdl.c.SDL_Delay(16); // pace to ~60 Hz while rendering
-            }
+            if (!quit and root.dirty) host.renderFrame(root);
+            // Pace the whole iteration to the frame budget (~120 fps active).
+            host.paceIteration(iter_start_ns);
         }
     }
 
     fn renderFrame(host: *Host, root: *Node) void {
-        const t0 = sdl.c.SDL_GetTicksNS();
+        // Layout pass (Phase 1e): re-layout when sizes/structure changed.
+        // Layout moves content, so the frame repaints fully.
+        if (root.layout_dirty) {
+            root.layout(root.bounds);
+            root.dirty = true;
+            root.clearDamage();
+        }
+        host.frame_start_ns = sdl.c.SDL_GetTicksNS();
         kx.c.kx_begin_frame(host.ctx);
-        root.paint(host.ctx);
+        // Dirty-rect is raster-only: the raster surface is retained between
+        // frames; GPU backends acquire a fresh drawable each frame (no
+        // retained pixels) → full repaint until retained composition lands.
+        const raster = kx.c.kx_backend_of(host.ctx) == kx.c.KX_BACKEND_RASTER;
+        if (raster and root.damage_valid) {
+            // Repaint the tree clipped to the damaged region — and clear the
+            // clip first (SkCanvas::clear is clip-aware): vacated pixels
+            // (moving widgets) are erased, not trailed.
+            const d = root.damage;
+            kx.c.kx_clip_rect(host.ctx, d.x, d.y, d.w, d.h);
+            kx.c.kx_clear(host.ctx, 0);
+            root.paint(host.ctx);
+            kx.c.kx_clip_reset(host.ctx);
+        } else {
+            root.paint(host.ctx);
+        }
         kx.c.kx_end_frame(host.ctx);
+        const t_paint = sdl.c.SDL_GetTicksNS();
+        root.clearDamage();
         host.present();
         const t1 = sdl.c.SDL_GetTicksNS();
         host.stats.frames += 1;
-        host.stats.frame_time_ms = @as(f32, @floatFromInt(t1 - t0)) / 1e6;
+        host.stats.frame_time_ms = @as(f32, @floatFromInt(t1 - host.frame_start_ns)) / 1e6;
+        host.stats.paint_time_ms = @as(f32, @floatFromInt(t_paint - host.frame_start_ns)) / 1e6;
+        // Frame budget signal (1e.7): low-priority animations pause on overrun.
+        host.timeline.frame_overrun = host.stats.paint_time_ms > FRAME_BUDGET_MS;
         if (host.ppm_path != null and host.stats.frames == 30) host.dumpPpm();
+    }
+
+    /// Pace one loop iteration to the frame budget: delay only the remainder
+    /// of the 8.3 ms budget (slow iterations run unthrottled).
+    fn paceIteration(host: *Host, iter_start_ns: u64) void {
+        _ = host;
+        const elapsed = sdl.c.SDL_GetTicksNS() - iter_start_ns;
+        if (elapsed < FRAME_BUDGET_NS) {
+            const remaining_ms: u32 = @intCast((FRAME_BUDGET_NS - elapsed) / 1_000_000);
+            if (remaining_ms > 0) sdl.c.SDL_Delay(remaining_ms);
+        }
     }
 
     /// Returns true if the event requests quit.
@@ -163,7 +246,14 @@ pub const Host = struct {
         if (event.type == sdl.c.SDL_EVENT_WINDOW_RESIZED) {
             const w: c_int = @intCast(event.window.data1);
             const h: c_int = @intCast(event.window.data2);
-            if (w > 0 and h > 0) host.resize(w, h);
+            if (w > 0 and h > 0) {
+                host.resize(w, h);
+                // The surface is recreated (garbage pixels) and the tree is
+                // laid out at the new size: full repaint, no dirty-rect.
+                root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(w), .h = @floatFromInt(h) });
+                root.dirty = true;
+                root.clearDamage();
+            }
         }
         // Input routing (Phase 1c/1d): platform events → router → widget tree.
         // Every pointer event carries its pointer id (mouse = which, touch =

@@ -110,6 +110,12 @@ pub fn Signal(comptime T: type) type {
             return self.value;
         }
 
+        /// Read the value WITHOUT tracking a dependency (animation drivers
+        /// read the displayed value inside an Effect without re-triggering).
+        pub fn peek(self: *Self) T {
+            return self.value;
+        }
+
         /// Set the value. No-op (no notifications) if unchanged.
         pub fn set(self: *Self, new_value: T) void {
             if (std.meta.eql(self.value, new_value)) return;

@@ -76,11 +76,11 @@ The full drag displacement is the sum of the three payloads:
 `pan_end.dx/dy` (last move → up). `pan_end` also carries the release velocity
 (px/s, estimated over the last 100 ms).
 
-## P0 deviations (fixed by later phases)
+## P0 deviations
 
-- **Long-press has no platform timer**: it fires on the first event after the
-  500 ms threshold (a still-held pointer fires on release). The 240 Hz
-  timeline (Phase 1e) will drive it precisely.
+- **Long-press precision**: the detector registers its arena as a timeline
+  ticker (Phase 1e) — long-press fires exactly at the 500 ms threshold. Without
+  a timeline it falls back to event-driven (first event after the threshold).
 - **Single tap fires immediately**: if a second tap follows, the first tap
   has already fired (no tap-delay timer).
 - **Register pan XOR swipe** on the same detector (both track the same drag).

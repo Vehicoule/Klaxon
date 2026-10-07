@@ -9,6 +9,7 @@ const kx = @import("../kx.zig");
 const ui = @import("../ui.zig");
 const input = @import("../ui/input.zig");
 const gestures = @import("../ui/gestures.zig");
+const anim = @import("../ui/anim.zig");
 const golden = @import("../golden.zig");
 
 const Node = ui.node.Node;
@@ -27,7 +28,20 @@ pub const GestureDetectorOptions = struct {
 
 const DetectorState = struct {
     arena: gestures.GestureArena,
+    /// Set when the arena is registered as a timeline ticker (long-press
+    /// precision, Phase 1e): the ticker is removed at deinit.
+    ticker: ?anim.Timeline.Ticker = null,
 };
+
+fn arenaTickCb(userdata: ?*anyopaque, now_ms: u64) void {
+    const arena: *gestures.GestureArena = @ptrCast(@alignCast(userdata.?));
+    arena.tick(now_ms);
+}
+
+fn arenaHasPendingCb(userdata: ?*anyopaque) bool {
+    const arena: *gestures.GestureArena = @ptrCast(@alignCast(userdata.?));
+    return arena.hasPendingTimeWork();
+}
 
 fn detectorMeasure(n: *Node, c: Constraints) Size {
     var size = Size{};
@@ -48,8 +62,12 @@ fn detectorOnPointer(n: *Node, ev: input.PointerEvent) bool {
     return true; // a gesture detector claims pointer events on its area
 }
 fn detectorDeinit(n: *Node) void {
+    const s = stateOf(DetectorState, n);
+    if (s.ticker) |t| {
+        if (anim.timeline()) |tl| tl.removeTicker(t);
+    }
     input.releaseNode(n);
-    n.allocator.destroy(stateOf(DetectorState, n));
+    n.allocator.destroy(s);
 }
 const detector_vtable = ui.node.VTable{
     .measure = detectorMeasure,
@@ -65,6 +83,18 @@ pub fn gestureDetector(allocator: std.mem.Allocator, opts: GestureDetectorOption
     const s = try allocator.create(DetectorState);
     errdefer allocator.destroy(s);
     s.* = .{ .arena = gestures.GestureArena.init(opts.callbacks) };
+    // Register the arena as a timeline ticker: long-press fires precisely at
+    // the threshold (the host ticks the timeline every loop iteration), and
+    // has_pending lets the host bound its idle wait while a pointer is held.
+    if (anim.timeline()) |tl| {
+        const t = anim.Timeline.Ticker{
+            .fn_ptr = arenaTickCb,
+            .userdata = &s.arena,
+            .has_pending = arenaHasPendingCb,
+        };
+        tl.addTicker(t);
+        s.ticker = t;
+    }
     node.state = s;
     return node;
 }
@@ -124,6 +154,25 @@ test "detector fires pan callbacks with deltas" {
     try std.testing.expectEqual(@as(u32, 1), upd.fired);
     try std.testing.expectApproxEqAbs(@as(f32, 15), upd.last_dx, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 15), upd.last_dy, 0.001);
+}
+
+test "detector registers its arena with the timeline (long-press via tick)" {
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var rec = Rec{};
+    const root = try gestureDetector(std.testing.allocator, .{
+        .callbacks = .{ .on_long_press = .{ .fn_ptr = recCb, .userdata = &rec } },
+    });
+    defer root.deinit();
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    var router = input.InputRouter{};
+    router.dispatchPointer(root, .{ .phase = .down, .x = 50, .y = 50, .time_ms = 0 });
+    tl.tick(499);
+    try std.testing.expectEqual(@as(u32, 0), rec.fired);
+    tl.tick(500); // timeline-driven: fires without a pointer event
+    try std.testing.expectEqual(@as(u32, 1), rec.fired);
 }
 
 test "detector with no callbacks still claims events (and leaks nothing)" {

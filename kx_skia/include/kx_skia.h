@@ -15,6 +15,9 @@
 //           draw many — no per-frame allocation). Purely additive: the 0.1.0
 //           entry points keep their signatures (ADR-0009: breaking changes
 //           bump the major version; additive changes bump the minor).
+//   0.3.0 — Phase 1e: + canvas state (kx_save/kx_restore), transforms
+//           (kx_translate/kx_scale) for paint-time animated offsets/scales,
+//           + clipping (kx_clip_rect/kx_clip_reset) for dirty-rect repaints.
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -63,6 +66,19 @@ void kx_draw_text_styled(kx_ctx* ctx, const char* text, float x, float y, float 
 void kx_fill_rect(kx_ctx* ctx, float x, float y, float w, float h, uint32_t rgba);
 // Fill a rounded rectangle with a solid color.
 void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, uint32_t rgba);
+
+// Canvas state + transforms (added in 0.3.0). save/restore must be balanced
+// within a frame; a wrapper widget wraps its children's paint in a pair.
+void kx_save(kx_ctx* ctx);
+void kx_restore(kx_ctx* ctx);
+void kx_translate(kx_ctx* ctx, float dx, float dy);
+void kx_scale(kx_ctx* ctx, float sx, float sy);
+// Clip the current frame to a rect (intersect with the existing clip).
+// kx_clip_rect saves the canvas state; kx_clip_reset restores it. The surface
+// is retained between frames: repainting the tree clipped to the damaged
+// region is the dirty-rect path (Phase 1e).
+void kx_clip_rect(kx_ctx* ctx, float x, float y, float w, float h);
+void kx_clip_reset(kx_ctx* ctx);
 
 // Text metrics for widget layout. Ctx-independent: fonts are process-global.
 //   width   — advance width in pixels

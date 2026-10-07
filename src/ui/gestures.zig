@@ -17,10 +17,11 @@
 //   Pinch      2 pointers → scale = current distance / initial distance
 //   Rotate     2 pointers → per-move atan2 delta, wrapped to [-π, π]
 //
-// P0 deviations (documented, fixed by later phases):
-//   - Long-press has no platform timer: it fires on the first event after the
-//     500 ms threshold (a still-held pointer fires on release). The 240 Hz
-//     timeline (Phase 1e) will drive it precisely.
+// P0 deviations (documented):
+//   - Without a timeline, long-press fires on the first event after the
+//     500 ms threshold (a still-held pointer fires on release). With the
+//     host's timeline (Phase 1e) the arena is ticked every loop iteration
+//     and long-press fires exactly at the threshold.
 //   - A single tap fires immediately; if a second tap follows, the first tap
 //     has already fired (no tap-delay timer). The same-event second tap is
 //     suppressed for on_tap when on_double_tap fires.
@@ -156,6 +157,20 @@ pub const Recognizer = struct {
             .pinch => feedPinch(rec, ev),
             .rotate => feedRotate(rec, ev),
         };
+    }
+
+    /// Timeline tick (Phase 1e): fires time-based gestures precisely — a
+    /// long-press fires exactly at the threshold, no pointer event needed
+    /// (the host ticks the timeline every loop iteration). Other recognizers
+    /// are purely event-driven and tick nothing.
+    pub fn tick(rec: *Recognizer, now_ms: u64) ?Fire {
+        if (rec.kind != .long_press) return null;
+        if (rec.state != .possible or rec.long_press_fired) return null;
+        if (now_ms - rec.start_time < LONG_PRESS_MS) return null;
+        rec.long_press_fired = true;
+        rec.state = .idle;
+        rec.tracking = null;
+        return .long_press;
     }
 };
 
@@ -617,6 +632,27 @@ pub const GestureArena = struct {
     pub fn cancel(arena: *GestureArena) void {
         for (arena.recognizers[0..arena.count]) |*r| r.reset();
     }
+
+    /// Timeline tick: advance time-based recognizers (long-press precision).
+    pub fn tick(arena: *GestureArena, now_ms: u64) void {
+        for (arena.recognizers[0..arena.count]) |*r| {
+            if (r.tick(now_ms)) |f| {
+                switch (f) {
+                    .long_press => if (arena.callbacks.on_long_press) |cb| cb.fn_ptr(cb.userdata),
+                    else => {},
+                }
+            }
+        }
+    }
+
+    /// True while a time-based gesture is pending (a long-press waiting for
+    /// its deadline) — the host bounds its idle wait while this is true.
+    pub fn hasPendingTimeWork(arena: *const GestureArena) bool {
+        for (arena.recognizers[0..arena.count]) |r| {
+            if (r.kind == .long_press and r.state == .possible and !r.long_press_fired) return true;
+        }
+        return false;
+    }
 };
 
 // --- tests (recognizer state machines, synthetic timestamps) ---
@@ -830,6 +866,19 @@ test "arena: a pinch claims the interaction — no tap fires" {
     arena.feed(pev(.up, 150, 0, 60, 2));
     try std.testing.expectEqual(@as(u32, 1), rec.pinches);
     try std.testing.expectEqual(@as(u32, 0), taps);
+}
+
+test "arena: tick fires a long-press exactly at the threshold" {
+    var presses: u32 = 0;
+    var arena = GestureArena.init(.{ .on_long_press = .{ .fn_ptr = countCb, .userdata = &presses } });
+    arena.feed(pev(.down, 0, 0, 0, 0));
+    arena.tick(499);
+    try std.testing.expectEqual(@as(u32, 0), presses);
+    arena.tick(500); // the timeline drives it — no pointer event needed
+    try std.testing.expectEqual(@as(u32, 1), presses);
+    // a release after a tick-fired long-press does not fire it again
+    arena.feed(pev(.up, 0, 0, 600, 0));
+    try std.testing.expectEqual(@as(u32, 1), presses);
 }
 
 test "single-pointer recognizers ignore other pointers' events" {

@@ -25,6 +25,24 @@ pub const Paint = struct {
 
 // --- Emission (called from node paint with the kx context) ---
 
+// Canvas state + transforms (Phase 1e, ABI 0.3.0). save/restore must be
+// balanced within a frame; widgets wrap their children's paint in a pair.
+pub fn save(ctx: *kx.Ctx) void {
+    kx.c.kx_save(ctx);
+}
+
+pub fn restore(ctx: *kx.Ctx) void {
+    kx.c.kx_restore(ctx);
+}
+
+pub fn translate(ctx: *kx.Ctx, dx: f32, dy: f32) void {
+    kx.c.kx_translate(ctx, dx, dy);
+}
+
+pub fn scale(ctx: *kx.Ctx, sx: f32, sy: f32) void {
+    kx.c.kx_scale(ctx, sx, sy);
+}
+
 pub fn fillRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, color: Color) void {
     kx.c.kx_fill_rect(ctx, x, y, w, h, color);
 }

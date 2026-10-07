@@ -607,15 +607,24 @@ const DropdownState = struct {
     fn openBox(s: *DropdownState, n: *Node) void {
         s.open = true;
         for (n.children.items) |child| child.visible = true;
-        n.markDirty();
+        markMenuDirty(n);
         input.setOpenPopup(n);
     }
 
     fn close(s: *DropdownState, n: *Node) void {
         s.open = false;
         for (n.children.items) |child| child.visible = false;
-        n.markDirty();
+        markMenuDirty(n);
         input.setOpenPopup(null);
+    }
+
+    /// Damage covers the closed box AND the menu rows: the menu items paint
+    /// below the box (overflow), so the dirty-rect clip must include them
+    /// for the menu to appear (open) and disappear (close).
+    fn markMenuDirty(n: *Node) void {
+        var region = n.bounds;
+        for (n.children.items) |child| region = ui.node.rectUnion(region, child.bounds);
+        n.markDirtyRect(region);
     }
 };
 
@@ -1056,6 +1065,28 @@ test "dropdown opens on click, selects an item, closes on outside click" {
     try std.testing.expect(stateOf(DropdownState, dd).open);
     router.dispatchPointer(dd, .{ .phase = .down, .x = 500, .y = 500 });
     try std.testing.expect(!stateOf(DropdownState, dd).open);
+}
+
+test "dropdown: open/close damage covers the box AND the menu rows" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const dd = try dropdown(std.testing.allocator, &.{ "One", "Two", "Three" }, .{}, null);
+    defer dd.deinit();
+    dd.layout(.{ .x = 0, .y = 0, .w = 100, .h = 28 });
+    dd.clearDamage();
+    click(&router, dd, 50, 14); // open
+    try std.testing.expect(dd.damage_valid);
+    // box (0,0,100,28) ∪ 3 menu rows of 28 below → (0,0,100,112)
+    try std.testing.expectEqual(@as(f32, 0), dd.damage.x);
+    try std.testing.expectEqual(@as(f32, 0), dd.damage.y);
+    try std.testing.expectEqual(@as(f32, 100), dd.damage.w);
+    try std.testing.expectEqual(@as(f32, 112), dd.damage.h);
+    dd.clearDamage();
+    click(&router, dd, 50, 70); // select item 1 → close
+    try std.testing.expect(dd.damage_valid);
+    try std.testing.expectEqual(@as(f32, 0), dd.damage.x);
+    try std.testing.expectEqual(@as(f32, 112), dd.damage.h); // menu area erased
 }
 
 test "chip fires on_pressed / on_deleted by click zone" {
