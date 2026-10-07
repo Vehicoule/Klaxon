@@ -325,10 +325,11 @@ test "golden: boundText paints the current signal value" {
     const white = 0xFFFFFFFF;
     const sig = try ui.state.Signal(u32).init(std.testing.allocator, 7);
     defer sig.deinit();
-    const root = try BoundText(u32).text(std.testing.allocator, sig, fmtBoundCount, .{ .size = 24, .color = white });
-    defer root.deinit(); // the Renderer does NOT own the tree
+    // Deinit order: the tree BEFORE the renderer (ctx-bound resources rule).
     var r = try golden.Renderer.init(std.testing.allocator, 384, 64);
-    defer r.deinit();
+    defer r.deinit(); // runs LAST
+    const root = try BoundText(u32).text(std.testing.allocator, sig, fmtBoundCount, .{ .size = 24, .color = white });
+    defer root.deinit(); // runs FIRST (LIFO)
     root.layout(.{ .x = 0, .y = 0, .w = 384, .h = 64 });
     r.paint(root, bg);
     var frame = try r.readback(std.testing.allocator);

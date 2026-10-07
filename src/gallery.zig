@@ -799,11 +799,13 @@ test "gallery: the 10k list stays virtualized after a big scroll" {
 }
 
 test "golden: gallery paints the themed header over the animated bg" {
-    var g = try Gallery.init(std.testing.allocator);
-    defer g.deinit();
-    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // Deinit order matters: the tree BEFORE the renderer — the Image widget
+    // holds a ctx-bound resource (imageDestroy touches the ctx).
     var r = try golden.Renderer.init(std.testing.allocator, WINDOW_W, WINDOW_H);
-    defer r.deinit();
+    defer r.deinit(); // runs LAST
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit(); // runs FIRST (LIFO)
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
     r.paint(g.root, 0x000000FF);
     var f = try r.readback(std.testing.allocator);
     defer f.deinit();
