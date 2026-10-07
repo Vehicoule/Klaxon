@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-07 (Phase 0 — Foundations, COMPLETE)
+**Last updated**: 2026-10-07 (Phase 1b — Widgets P0, COMPLETE)
 
 ## Current phase
 
@@ -17,7 +17,10 @@
 
 **Exit criteria Phase 0: MET.** `zig build run` renders text via a widget tree. `zig build test` green. CI workflow in place.
 
-**Next: Phase 1a — state management (`ui/state.zig`: Signal/Memo/Effect/Store).**
+- **1a done** — `ui/state.zig`: fine-grained reactivity (Signal/Memo/Effect/Store, ADR-0009 C-ABI shape) + 6 tests. Merged as PR #2.
+- **1b done** — Widgets P0 (14): Row, Column, Stack, Grid, Padding, Center, Align (`alignTo`), ConstrainedBox, Text, RichText, Icon, Image, Container, Divider (`src/widgets/`, factory-over-Node pattern). Golden tooling: `src/golden.zig` renders any tree offscreen (raster, no window) and asserts pixels — structural assertions only (exact counts for solid rects, presence/absence for text/icons; glyph shapes are font-dependent). kx_skia ABI 0.2.0: `kx_measure_text` (real font metrics at layout time, process-global font mgr), `kx_draw_text` gains `bold`, image registry (`kx_image_create/draw/destroy` — create once, draw many, 0 per-frame allocs). ui core: `EdgeInsets`, `Alignment` (9-point), `MainAlign`/`CrossAlign`/`TextAlign`, `Constraints.loosen/deflateEdge/enforcedBy`, `flexLayout` v2 with free-space distribution. `zig build test` = 43 tests green; hello smoke + ReleaseSmall 6.0 Mo.
+
+**Next: Phase 1c — input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip).**
 
 ## What exists (code, this repo)
 
@@ -29,10 +32,12 @@
 - ✅ `src/ui.zig` — ui core re-exports
 - ✅ `src/demo.zig` — demo widgets (Box, Label, Column) + showcase tree + flex tests
 - ✅ `src/host.zig` — window, dirty-flag event loop (0-frame idle), stats, PPM dump
-- ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI), `src/kx_skia_common.cpp` (raster), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
+- ✅ `src/widgets/` — P0 widget library (14 widgets, Phase 1b) + `src/widgets.zig` re-exports
+- ✅ `src/golden.zig` — offscreen render + pixel assertions (golden tests; gallery/conformance reuse)
+- ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.2.0: raster, text+metrics, images, readback), `src/kx_skia_common.cpp` (raster + image registry), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
 - ✅ `.github/workflows/ci.yml` — build + test + smoke + size gate on ubuntu + macOS
-- ✅ `docs/` — planning set (ARCHITECTURE, ROADMAP, PERF-BUDGETS, STATUS, README, 8 ADRs)
+- ✅ `docs/` — planning set (ARCHITECTURE, ROADMAP, PERF-BUDGETS, STATUS, README, 9 ADRs)
 - ✅ `deps/` (gitignored) — built artifacts, macos-arm64
 
 ## What exists (from spikes — knowledge, not code)
@@ -53,9 +58,8 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 ## What does NOT exist (greenfield)
 
-- ❌ `widgets/` (to be written — Phase 1)
-- ❌ Gallery (to be written)
-- ❌ State management (signals) — Phase 1a, next
+- ❌ Gallery (to be written — Phase 1g)
+- ❌ Input widgets (Button, Toggle, ...) — Phase 1c, next
 - ❌ Gestures
 - ❌ Animations
 - ❌ Navigation
@@ -121,5 +125,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 5. ~~`kx_skia/` shim~~ done — raster renders a widget tree (PPM-verified); Metal compiles+links, runtime check pending on real GPU (`zig build run -- metal`)
 6. ~~`ui/` core + `host.zig`~~ done — node/paint/layout + dirty-flag event loop + stats
 7. ~~CI~~ done — workflow written (ubuntu + macOS); first run validates Linux build
-8. **Phase 1a: `ui/state.zig` — Signal/Memo/Effect/Store (fine-grained reactivity) + unit tests**
-9. Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider)
+8. ~~Phase 1a: `ui/state.zig` — Signal/Memo/Effect/Store (fine-grained reactivity) + unit tests~~ done (PR #2)
+9. ~~Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider) + golden tests~~ done (this PR)
+10. **Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip)**

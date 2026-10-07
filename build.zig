@@ -87,35 +87,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("kx_c", translate_kx.createModule());
 
-    // SDL3 (static lib).
-    exe.root_module.addObjectFile(b.path(b.fmt("deps/SDL/build-{s}/libSDL3.a", .{tag})));
-    if (is_macos) {
-        inline for (.{
-            "Cocoa", "IOKit", "CoreVideo", "CoreAudio", "AudioToolbox", "AudioUnit",
-            "ForceFeedback", "GameController", "Metal", "QuartzCore", "CoreHaptics",
-            "AVFoundation", "UniformTypeIdentifiers", "CoreBluetooth", "CoreFoundation",
-            "CoreGraphics", "Carbon",
-        }) |framework| {
-            exe.root_module.linkFramework(framework, .{});
-        }
-    }
-
-    // kx_skia shim + Skia static libs. The .a list is deterministic for our
-    // args.gn (scripts/fetch-deps.sh) — update both together if args.gn changes.
-    exe.root_module.linkLibrary(kx_skia);
-    const skia_libs = [_][]const u8{
-        "libfreetype2.a", "libharfbuzz.a", "libicu.a", "libpng.a", "libskcms.a",
-        "libskia.a", "libskparagraph.a", "libskshaper.a",
-        "libskunicode_core.a", "libskunicode_icu.a", "libzlib.a",
-    };
-    for (skia_libs) |lib| {
-        exe.root_module.addObjectFile(b.path(b.fmt("deps/skia/out/{s}/{s}", .{ tag, lib })));
-    }
-    if (is_macos) {
-        inline for (.{ "Metal", "Foundation", "CoreFoundation", "CoreGraphics", "CoreText", "QuartzCore", "IOSurface" }) |fw| {
-            exe.root_module.linkFramework(fw, .{});
-        }
-    }
+    linkRuntime(b, exe.root_module, kx_skia, is_macos, tag);
 
     b.installArtifact(exe);
 
@@ -129,11 +101,55 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+            .link_libcpp = true,
         }),
     });
     tests.root_module.addImport("sdl_c", translate_sdl.createModule());
     tests.root_module.addImport("kx_c", translate_kx.createModule());
+    // Golden tests render through the shim: the test exe links the same runtime.
+    linkRuntime(b, tests.root_module, kx_skia, is_macos, tag);
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+}
+
+/// Link the runtime (SDL3 static + kx_skia shim + Skia static libs + macOS
+/// frameworks) into a module. Shared by the exe and the test exe.
+fn linkRuntime(
+    b: *std.Build,
+    module: *std.Build.Module,
+    kx_skia: *std.Build.Step.Compile,
+    is_macos: bool,
+    tag: []const u8,
+) void {
+    // SDL3 (static lib).
+    module.addObjectFile(b.path(b.fmt("deps/SDL/build-{s}/libSDL3.a", .{tag})));
+    if (is_macos) {
+        inline for (.{
+            "Cocoa", "IOKit", "CoreVideo", "CoreAudio", "AudioToolbox", "AudioUnit",
+            "ForceFeedback", "GameController", "Metal", "QuartzCore", "CoreHaptics",
+            "AVFoundation", "UniformTypeIdentifiers", "CoreBluetooth", "CoreFoundation",
+            "CoreGraphics", "Carbon",
+        }) |framework| {
+            module.linkFramework(framework, .{});
+        }
+    }
+
+    // kx_skia shim + Skia static libs. The .a list is deterministic for our
+    // args.gn (scripts/fetch-deps.sh) — update both together if args.gn changes.
+    module.linkLibrary(kx_skia);
+    const skia_libs = [_][]const u8{
+        "libfreetype2.a", "libharfbuzz.a", "libicu.a", "libpng.a", "libskcms.a",
+        "libskia.a", "libskparagraph.a", "libskshaper.a",
+        "libskunicode_core.a", "libskunicode_icu.a", "libzlib.a",
+    };
+    for (skia_libs) |lib| {
+        module.addObjectFile(b.path(b.fmt("deps/skia/out/{s}/{s}", .{ tag, lib })));
+    }
+    if (is_macos) {
+        inline for (.{ "Metal", "Foundation", "CoreFoundation", "CoreGraphics", "CoreText", "QuartzCore", "IOSurface" }) |fw| {
+            module.linkFramework(fw, .{});
+        }
+    }
 }

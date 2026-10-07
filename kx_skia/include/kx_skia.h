@@ -4,7 +4,15 @@
 // Conventions:
 //   - Colors are 0xRRGGBBAA (R in the high byte, alpha in the low byte).
 //   - Coordinates are in pixels, origin top-left, y down.
-//   - All functions are thread-confined to the caller's thread (no internal locking).
+//   - All functions are thread-confined to the caller's thread (no internal
+//     locking). Exception: the font manager is process-global (lazily
+//     initialized once) because text metrics are needed before/without a ctx.
+//
+// Version history:
+//   0.1.0 — Phase 0: raster, clear, text, rect, rrect, readback.
+//   0.2.0 — Phase 1b: kx_draw_text gains `bold` (breaking), + kx_measure_text
+//           (text metrics for widget layout), + image registry (create once,
+//           draw many — no per-frame allocation).
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -44,12 +52,33 @@ void kx_end_frame(kx_ctx* ctx); // GPU backends: submit + present. Raster: flush
 
 // Drawing (current frame canvas; call between begin/end_frame).
 void kx_clear(kx_ctx* ctx, uint32_t rgba);
-// Simple unshaped text (hello / debug). Shaped text (SkParagraph) comes in Phase 1.
-void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, uint32_t rgba);
+// Simple unshaped text, y = baseline. Shaped text (SkParagraph) comes later.
+void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, bool bold, uint32_t rgba);
 // Fill an axis-aligned rectangle with a solid color.
 void kx_fill_rect(kx_ctx* ctx, float x, float y, float w, float h, uint32_t rgba);
 // Fill a rounded rectangle with a solid color.
 void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, uint32_t rgba);
+
+// Text metrics for widget layout. Ctx-independent: fonts are process-global.
+//   width   — advance width in pixels
+//   height  — ascent + descent
+//   ascent  — line top → baseline (positive)
+//   descent — baseline → line bottom (positive)
+typedef struct kx_text_metrics {
+    float width;
+    float height;
+    float ascent;
+    float descent;
+} kx_text_metrics;
+kx_text_metrics kx_measure_text(const char* text, float size, bool bold);
+
+// Images (per-ctx registry). Create once from RGBA pixels (memory order
+// R,G,B,A, unpremultiplied), draw many times — no per-frame allocation.
+// Returns 0 on failure. Destroy when the owner is done.
+uint64_t kx_image_create(kx_ctx* ctx, const uint8_t* rgba, int32_t width, int32_t height);
+void kx_image_destroy(kx_ctx* ctx, uint64_t image);
+// Draw an image stretched into the destination rect (nearest sampling).
+void kx_draw_image(kx_ctx* ctx, uint64_t image, float x, float y, float w, float h);
 
 // Readback — raster backend only. Copies the frame as RGBA (memory order R,G,B,A)
 // into dst. dst_size must be >= width*height*4. Returns false on GPU backends
