@@ -43,6 +43,16 @@ pub fn scale(ctx: *kx.Ctx, sx: f32, sy: f32) void {
     kx.c.kx_scale(ctx, sx, sy);
 }
 
+/// Clip the current frame to a rect (save + intersect clip).
+/// Balanced with clipReset (restores the canvas state).
+pub fn clipRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32) void {
+    kx.c.kx_clip_rect(ctx, x, y, w, h);
+}
+
+pub fn clipReset(ctx: *kx.Ctx) void {
+    kx.c.kx_clip_reset(ctx);
+}
+
 pub fn fillRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, color: Color) void {
     kx.c.kx_fill_rect(ctx, x, y, w, h, color);
 }

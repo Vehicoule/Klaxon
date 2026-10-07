@@ -24,9 +24,11 @@
 
 - **1d done** — Gestures: `ui/gestures.zig` (GestureArena + 7 recognizers: tap, double-tap, long-press, pan, swipe/fling, pinch, rotate; tuned constants: slop 12, tap 200ms, double-tap 300ms, long-press 500ms, swipe 500px/s) + `widgets/gestures.zig` (`GestureDetector` wrapper). Router is now multi-pointer (per-pointer capture, pointer ids + timestamps from SDL; pinch/rotate need them). P0 deviations documented in `docs/GESTURES.md` (long-press fires on first event after threshold — no platform timers; single tap fires immediately). Merged as PR #6. 97 tests green.
 
-- **1e done** — Animations: `ui/anim.zig` (Spring M3E closed-form — under/critical/overdamped, exact at any tick rate; Tween with Ease curves incl. M3 standard/emphasized cubic-bezier + custom fn; SIMD `@Vector(4,f32)` lerp4/lerpColor; Timeline: process-global, time-based, stagger, channels, priority + frame_overrun) + `widgets/anim.zig` (`AnimatedContainer` w/h/color, `AnimatedOffset`, `AnimatedScale` — signal-driven implicit animations, retarget cancels via channels, teardown cancels in-flight). Host: timeline tick every loop iteration, layout pass, **dirty-rect** (retained surface + damage accumulator + `kx_clip_rect`), **frame budget** 8.3 ms (~120 fps pacing; overrun pauses low-priority anims). kx_skia ABI **0.3.0** (additive): `kx_save/restore/translate/scale/clip_rect/clip_reset`. Node: `markDirtyRect` + root damage accumulator + `pre/post_children_paint` vtable hooks (canvas transform around children). Gestures: arena tick → long-press fires exactly at 500 ms (detector registers a timeline ticker). Widgets 26/50. 127 tests green. `docs/ANIMATION.md`.
+- **1e done** — Animations: `ui/anim.zig` (Spring M3E closed-form — under/critical/overdamped, exact at any tick rate; Tween with Ease curves incl. M3 standard/emphasized cubic-bezier + custom fn; SIMD `@Vector(4,f32)` lerp4/lerpColor; Timeline: process-global, time-based, stagger, channels, priority + frame_overrun) + `widgets/anim.zig` (`AnimatedContainer` w/h/color, `AnimatedOffset`, `AnimatedScale` — signal-driven implicit animations, retarget cancels via channels, teardown cancels in-flight). Host: timeline tick every loop iteration, layout pass, **dirty-rect** (retained surface + damage accumulator + `kx_clip_rect`), **frame budget** 8.3 ms (~120 fps pacing; overrun pauses low-priority anims). kx_skia ABI **0.3.0** (additive): `kx_save/restore/translate/scale/clip_rect/clip_reset`. Node: `markDirtyRect` + root damage accumulator + `pre/post_children_paint` vtable hooks (canvas transform around children). Gestures: arena tick → long-press fires exactly at 500 ms (detector registers a timeline ticker). Widgets 26/50. Merged as PR #7. 134 tests green. `docs/ANIMATION.md`.
 
-**Next: Phase 1f — scroll (ListView/GridView virtualized, ScrollView, Scrollbar).**
+- **1f done** — Scroll: `ui/scroll.zig` (ScrollState clamping + `visibleRange` virtualization math) + wheel input (`input.ScrollEvent` + router `dispatchScroll` bubbling; host maps `SDL_EVENT_MOUSE_WHEEL`). Widgets: `ListView` (virtualized vertical list — 10k items keep ~7 live child nodes; window diffs on scroll), `GridView` (virtualized grid, row-aligned window), `ScrollView` (single-child scroll), `Scrollbar` (drives any scrollable via the new vtable hooks `scroll_info`/`scroll_set_offset` — no widget-to-widget dependency). Scroll input: wheel + drag (moves bubble from items; only scrolls while the router has a capture — hover never scrolls) + programmatic (`scrollBy`/`setScrollOffset`). Children paint translated by -offset and clipped to the viewport (reuses the Phase 1e transform hooks: `pre/post_children_paint` + `map_paint_rect` + `pre_children_hit` — hit-testing and damage land at the visual position). VTable gained `on_scroll` + the scrollable hooks. Widgets 30/50. 153 tests green (incl. 10k-item virtualization + frame-time bound).
+
+**Next: Phase 1g — gallery (full showcase: all widgets, themes, animations, gestures, scroll 10k).**
 
 ## What exists (code, this repo)
 
@@ -38,12 +40,17 @@
 - ✅ `src/ui.zig` — ui core re-exports
 - ✅ `src/demo.zig` — demo widgets (Box, Label, Column) + showcase tree + flex tests
 - ✅ `src/host.zig` — window, dirty-flag event loop (0-frame idle), stats, PPM dump
-- ✅ `src/widgets/` — widget library (14 P0 + 8 input + 1 gesture + 3 animated = 26, Phases 1b/1c/1d/1e) + `src/widgets.zig` re-exports
+- ✅ `src/widgets/` — widget library (14 P0 + 8 input + 1 gesture + 3 animated + 4 scroll = 30, Phases 1b/1c/1d/1e/1f) + `src/widgets.zig` re-exports
 - ✅ `src/ui/input.zig` — input router (pointer/keyboard/popup, Phase 1c; multi-pointer capture, Phase 1d)
 - ✅ `src/ui/gestures.zig` — GestureArena + recognizers (Phase 1d) + `docs/GESTURES.md`
 - ✅ `src/widgets/gestures.zig` — GestureDetector wrapper (Phase 1d)
 - ✅ `src/ui/anim.zig` — Spring (M3E closed-form), Tween, curves, SIMD lerp, Timeline (Phase 1e) + `docs/ANIMATION.md`
 - ✅ `src/widgets/anim.zig` — AnimatedContainer / AnimatedOffset / AnimatedScale (Phase 1e)
+- ✅ `src/ui/scroll.zig` — ScrollState (clamping) + visibleRange (virtualization math) (Phase 1f)
+- ✅ `src/widgets/list_view.zig` — ListView (virtualized: 10k items → ~7 live nodes) (Phase 1f)
+- ✅ `src/widgets/grid_view.zig` — GridView (virtualized, row-aligned window) (Phase 1f)
+- ✅ `src/widgets/scroll_view.zig` — ScrollView (single-child scroll) (Phase 1f)
+- ✅ `src/widgets/scrollbar.zig` — Scrollbar (drives any scrollable via vtable hooks) (Phase 1f)
 - ✅ `src/golden.zig` — offscreen render + pixel assertions + interactive `Renderer` (golden tests; gallery/conformance reuse)
 - ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.3.0: raster, text+metrics, images, readback, canvas state/transforms/clip), `src/kx_skia_common.cpp` (raster + image registry + canvas state), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
@@ -70,7 +77,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 ## What does NOT exist (greenfield)
 
 - ❌ Gallery (to be written — Phase 1g)
-- ❌ Scroll (ListView/GridView virtualized, Scrollbar) — Phase 1f
+
 - ❌ Navigation
 - ❌ i18n
 - ❌ All 50 widgets
@@ -138,5 +145,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 9. ~~Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider) + golden tests~~ done (PR #3)
 10. ~~Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip) + input router~~ done (PR #4)
 11. ~~Phase 1d: gestures (GestureArena: tap/double-tap/long-press/pan/swipe/pinch/rotate) + GestureDetector~~ done (PR #6)
-12. ~~Phase 1e: animations (Spring M3E closed-form, Tween, SIMD, timeline, dirty-rect, frame budget) + AnimatedContainer/Offset/Scale~~ done (this PR)
-13. **Phase 1f: scroll (ListView/GridView virtualized, ScrollView, Scrollbar)**
+12. ~~Phase 1e: animations (Spring M3E closed-form, Tween, SIMD, timeline, dirty-rect, frame budget) + AnimatedContainer/Offset/Scale~~ done (PR #7)
+13. ~~Phase 1f: scroll (ListView/GridView virtualized, ScrollView, Scrollbar)~~ done (this PR)
+14. **Phase 1g: gallery (full showcase: all widgets, themes, animations, gestures, scroll 10k)**

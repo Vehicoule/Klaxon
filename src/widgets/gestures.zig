@@ -58,7 +58,13 @@ fn detectorPaint(n: *Node, ctx: *kx.Ctx) void {
 }
 fn detectorOnPointer(n: *Node, ev: input.PointerEvent) bool {
     const s = stateOf(DetectorState, n);
-    s.arena.feed(ev);
+    // Gestures are physical-finger semantics: feed the arena window-space
+    // coordinates — a scrollable scrolling under a held finger must not
+    // corrupt pan deltas, velocity or pinch distances.
+    var win = ev;
+    win.x = ev.raw_x;
+    win.y = ev.raw_y;
+    s.arena.feed(win);
     return true; // a gesture detector claims pointer events on its area
 }
 fn detectorDeinit(n: *Node) void {

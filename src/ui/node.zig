@@ -6,6 +6,7 @@ const kx = @import("../kx.zig");
 const paint_mod = @import("paint.zig");
 const layout_mod = @import("layout.zig");
 const input_mod = @import("input.zig");
+const scroll_mod = @import("scroll.zig");
 
 pub const Paint = paint_mod.Paint;
 pub const Constraints = layout_mod.Constraints;
@@ -56,6 +57,13 @@ pub const VTable = struct {
     on_pointer: ?*const fn (node: *Node, ev: input_mod.PointerEvent) bool = null,
     /// Keyboard input (Phase 1c) — delivered to the focused node's chain.
     on_key: ?*const fn (node: *Node, ev: input_mod.KeyEvent) bool = null,
+    /// Scroll (wheel) input (Phase 1f) — bubbles up until a scrollable
+    /// reports it handled.
+    on_scroll: ?*const fn (node: *Node, ev: input_mod.ScrollEvent) bool = null,
+    /// Scrollable interface (Phase 1f): the Scrollbar drives any scrollable
+    /// through these hooks — no direct widget-to-widget dependency.
+    scroll_info: ?*const fn (node: *Node) scroll_mod.ScrollInfo = null,
+    scroll_set_offset: ?*const fn (node: *Node, offset: f32) void = null,
     /// Paint-time wrapper around the children's paint (Phase 1e): called
     /// after this node's own paint, before the children's — e.g. save +
     /// translate for an animated offset. Must be balanced with
@@ -213,7 +221,64 @@ pub const Node = struct {
         return node;
     }
 
+    /// A hit-test result: the node + the point in the HIT NODE's parent
+    /// space (transformed subtrees map viewport coordinates through their
+    /// ancestors).
+    pub const MappedHit = struct { node: *Node, x: f32, y: f32 };
+
+    /// Hit-test that also returns the point in the hit node's parent space —
+    /// the router delivers pointer events with those local coordinates so
+    /// scrolled/transformed controls receive events at their visual position.
+    pub fn hitTestMapped(node: *Node, px: f32, py: f32) ?MappedHit {
+        if (!node.visible) return null;
+        const b = if (node.vtable.hit_bounds) |hb| hb(node) else node.bounds;
+        if (!b.contains(px, py)) return null;
+        var cx = px;
+        var cy = py;
+        if (node.vtable.pre_children_hit) |pre| {
+            const p = pre(node, px, py);
+            cx = p.x;
+            cy = p.y;
+        }
+        var i = node.children.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (node.children.items[i].hitTestMapped(cx, cy)) |hit| return hit;
+        }
+        return .{ .node = node, .x = px, .y = py };
+    }
+
+    /// Map a window-space point into `node`'s parent space: applies every
+    /// strict ancestor's pre_children_hit, root-first. Used to deliver
+    /// pointer events with local coordinates to captured nodes (Phase 1f).
+    pub fn mapPointToParentSpace(node: *Node, px: f32, py: f32) HitPoint {
+        var chain: [64]*Node = undefined;
+        var depth: usize = 0;
+        var n = node.parent;
+        while (n) |p| : (n = p.parent) {
+            if (depth < chain.len) {
+                chain[depth] = p;
+                depth += 1;
+            }
+        }
+        var x = px;
+        var y = py;
+        while (depth > 0) {
+            depth -= 1;
+            const a = chain[depth];
+            if (a.vtable.pre_children_hit) |pre| {
+                const p = pre(a, x, y);
+                x = p.x;
+                y = p.y;
+            }
+        }
+        return .{ .x = x, .y = y };
+    }
+
     pub fn deinit(node: *Node) void {
+        // Drop router references (capture/hover/focus/popup) BEFORE anything
+        // is freed — virtualized lists destroy captured items on scroll.
+        input_mod.releaseNode(node);
         for (node.children.items) |child| child.deinit();
         node.children.deinit();
         if (node.vtable.deinit) |d| d(node);
