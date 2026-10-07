@@ -602,6 +602,7 @@ pub const DropdownOptions = struct {
     radius: f32 = 6,
     padding: EdgeInsets = .{ .left = 10, .top = 4, .right = 10, .bottom = 4 },
     size: f32 = 16, // text size
+    initial_selected: usize = 0, // shown on the closed box before any selection
 };
 
 const DropdownState = struct {
@@ -801,6 +802,7 @@ fn nodeWithLabels(
         owned.deinit();
     }
     s.* = .{ .items = owned.*, .opts = opts, .on_changed = on_changed };
+    if (s.items.items.len > 0) s.selected = @min(opts.initial_selected, s.items.items.len - 1);
     node.state = s;
     return node; // labels owned by the state from here (no fallible ops after)
 }
@@ -1056,6 +1058,16 @@ test "text field deletes multi-byte codepoints correctly" {
     try std.testing.expectEqualStrings("a\u{25CF}", s.text());
     router.dispatchKey(.{ .kind = .key_down, .key = .backspace }); // deletes ● (3 bytes at once)
     try std.testing.expectEqualStrings("a", s.text());
+}
+
+test "dropdown: initial_selected picks the starting item (clamped)" {
+    const dd = try dropdown(std.testing.allocator, &.{ "A", "B", "C" }, .{ .initial_selected = 1 }, null);
+    defer dd.deinit();
+    try std.testing.expectEqual(@as(usize, 1), dropdownSelected(dd));
+    // out of range clamps to the last item
+    const dd2 = try dropdown(std.testing.allocator, &.{ "A", "B" }, .{ .initial_selected = 99 }, null);
+    defer dd2.deinit();
+    try std.testing.expectEqual(@as(usize, 1), dropdownSelected(dd2));
 }
 
 test "dropdown opens on click, selects an item, closes on outside click" {

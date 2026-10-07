@@ -94,6 +94,10 @@ pub const Node = struct {
     dirty: bool = true,
     layout_dirty: bool = true,
     visible: bool = true, // invisible subtrees are neither painted nor hit-tested
+    /// Flex weight on the parent's main axis (0 = natural size). Set by the
+    /// Expanded wrapper (widgets/layout.zig); the flex algorithms distribute
+    /// the REMAINING main space to flex children by weight.
+    flex: u32 = 0,
     vtable: *const VTable,
     state: ?*anyopaque = null,
     // Dirty-rect (Phase 1e): the root accumulates the damaged region — the

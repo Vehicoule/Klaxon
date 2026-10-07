@@ -33,10 +33,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .argv0 = .init(init.args),
             .environ = init.environ,
         });
-        defer {
-            testing.io_instance.deinit();
-            if (testing.allocator_instance.deinit() != 0) leaks += 1;
-        }
         testing.log_level = .warn;
         testing.environ = init.environ;
         std.debug.print("{d}/{d} {s}...", .{ run, total, test_fn.name });
@@ -51,6 +47,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
             },
         }
+        // Per-test cleanup (explicit: the instances are replaced each
+        // iteration, so the previous test's leak check must run now).
+        testing.io_instance.deinit();
+        if (testing.allocator_instance.deinit() != 0) leaks += 1;
     }
     if (ok == total) {
         std.debug.print("All {d} golden tests passed.\n", .{ok});

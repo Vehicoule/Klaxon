@@ -46,10 +46,12 @@ const Refs = struct {
     demo_button: *Node,
     theme_toggle: *Node,
     press_text: *Node,
+    scroll_view: *Node,
     list_10k: *Node,
     grid: *Node,
     text_field: *Node,
     dropdown: *Node,
+    chip: *Node,
 };
 
 /// ItemFactory context for the virtualized lists (theme read at build time).
@@ -80,6 +82,15 @@ pub const Gallery = struct {
     pick_sig: *state.Signal(StatusBuf),
     list_ctx: ListItemCtx,
     refs: Refs,
+    // Transient widget state captured before a theme rebuild and restored
+    // after it (a theme switch must not lose typed text, selections or
+    // scroll positions).
+    saved_tf: [128]u8 = std.mem.zeroes([128]u8),
+    saved_tf_len: usize = 0,
+    saved_dd: usize = 0,
+    saved_scroll: f32 = 0,
+    saved_list: f32 = 0,
+    saved_grid: f32 = 0,
 
     /// Heap-allocated: the tree holds pointers into the Gallery (item
     /// factories, callback userdata), so its address must be stable.
@@ -89,6 +100,12 @@ pub const Gallery = struct {
         g.* = undefined;
         g.allocator = allocator;
         g.tree = null; // no tree yet (undefined would NOT pick up the default)
+        g.saved_tf = std.mem.zeroes([128]u8);
+        g.saved_tf_len = 0;
+        g.saved_dd = 0;
+        g.saved_scroll = 0;
+        g.saved_list = 0;
+        g.saved_grid = 0;
         g.dark_mode = try state.Signal(bool).init(allocator, true);
         errdefer g.dark_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.bg);
@@ -132,9 +149,21 @@ pub const Gallery = struct {
 
     /// Swap the themed tree for a fresh one built from the current theme.
     /// The fresh tree is fully built before the old one is torn down.
+    /// Transient widget state (typed text, dropdown selection, scroll
+    /// offsets) is captured before the swap and restored after it.
     fn rebuild(g: *Gallery) !void {
         const theme = g.currentTheme();
         g.list_ctx.theme = theme;
+        const had_tree = g.tree != null;
+        if (had_tree) {
+            const tf_text = input_w.textFieldText(g.refs.text_field);
+            g.saved_tf_len = @min(tf_text.len, g.saved_tf.len - 1);
+            @memcpy(g.saved_tf[0..g.saved_tf_len], tf_text[0..g.saved_tf_len]);
+            g.saved_dd = input_w.dropdownSelected(g.refs.dropdown);
+            g.saved_scroll = widgets.scroll_view.scrollOffset(g.refs.scroll_view);
+            g.saved_list = widgets.list_view.scrollOffset(g.refs.list_10k);
+            g.saved_grid = widgets.grid_view.scrollOffset(g.refs.grid);
+        }
         const fresh = try buildTree(g, theme);
         if (g.tree) |old| {
             _ = g.root.remove(old);
@@ -143,6 +172,14 @@ pub const Gallery = struct {
         g.root.add(fresh);
         g.tree = fresh;
         g.bg_sig.set(theme.bg); // animates the root bg to the new theme
+        if (had_tree) {
+            // Restore the scroll offsets: lay out first (the scrollables
+            // need their viewport/content sizes to clamp correctly).
+            g.root.layout(g.root.bounds);
+            _ = widgets.scroll_view.setScrollOffset(g.refs.scroll_view, g.saved_scroll);
+            _ = widgets.list_view.setScrollOffset(g.refs.list_10k, g.saved_list);
+            _ = widgets.grid_view.setScrollOffset(g.refs.grid, g.saved_grid);
+        }
     }
 
     pub fn deinit(g: *Gallery) void {
@@ -178,6 +215,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     const col = try layout.column(a, .{ .gap = 12, .padding = 16 });
     col.add(try buildHeader(g, theme));
     const sv = try widgets.scroll_view.scrollView(a, .{});
+    g.refs.scroll_view = sv;
     const content = try layout.column(a, .{ .gap = 16 });
     content.add(try section(a, theme, "Input", try buildInputSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -186,7 +224,11 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Typography & media", try buildTypoSection(a, theme)));
     content.add(try section(a, theme, "Scroll", try buildScrollSection(g, theme)));
     sv.add(content);
-    col.add(sv);
+    // Expanded: the ScrollView takes exactly the height remaining after the
+    // header (a plain fill would overflow the window and hide the bottom).
+    const ex = try layout.expanded(a, 1);
+    ex.add(sv);
+    col.add(ex);
     return col;
 }
 
@@ -242,11 +284,13 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
         .accent = theme.accent,
     }));
     r2.add(try text_w.text(a, "Checkbox", .{ .size = 13, .color = theme.text }));
-    r2.add(try input_w.chip(a, "Chip", g.chip_sel, null, null, .{
+    const chip = try input_w.chip(a, "Chip", g.chip_sel, .{ .fn_ptr = chipCb, .userdata = g }, null, .{
         .bg = theme.surface_2,
         .bg_selected = theme.accent,
         .color = theme.text,
-    }));
+    });
+    g.refs.chip = chip;
+    r2.add(chip);
     col.add(r2);
     // Radio group
     const r3 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
@@ -277,6 +321,7 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
         .hint = theme.text_dim,
         .bg = theme.surface_2,
         .placeholder = "Type here...",
+        .initial = g.saved_tf[0..g.saved_tf_len], // restored across theme switches
     }, .{ .fn_ptr = echoCb, .userdata = g }, null);
     g.refs.text_field = tf;
     r5.add(tf);
@@ -288,6 +333,7 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
         .bg = theme.surface_2,
         .menu_bg = theme.surface,
         .color = theme.text,
+        .initial_selected = g.saved_dd, // restored across theme switches
     }, .{ .fn_ptr = pickCb, .userdata = g });
     g.refs.dropdown = dd;
     r6.add(dd);
@@ -561,6 +607,11 @@ fn pressCb(userdata: ?*anyopaque) void {
     g.press_count.set(g.press_count.peek() + 1);
 }
 
+fn chipCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.chip_sel.set(!g.chip_sel.peek()); // the Chip widget only fires callbacks
+}
+
 fn themeToggleCb(userdata: ?*anyopaque) void {
     galleryOf(userdata).rebuild() catch @panic("klaxon: out of memory");
 }
@@ -680,6 +731,15 @@ test "gallery: clicking the theme toggle rebuilds the tree in the other theme" {
     g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
     const old_tree = g.tree.?;
     const old_button = g.refs.demo_button;
+    // transient state to preserve: typed text + scroll offsets
+    const tf = g.refs.text_field.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = tf.x + 10, .y = tf.y + tf.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = tf.x + 10, .y = tf.y + tf.h / 2 });
+    router.dispatchKey(.{ .kind = .text_input, .text = "hello" });
+    try std.testing.expectEqualStrings("hello", input_w.textFieldText(g.refs.text_field));
+    _ = widgets.scroll_view.setScrollOffset(g.refs.scroll_view, 120);
+    _ = widgets.list_view.setScrollOffset(g.refs.list_10k, 200);
+    // toggle the theme
     const b = g.refs.theme_toggle.bounds;
     router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 });
     router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 });
@@ -691,6 +751,24 @@ test "gallery: clicking the theme toggle rebuilds the tree in the other theme" {
     // the fresh tree lays out clean and the list is still virtualized
     g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
     try std.testing.expect(g.refs.list_10k.children.items.len < 20);
+    // the transient state survived the rebuild
+    try std.testing.expectEqualStrings("hello", input_w.textFieldText(g.refs.text_field));
+    try std.testing.expectEqual(@as(f32, 120), widgets.scroll_view.scrollOffset(g.refs.scroll_view));
+    try std.testing.expectEqual(@as(f32, 200), widgets.list_view.scrollOffset(g.refs.list_10k));
+}
+
+test "gallery: the chip toggles its selection signal" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    try std.testing.expect(!g.chip_sel.peek());
+    const c = g.refs.chip.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = c.x + c.w / 2, .y = c.y + c.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = c.x + c.w / 2, .y = c.y + c.h / 2 });
+    try std.testing.expect(g.chip_sel.peek());
 }
 
 test "gallery: pressing the demo button updates the bound text" {
@@ -738,4 +816,17 @@ test "golden: gallery paints the themed header over the animated bg" {
     // the Input section's accent button is visible below the header
     const b = g.refs.demo_button.bounds;
     try std.testing.expectEqual(theme_mod.dark.accent, f.pixelAt(@intFromFloat(b.x + 4), @intFromFloat(b.y + b.h / 2)));
+}
+
+test "gallery: the scroll view fits the window (bottom reachable)" {
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const sv = g.refs.scroll_view;
+    // the ScrollView ends inside the window (Expanded sized it to the
+    // remaining height after the header)
+    try std.testing.expect(sv.bounds.y + sv.bounds.h <= @as(f32, @floatFromInt(WINDOW_H)));
+    // and its scroll range can reveal the very bottom of the content
+    _ = widgets.scroll_view.setScrollOffset(sv, 1_000_000); // clamps to max
+    try std.testing.expect(widgets.scroll_view.scrollOffset(sv) > 0);
 }

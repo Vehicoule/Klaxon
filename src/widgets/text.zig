@@ -112,6 +112,7 @@ pub fn BoundText(comptime T: type) type {
         fn dirtyCb(userdata: ?*anyopaque) void {
             const n: *Node = @ptrCast(@alignCast(userdata.?));
             n.markLayoutDirty(); // the text (and its size) changed
+            n.markDirty(); // wake the dirty-flag render path (idle repaint)
         }
         fn deinit(n: *Node) void {
             const s: *State = @ptrCast(@alignCast(n.state.?));
@@ -306,8 +307,10 @@ test "boundText: follows the signal and re-layouts on change" {
     try std.testing.expectApproxEqAbs(m1.width, s1.w, 0.01);
     try std.testing.expectApproxEqAbs(m1.height, s1.h, 0.01);
     node.layout_dirty = false;
+    node.dirty = false;
     sig.set(12345); // value changed → the node must re-layout (size changes)
     try std.testing.expect(node.layout_dirty);
+    try std.testing.expect(node.dirty); // and repaint (idle host renders only when dirty)
     const m2 = ui.paint.measureText("Pressed 12345 times", 16, false);
     const s2 = node.measure(.{ .max_w = 400, .max_h = 20 });
     try std.testing.expectApproxEqAbs(m2.width, s2.w, 0.01);
