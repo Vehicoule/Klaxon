@@ -39,11 +39,9 @@
 
 | Widget | File | Tests |
 |---|---|---|
-| Row, Column | `widgets/row.zig`, `widgets/column.zig` | unit + golden |
-| Stack | `widgets/stack.zig` | unit + golden |
-| Grid | `widgets/grid.zig` | unit + golden |
+| Row, Column, Stack, Grid | `widgets/layout.zig` | unit + golden |
 | Padding, Center, Align, ConstrainedBox | `widgets/layout.zig` | unit + golden |
-| Text, RichText | `widgets/text.zig` | unit + golden (CJK, RTL, emoji) |
+| Text, RichText | `widgets/text.zig` | unit + golden (CJK/RTL/emoji land with i18n, Phase 2b) |
 | Icon | `widgets/icon.zig` | unit + golden |
 | Image | `widgets/image.zig` | unit + golden |
 | Container (bg + border + radius + padding) | `widgets/container.zig` | unit + golden |
@@ -53,14 +51,8 @@
 
 | Widget | File | Tests |
 |---|---|---|
-| Button | `widgets/button.zig` | unit + golden + state |
-| Toggle | `widgets/toggle.zig` | unit + golden + state |
-| Checkbox | `widgets/checkbox.zig` | unit + golden + state |
-| Radio | `widgets/radio.zig` | unit + golden + state |
-| Slider | `widgets/slider.zig` | unit + golden + state |
-| TextField | `widgets/text_field.zig` | unit + golden + IME |
-| Dropdown | `widgets/dropdown.zig` | unit + golden |
-| Chip | `widgets/chip.zig` | unit + golden |
+| Button, Toggle, Checkbox, Radio, Slider, Dropdown, Chip | `widgets/input.zig` | unit + golden + state |
+| TextField | `widgets/input.zig` | unit + golden + focus/editing (IME lands with i18n, Phase 2b) |
 
 ### 1d. Gestures (week 2-3)
 
@@ -317,7 +309,7 @@ Table, Tree, Calendar, DatePicker, ColorPicker, Avatar, Card, ExpansionPanel, St
 | `ARCHITECTURE.md` | This document (already written) |
 | `ROADMAP.md` | This document |
 | `PERF-BUDGETS.md` | Metrics, gates, methodology |
-| `adr/` | 8 ADRs (decisions with rationale) |
+| `adr/` | 9 ADRs (decisions with rationale) |
 | `STATE.md` | State management deep-dive |
 | `ANIMATION.md` | Animation system deep-dive |
 | `GESTURES.md` | Gesture system deep-dive |

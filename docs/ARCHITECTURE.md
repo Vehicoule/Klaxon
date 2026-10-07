@@ -32,7 +32,7 @@
 ├─────────────────────────────────────────────────────┤
 │  Widgets (Button, Text, ListView, Dialog, ...)       │  ← klaxon/src/widgets/
 ├─────────────────────────────────────────────────────┤
-│  UI core (Node tree, layout, gestures, anim, state) │  ← klaxon/src/ui/
+│  UI core (Node tree, layout, input, gestures, anim, state) │  ← klaxon/src/ui/
 ├─────────────────────────────────────────────────────┤
 │  Platform (host, events, lifecycle, integration)    │  ← klaxon/src/host.zig, klaxon/src/platform/
 ├─────────────────────────────────────────────────────┤
@@ -68,6 +68,7 @@ Window lifecycle, event loop (dirty-flag, 0-frame idle), GL/Vulkan/Metal/Dawn on
 | `gestures.zig` | GestureArena + recognizers: tap, double-tap, long-press, pan, swipe/fling, pinch, rotate |
 | `anim.zig` | Animation primitives: Spring (M3E physics), Tween (curves), staggered, hero transitions. SIMD `@Vector` for multi-property interpolation |
 | `state.zig` | Fine-grained reactivity: `Signal(T)`, `Memo(T)`, `Effect`. SolidJS-style dependency tracking |
+| `input.zig` | Input router: pointer/keyboard dispatch, capture (drags), hover, focus, popup barrier |
 | `navigator.zig` | Navigator 2.0 style: declarative page stack, push/pop/replace, transitions, deep links |
 | `semantics.zig` | Accessibility semantic tree (role, label, hint, actions, focus) |
 | `i18n.zig` | Internationalization: `tr(key)`, ARB locale files, RTL auto, pluralization, ICU date/number |
@@ -116,7 +117,7 @@ Each service: Zig interface in `klaxon/src/platform/` + native implementation pe
 
 ```
 kx_skia/
-├── include/kx_skia.h           ← C ABI (289 lines, stable contract)
+├── include/kx_skia.h           ← C ABI (103 lines, stable contract)
 └── src/
     ├── kx_skia_common.cpp      ← Shared: KxFontMgr, contexts, surfaces, readback, paint, para, image, path
     ├── kx_skia_platform.h      ← Platform interface: create_gpu_ctx(), create_onscreen_surface(), swapchain
