@@ -105,7 +105,9 @@ const icon_vtable = ui.node.VTable{ .measure = iconMeasure, .layout = iconLayout
 
 pub fn icon(allocator: std.mem.Allocator, name: IconName, opts: IconOptions) !*Node {
     const node = try Node.create(allocator, &icon_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(IconState);
+    errdefer allocator.destroy(s);
     var buf: [4]u8 = .{ 0, 0, 0, 0 }; // zeroed: buf[len] is the [:0] sentinel
     const len = try std.unicode.utf8Encode(codepoint(name), &buf);
     s.* = .{ .glyph = buf, .glyph_len = len, .opts = opts };

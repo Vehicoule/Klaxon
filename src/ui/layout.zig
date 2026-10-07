@@ -68,13 +68,16 @@ pub const Constraints = struct {
         };
     }
 
-    /// Apply additional constraints on top of these (ConstrainedBox).
+    /// Apply additional constraints on top of these (ConstrainedBox), Flutter's
+    /// BoxConstraints.enforce semantics: each additional limit is clamped into
+    /// the incoming range, so the result is always valid (min <= max) even when
+    /// the additional limits do not intersect the incoming ones.
     pub fn enforcedBy(c: Constraints, add: Constraints) Constraints {
         return .{
-            .min_w = @max(c.min_w, add.min_w),
-            .max_w = @min(c.max_w, add.max_w),
-            .min_h = @max(c.min_h, add.min_h),
-            .max_h = @min(c.max_h, add.max_h),
+            .min_w = std.math.clamp(add.min_w, c.min_w, c.max_w),
+            .max_w = std.math.clamp(add.max_w, c.min_w, c.max_w),
+            .min_h = std.math.clamp(add.min_h, c.min_h, c.max_h),
+            .max_h = std.math.clamp(add.max_h, c.min_h, c.max_h),
         };
     }
 
@@ -301,6 +304,18 @@ test "constraints enforcedBy intersects with additional constraints" {
     try std.testing.expectEqual(@as(f32, 60), e.max_w);
     try std.testing.expectEqual(@as(f32, 5), e.min_h);
     try std.testing.expectEqual(@as(f32, 50), e.max_h);
+}
+
+test "constraints enforcedBy clamps non-intersecting limits into range" {
+    // Parent allows at most 50 wide; the additional constraints request 80+.
+    const c = Constraints{ .max_w = 50, .max_h = 50 };
+    const e = c.enforcedBy(.{ .min_w = 80, .min_h = 80 });
+    try std.testing.expectEqual(@as(f32, 50), e.min_w); // clamped to the parent's max
+    try std.testing.expectEqual(@as(f32, 50), e.max_w);
+    try std.testing.expectEqual(@as(f32, 50), e.min_h);
+    try std.testing.expectEqual(@as(f32, 50), e.max_h);
+    try std.testing.expect(e.min_w <= e.max_w); // always a valid range
+    try std.testing.expect(e.min_h <= e.max_h);
 }
 
 test "constraints loosen zeroes the minimums" {

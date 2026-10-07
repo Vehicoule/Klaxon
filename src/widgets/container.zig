@@ -79,7 +79,9 @@ const container_vtable = ui.node.VTable{ .measure = containerMeasure, .layout = 
 
 pub fn container(allocator: std.mem.Allocator, opts: ContainerOptions) !*Node {
     const node = try Node.create(allocator, &container_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(ContainerState);
+    errdefer allocator.destroy(s);
     s.* = .{ .opts = opts };
     node.state = s;
     return node;

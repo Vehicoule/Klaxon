@@ -54,8 +54,11 @@ const text_vtable = ui.node.VTable{ .measure = textMeasure, .layout = textLayout
 
 pub fn text(allocator: std.mem.Allocator, str: []const u8, opts: TextOptions) !*Node {
     const node = try Node.create(allocator, &text_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(TextState);
+    errdefer allocator.destroy(s);
     const buf = try allocator.alloc(u8, str.len + 1);
+    errdefer allocator.free(buf);
     @memcpy(buf[0..str.len], str);
     buf[str.len] = 0;
     s.* = .{ .text = buf[0..str.len :0], .opts = opts };
@@ -123,21 +126,32 @@ fn richTextDeinit(n: *Node) void {
 const rich_text_vtable = ui.node.VTable{ .measure = richTextMeasure, .layout = richTextLayout, .paint = richTextPaint, .deinit = richTextDeinit };
 
 /// RichText — a single line of styled spans. Copies the span strings.
+/// Error-safe: spans are copied first; on failure everything is freed.
 pub fn richText(allocator: std.mem.Allocator, spans: []const TextSpan) !*Node {
-    const node = try Node.create(allocator, &rich_text_vtable);
-    const s = try allocator.create(RichTextState);
-    s.* = .{ .spans = std.array_list.Managed(SpanState).init(allocator) };
+    var owned = std.array_list.Managed(SpanState).init(allocator);
+    errdefer {
+        for (owned.items) |span| allocator.free(span.text);
+        owned.deinit();
+    }
     for (spans) |span| {
         const buf = try allocator.alloc(u8, span.text.len + 1);
         @memcpy(buf[0..span.text.len], span.text);
         buf[span.text.len] = 0;
-        s.spans.append(.{
+        owned.append(.{
             .text = buf[0..span.text.len :0],
             .size = span.size,
             .color = span.color,
             .bold = span.bold,
-        }) catch @panic("klaxon: out of memory");
+        }) catch {
+            allocator.free(buf);
+            return error.OutOfMemory;
+        };
     }
+    const node = try Node.create(allocator, &rich_text_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
+    const s = try allocator.create(RichTextState);
+    errdefer allocator.destroy(s);
+    s.* = .{ .spans = owned }; // moves the list (no fallible ops after this)
     node.state = s;
     return node;
 }

@@ -62,7 +62,9 @@ const flex_vtable = ui.node.VTable{ .measure = flexMeasure, .layout = flexLayout
 
 fn flex(allocator: std.mem.Allocator, axis: Axis, opts: FlexOptions) !*Node {
     const node = try Node.create(allocator, &flex_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(FlexState);
+    errdefer allocator.destroy(s);
     s.* = .{ .axis = axis, .opts = opts };
     node.state = s;
     return node;
@@ -116,7 +118,9 @@ const stack_vtable = ui.node.VTable{ .measure = stackMeasure, .layout = stackLay
 
 pub fn stack(allocator: std.mem.Allocator, opts: StackOptions) !*Node {
     const node = try Node.create(allocator, &stack_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(StackState);
+    errdefer allocator.destroy(s);
     s.* = .{ .opts = opts };
     node.state = s;
     return node;
@@ -234,7 +238,9 @@ const grid_vtable = ui.node.VTable{ .measure = gridMeasure, .layout = gridLayout
 
 pub fn grid(allocator: std.mem.Allocator, opts: GridOptions) !*Node {
     const node = try Node.create(allocator, &grid_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(GridState);
+    errdefer allocator.destroy(s);
     s.* = .{ .opts = opts };
     node.state = s;
     return node;
@@ -272,7 +278,9 @@ const padding_vtable = ui.node.VTable{ .measure = paddingMeasure, .layout = padd
 
 pub fn padding(allocator: std.mem.Allocator, insets: EdgeInsets) !*Node {
     const node = try Node.create(allocator, &padding_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(PaddingState);
+    errdefer allocator.destroy(s);
     s.* = .{ .insets = insets };
     node.state = s;
     return node;
@@ -310,7 +318,9 @@ const align_vtable = ui.node.VTable{ .measure = alignMeasure, .layout = alignLay
 /// Align (named alignTo — `align` is a Zig keyword).
 pub fn alignTo(allocator: std.mem.Allocator, opts: AlignOptions) !*Node {
     const node = try Node.create(allocator, &align_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(AlignState);
+    errdefer allocator.destroy(s);
     s.* = .{ .opts = opts };
     node.state = s;
     return node;
@@ -342,7 +352,12 @@ fn constrainedBoxMeasure(n: *Node, c: Constraints) Size {
     };
     const child_c = c.enforcedBy(add);
     var size = Size{};
-    if (n.children.items.len > 0) size = n.children.items[0].measure(child_c);
+    if (n.children.items.len > 0) {
+        size = n.children.items[0].measure(child_c);
+    } else {
+        // Empty box: still honors its own minimums (fixed-size spacer).
+        size = .{ .w = child_c.min_w, .h = child_c.min_h };
+    }
     return c.constrain(size);
 }
 fn constrainedBoxLayout(n: *Node, bounds: Rect) void {
@@ -356,7 +371,9 @@ const constrained_box_vtable = ui.node.VTable{ .measure = constrainedBoxMeasure,
 
 pub fn constrainedBox(allocator: std.mem.Allocator, opts: ConstrainedBoxOptions) !*Node {
     const node = try Node.create(allocator, &constrained_box_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(ConstrainedBoxState);
+    errdefer allocator.destroy(s);
     s.* = .{ .opts = opts };
     node.state = s;
     return node;
@@ -516,6 +533,34 @@ test "constrained box enforces min/max on the child" {
     root.layout(.{ .x = 0, .y = 0, .w = 50, .h = 20 });
     try std.testing.expectEqual(@as(f32, 50), child.bounds.w); // child fills the box
     try std.testing.expectEqual(@as(f32, 20), child.bounds.h);
+}
+
+test "constrained box with parent max below the requested min does not panic" {
+    // Parent allows at most 50 wide; the box requests min_w = 80 (no intersection).
+    const root = try constrainedBox(std.testing.allocator, .{ .min_w = 80, .min_h = 10 });
+    defer root.deinit();
+    root.add(try golden.solidBox(std.testing.allocator, 30, 10, 0xFF000000));
+    const size = root.measure(.{ .max_w = 50, .max_h = 50 });
+    try std.testing.expectEqual(@as(f32, 50), size.w); // clamped to the parent's max
+    try std.testing.expectEqual(@as(f32, 10), size.h);
+}
+
+test "empty constrained box honors its own minimums (spacer)" {
+    const root = try constrainedBox(std.testing.allocator, .{ .min_w = 50, .min_h = 20 });
+    defer root.deinit();
+    const size = root.measure(.{});
+    try std.testing.expectEqual(@as(f32, 50), size.w);
+    try std.testing.expectEqual(@as(f32, 20), size.h);
+}
+
+test "nested constrained boxes clamp to the outermost range" {
+    const outer = try constrainedBox(std.testing.allocator, .{ .min_w = 20, .max_w = 200 });
+    defer outer.deinit();
+    const inner = try constrainedBox(std.testing.allocator, .{ .min_w = 150 });
+    outer.add(inner);
+    const size = outer.measure(.{ .max_w = 100 });
+    // Outer enforces {20..100}; inner requests min 150 → clamped to 100.
+    try std.testing.expectEqual(@as(f32, 100), size.w);
 }
 
 test "golden: row paints children at exact positions" {

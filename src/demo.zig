@@ -62,7 +62,7 @@ fn labelPaint(n: *Node, ctx: *kx.Ctx) void {
     const s: *LabelState = @ptrCast(@alignCast(n.state.?));
     // Skia draws from the baseline: place it one ascent below the top.
     const m = ui.paint.measureText(s.text, s.size, false);
-    kx.c.kx_draw_text(ctx, s.text, n.bounds.x, n.bounds.y + m.ascent, s.size, false, s.color);
+    ui.paint.text(ctx, s.text, n.bounds.x, n.bounds.y + m.ascent, s.size, false, s.color);
 }
 fn labelDeinit(n: *Node) void {
     const s: *LabelState = @ptrCast(@alignCast(n.state.?));

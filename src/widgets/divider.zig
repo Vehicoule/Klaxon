@@ -14,7 +14,7 @@ const Color = ui.paint.Color;
 pub const DividerOptions = struct {
     horizontal: bool = true,
     thickness: f32 = 1,
-    color: Color = 0xFF444444,
+    color: Color = 0x444444FF, // opaque gray (0xRRGGBBAA)
     indent: f32 = 0,
     end_indent: f32 = 0,
 };
@@ -56,7 +56,9 @@ const divider_vtable = ui.node.VTable{ .measure = dividerMeasure, .layout = divi
 
 pub fn divider(allocator: std.mem.Allocator, opts: DividerOptions) !*Node {
     const node = try Node.create(allocator, &divider_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
     const s = try allocator.create(DividerState);
+    errdefer allocator.destroy(s);
     s.* = .{ .opts = opts };
     node.state = s;
     return node;

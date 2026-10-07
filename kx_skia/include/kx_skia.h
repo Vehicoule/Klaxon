@@ -10,9 +10,11 @@
 //
 // Version history:
 //   0.1.0 — Phase 0: raster, clear, text, rect, rrect, readback.
-//   0.2.0 — Phase 1b: kx_draw_text gains `bold` (breaking), + kx_measure_text
+//   0.2.0 — Phase 1b: + kx_draw_text_styled (bold-aware text), + kx_measure_text
 //           (text metrics for widget layout), + image registry (create once,
-//           draw many — no per-frame allocation).
+//           draw many — no per-frame allocation). Purely additive: the 0.1.0
+//           entry points keep their signatures (ADR-0009: breaking changes
+//           bump the major version; additive changes bump the minor).
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -53,7 +55,10 @@ void kx_end_frame(kx_ctx* ctx); // GPU backends: submit + present. Raster: flush
 // Drawing (current frame canvas; call between begin/end_frame).
 void kx_clear(kx_ctx* ctx, uint32_t rgba);
 // Simple unshaped text, y = baseline. Shaped text (SkParagraph) comes later.
-void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, bool bold, uint32_t rgba);
+void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, uint32_t rgba);
+// Bold-aware text variant (added in 0.2.0; kx_draw_text is unchanged for ABI
+// stability — it delegates with bold=false).
+void kx_draw_text_styled(kx_ctx* ctx, const char* text, float x, float y, float size, bool bold, uint32_t rgba);
 // Fill an axis-aligned rectangle with a solid color.
 void kx_fill_rect(kx_ctx* ctx, float x, float y, float w, float h, uint32_t rgba);
 // Fill a rounded rectangle with a solid color.

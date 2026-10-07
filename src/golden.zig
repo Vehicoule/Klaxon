@@ -58,23 +58,39 @@ pub const Frame = struct {
         return total - f.countColor(color);
     }
 
-    /// Count pixels exactly equal to `color` inside a rect.
+    /// Rect clipped to the frame (integer bounds).
+    fn clipToFrame(f: Frame, rect: Rect) Rect {
+        const x0 = @max(0, @as(i32, @intFromFloat(rect.x)));
+        const y0 = @max(0, @as(i32, @intFromFloat(rect.y)));
+        const x1 = @min(f.w, @as(i32, @intFromFloat(rect.x + rect.w)));
+        const y1 = @min(f.h, @as(i32, @intFromFloat(rect.y + rect.h)));
+        return .{
+            .x = @floatFromInt(x0),
+            .y = @floatFromInt(y0),
+            .w = @floatFromInt(@max(0, x1 - x0)),
+            .h = @floatFromInt(@max(0, y1 - y0)),
+        };
+    }
+
+    /// Count pixels exactly equal to `color` inside a rect (clipped to frame).
     pub fn countColorIn(f: Frame, rect: Rect, color: Color) u64 {
+        const r = f.clipToFrame(rect);
         var n: u64 = 0;
-        var y = @as(i32, @intFromFloat(rect.y));
-        while (y < @as(i32, @intFromFloat(rect.y + rect.h))) : (y += 1) {
-            var x = @as(i32, @intFromFloat(rect.x));
-            while (x < @as(i32, @intFromFloat(rect.x + rect.w))) : (x += 1) {
+        var y = @as(i32, @intFromFloat(r.y));
+        while (y < @as(i32, @intFromFloat(r.y + r.h))) : (y += 1) {
+            var x = @as(i32, @intFromFloat(r.x));
+            while (x < @as(i32, @intFromFloat(r.x + r.w))) : (x += 1) {
                 if (f.pixelAt(x, y) == color) n += 1;
             }
         }
         return n;
     }
 
-    /// Count pixels different from `color` inside a rect.
+    /// Count pixels different from `color` inside a rect (clipped to frame).
     pub fn countNotIn(f: Frame, rect: Rect, color: Color) u64 {
-        const w: u64 = @intCast(@as(i32, @intFromFloat(rect.w)));
-        const h: u64 = @intCast(@as(i32, @intFromFloat(rect.h)));
+        const r = f.clipToFrame(rect);
+        const w: u64 = @intCast(@as(i32, @intFromFloat(r.w)));
+        const h: u64 = @intCast(@as(i32, @intFromFloat(r.h)));
         return w * h - f.countColorIn(rect, color);
     }
 };

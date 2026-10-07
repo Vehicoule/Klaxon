@@ -115,7 +115,11 @@ void kx_clear(kx_ctx* ctx, uint32_t rgba) {
     if (ctx && ctx->canvas) ctx->canvas->clear(kx_to_skcolor(rgba));
 }
 
-void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, bool bold, uint32_t rgba) {
+void kx_draw_text(kx_ctx* ctx, const char* text, float x, float y, float size, uint32_t rgba) {
+    kx_draw_text_styled(ctx, text, x, y, size, false, rgba);
+}
+
+void kx_draw_text_styled(kx_ctx* ctx, const char* text, float x, float y, float size, bool bold, uint32_t rgba) {
     if (!ctx || !ctx->canvas || !text) return;
     SkFont font = kx_make_font(size, bold);
     SkPaint paint;
