@@ -81,7 +81,6 @@ test "golden: horizontal divider paints an exact line with indents" {
     const bg = 0x101010FF;
     const gray = 0xAAAAAAFF;
     const root = try divider(std.testing.allocator, .{ .thickness = 2, .color = gray, .indent = 10, .end_indent = 20 });
-    defer root.deinit();
     var frame = try golden.render(std.testing.allocator, root, 100, 20, bg);
     defer frame.deinit();
     // Line: x in [10, 80), thickness 2, vertically centered in the 20px bounds

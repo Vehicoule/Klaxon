@@ -114,7 +114,6 @@ test "golden: container paints fill + border exactly (radius 0)" {
     const blue = 0x0000FFFF;
     // Container fills the root; padding insets it to (10,10,100,100).
     const root = try layout_w.padding(std.testing.allocator, EdgeInsets.all(10));
-    defer root.deinit();
     const box = try container(std.testing.allocator, .{ .color = red, .border_color = blue, .border_width = 2 });
     root.add(box);
     var frame = try golden.render(std.testing.allocator, root, 120, 120, bg);
@@ -131,7 +130,6 @@ test "golden: container with a child paints the child on top of the fill" {
     const red = 0xFF0000FF;
     const green = 0x00FF00FF;
     const root = try container(std.testing.allocator, .{ .color = red });
-    defer root.deinit();
     root.add(try golden.solidBox(std.testing.allocator, 10, 10, green));
     var frame = try golden.render(std.testing.allocator, root, 40, 40, bg);
     defer frame.deinit();

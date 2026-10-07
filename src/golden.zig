@@ -20,8 +20,10 @@ pub const Frame = struct {
     w: i32,
     h: i32,
     allocator: std.mem.Allocator,
+    root: *Node, // owned: torn down before the ctx (widgets may hold ctx resources)
 
     pub fn deinit(f: *Frame) void {
+        f.root.deinit();
         f.allocator.free(f.pixels);
         kx.c.kx_destroy(f.ctx);
     }
@@ -78,6 +80,9 @@ pub const Frame = struct {
 };
 
 /// Lay out `root` over a w×h canvas, paint one frame on `bg`, read it back.
+/// Takes ownership of `root`: Frame.deinit tears the tree down BEFORE the ctx
+/// (widgets may hold ctx-bound GPU resources — destroying the ctx first is a
+/// use-after-free).
 pub fn render(allocator: std.mem.Allocator, root: *Node, w: i32, h: i32, bg: Color) !Frame {
     const ctx = kx.create(null, w, h, kx.c.KX_BACKEND_RASTER) orelse return error.KxCreateFailed;
     errdefer kx.c.kx_destroy(ctx);
@@ -91,7 +96,7 @@ pub fn render(allocator: std.mem.Allocator, root: *Node, w: i32, h: i32, bg: Col
     var ow: c_int = 0;
     var oh: c_int = 0;
     if (!kx.c.kx_readback_rgba(ctx, pixels.ptr, pixels.len, &ow, &oh)) return error.ReadbackFailed;
-    return .{ .ctx = ctx, .pixels = pixels, .w = w, .h = h, .allocator = allocator };
+    return .{ .ctx = ctx, .pixels = pixels, .w = w, .h = h, .allocator = allocator, .root = root };
 }
 
 // --- Test leaf: a solid rect (exact pixels at integer bounds) ---

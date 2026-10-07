@@ -91,7 +91,6 @@ test "golden: image draws exact pixels (nearest sampling, 2x upscale)" {
         0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // blue, white
     };
     const root = try image(std.testing.allocator, 2, 2, &src);
-    defer root.deinit();
     var frame = try golden.render(std.testing.allocator, root, 4, 4, bg);
     defer frame.deinit();
     try std.testing.expectEqual(@as(u64, 4), frame.countColor(red));

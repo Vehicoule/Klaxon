@@ -179,7 +179,6 @@ test "golden: text renders ink inside its bounds, none outside" {
     const bg = 0x101010FF;
     const white = 0xFFFFFFFF;
     const root = try text(std.testing.allocator, "Hi", .{ .size = 24, .color = white });
-    defer root.deinit();
     var frame = try golden.render(std.testing.allocator, root, 128, 64, bg);
     defer frame.deinit();
     const m = ui.paint.measureText("Hi", 24, false);
@@ -204,7 +203,6 @@ test "golden: rich text paints both spans" {
         .{ .text = "ab", .size = 24, .color = white },
         .{ .text = "cd", .size = 24, .color = red },
     });
-    defer rt.deinit();
     var frame = try golden.render(std.testing.allocator, rt, 128, 64, bg);
     defer frame.deinit();
     // White and red ink are both present (AA blends differ per span color).

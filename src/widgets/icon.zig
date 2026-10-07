@@ -134,7 +134,6 @@ test "golden: icon renders ink centered in its bounds" {
     const bg = 0x101010FF;
     const white = 0xFFFFFFFF;
     const root = try icon(std.testing.allocator, .circle, .{ .size = 24, .color = white });
-    defer root.deinit();
     var frame = try golden.render(std.testing.allocator, root, 64, 64, bg);
     defer frame.deinit();
     // ● (U+25CF) is covered by DejaVu/system fonts: ink must be present,

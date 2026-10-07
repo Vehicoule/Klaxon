@@ -523,7 +523,6 @@ test "golden: row paints children at exact positions" {
     const red = 0xFF0000FF;
     const blue = 0x0000FFFF;
     const root = try row(std.testing.allocator, .{ .gap = 8, .cross_align = .start });
-    defer root.deinit();
     root.add(try golden.solidBox(std.testing.allocator, 40, 20, red));
     root.add(try golden.solidBox(std.testing.allocator, 40, 20, blue));
     var frame = try golden.render(std.testing.allocator, root, 128, 64, bg);
@@ -539,7 +538,6 @@ test "golden: padding insets the child (fill semantics)" {
     const bg = 0x101010FF;
     const green = 0x00FF00FF;
     const root = try padding(std.testing.allocator, EdgeInsets.all(8));
-    defer root.deinit();
     root.add(try golden.solidBox(std.testing.allocator, 32, 32, green));
     var frame = try golden.render(std.testing.allocator, root, 64, 64, bg);
     defer frame.deinit();
@@ -552,7 +550,6 @@ test "golden: center places the child at the exact center" {
     const bg = 0x101010FF;
     const green = 0x00FF00FF;
     const root = try center(std.testing.allocator);
-    defer root.deinit();
     root.add(try golden.solidBox(std.testing.allocator, 20, 20, green));
     var frame = try golden.render(std.testing.allocator, root, 64, 64, bg);
     defer frame.deinit();
