@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-07 (Phase 1b — Widgets P0, COMPLETE)
+**Last updated**: 2026-10-07 (Phase 1c — Input widgets, COMPLETE)
 
 ## Current phase
 
@@ -20,7 +20,9 @@
 - **1a done** — `ui/state.zig`: fine-grained reactivity (Signal/Memo/Effect/Store, ADR-0009 C-ABI shape) + 6 tests. Merged as PR #2.
 - **1b done** — Widgets P0 (14): Row, Column, Stack, Grid, Padding, Center, Align (`alignTo`), ConstrainedBox, Text, RichText, Icon, Image, Container, Divider (`src/widgets/`, factory-over-Node pattern). Golden tooling: `src/golden.zig` renders any tree offscreen (raster, no window) and asserts pixels — structural assertions only (exact counts for solid rects, presence/absence for text/icons; glyph shapes are font-dependent). kx_skia ABI 0.2.0 (purely additive, ADR-0009): `kx_draw_text_styled` (bold-aware text; `kx_draw_text` unchanged), `kx_measure_text` (real font metrics at layout time, process-global font mgr), image registry (`kx_image_create/draw/destroy` — create once, draw many, 0 per-frame allocs). ui core: `EdgeInsets`, `Alignment` (9-point), `MainAlign`/`CrossAlign`/`TextAlign`, `Constraints.loosen/deflateEdge/enforcedBy`, `flexLayout` v2 with free-space distribution. `zig build test` = 43 tests green; hello smoke + ReleaseSmall 6.0 Mo.
 
-**Next: Phase 1c — input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip).**
+- **1c done** — Input system + 8 input widgets (22/50). `ui/input.zig`: `InputRouter` — pointer dispatch (hit-test → deepest node, capture for drags, bubbling until handled), hover enter/leave, keyboard focus routing, open-popup barrier (click outside closes + consumes). Events are platform-agnostic (`PointerEvent`/`KeyEvent`); the host maps SDL mouse/finger/text/key into them. `Node.visible` (invisible subtrees skip paint + hit-test) and `VTable.on_pointer`/`on_key` (optional, backward compatible). Widgets (`src/widgets/input.zig`): Button (pressed/hover states + onPressed), Toggle/Checkbox/Radio/Slider/Chip — signal-driven (Phase 1a), unsubscribe on deinit — TextField (focus, UTF-8 editing with multi-byte-safe backspace, placeholder, cursor, onChanged/onSubmitted), Dropdown (overlay menu as child nodes, `hitTestSubtree` for out-of-bounds popup children). Golden tooling grew `Renderer` for interactive multi-frame tests (dispatch input between frames). 78 tests green.
+
+**Next: Phase 1d — gestures (GestureArena: tap/double-tap/long-press/pan/swipe/pinch/rotate).**
 
 ## What exists (code, this repo)
 
@@ -32,8 +34,9 @@
 - ✅ `src/ui.zig` — ui core re-exports
 - ✅ `src/demo.zig` — demo widgets (Box, Label, Column) + showcase tree + flex tests
 - ✅ `src/host.zig` — window, dirty-flag event loop (0-frame idle), stats, PPM dump
-- ✅ `src/widgets/` — P0 widget library (14 widgets, Phase 1b) + `src/widgets.zig` re-exports
-- ✅ `src/golden.zig` — offscreen render + pixel assertions (golden tests; gallery/conformance reuse)
+- ✅ `src/widgets/` — widget library (14 P0 + 8 input = 22, Phases 1b/1c) + `src/widgets.zig` re-exports
+- ✅ `src/ui/input.zig` — input router (pointer/keyboard/popup, Phase 1c)
+- ✅ `src/golden.zig` — offscreen render + pixel assertions + interactive `Renderer` (golden tests; gallery/conformance reuse)
 - ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.2.0: raster, text+metrics, images, readback), `src/kx_skia_common.cpp` (raster + image registry), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
 - ✅ `.github/workflows/ci.yml` — build + test + smoke + size gate on ubuntu + macOS
@@ -59,8 +62,8 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 ## What does NOT exist (greenfield)
 
 - ❌ Gallery (to be written — Phase 1g)
-- ❌ Input widgets (Button, Toggle, ...) — Phase 1c, next
-- ❌ Gestures
+- ❌ Gestures (GestureArena) — Phase 1d, next
+- ❌ Animations (Spring/Tween, SIMD) — Phase 1e
 - ❌ Animations
 - ❌ Navigation
 - ❌ i18n
@@ -126,5 +129,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 6. ~~`ui/` core + `host.zig`~~ done — node/paint/layout + dirty-flag event loop + stats
 7. ~~CI~~ done — workflow written (ubuntu + macOS); first run validates Linux build
 8. ~~Phase 1a: `ui/state.zig` — Signal/Memo/Effect/Store (fine-grained reactivity) + unit tests~~ done (PR #2)
-9. ~~Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider) + golden tests~~ done (this PR)
-10. **Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip)**
+9. ~~Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider) + golden tests~~ done (PR #3)
+10. ~~Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip) + input router~~ done (this PR)
+11. **Phase 1d: gestures (GestureArena: tap/double-tap/long-press/pan/swipe/pinch/rotate)**

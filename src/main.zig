@@ -5,6 +5,7 @@
 const std = @import("std");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
+const input_mod = @import("ui/input.zig");
 const demo_mod = @import("demo.zig");
 const host_mod = @import("host.zig");
 
@@ -49,6 +50,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var host = try host_mod.Host.init(allocator, width, height, opts.backend, opts.ppm);
     defer host.deinit();
+    input_mod.setCurrent(&host.input); // the router is process-global (single-window P0)
 
     var demo = try demo_mod.buildTree(allocator);
     defer demo.deinit();
@@ -76,7 +78,7 @@ test "smoke" {
 test "widgets" {
     const widgets = @import("widgets.zig");
     std.testing.refAllDecls(widgets);
-    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider }) |mod| {
+    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input }) |mod| {
         std.testing.refAllDecls(mod);
     }
 }
