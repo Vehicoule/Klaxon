@@ -133,8 +133,16 @@ pub const Host = struct {
         while (!quit and host.stats.frames < max_frames) {
             const iter_start_ns = sdl.c.SDL_GetTicksNS();
             // Animations (1e): advance the timeline — active animations update
-            // signals → nodes mark dirty → the frame renders below.
-            host.timeline.tick(sdl.c.SDL_GetTicks());
+            // signals → nodes mark dirty → the frame renders below. The clock
+            // never runs past a queued event: a release stamped before a
+            // long-press deadline is processed before the deadline fires.
+            const now = sdl.c.SDL_GetTicks();
+            var peek: sdl.c.SDL_Event = undefined;
+            const tick_time: u64 = if (sdl.c.SDL_PeepEvents(&peek, 1, @intCast(sdl.c.SDL_PEEKEVENT), @intCast(sdl.c.SDL_EVENT_FIRST), @intCast(sdl.c.SDL_EVENT_LAST)) > 0)
+                @min(now, peek.common.timestamp / 1_000_000)
+            else
+                now;
+            host.timeline.tick(tick_time);
             var event: sdl.c.SDL_Event = undefined;
             if (root.dirty) {
                 // Active: drain events without blocking.
@@ -152,6 +160,16 @@ pub const Host = struct {
                         while (sdl.c.SDL_PollEvent(&event)) {
                             if (host.handleEvent(root, &event)) quit = true;
                         }
+                    }
+                }
+            } else if (host.timeline.hasTimedWork()) {
+                // Timed work pending (running animation / held pointer waiting
+                // for a long-press deadline): wake at the timeline's
+                // granularity (~240 Hz) instead of blocking indefinitely.
+                if (sdl.c.SDL_WaitEventTimeout(&event, 4)) {
+                    if (host.handleEvent(root, &event)) quit = true;
+                    while (sdl.c.SDL_PollEvent(&event)) {
+                        if (host.handleEvent(root, &event)) quit = true;
                     }
                 }
             } else {
@@ -182,11 +200,17 @@ pub const Host = struct {
         }
         host.frame_start_ns = sdl.c.SDL_GetTicksNS();
         kx.c.kx_begin_frame(host.ctx);
-        if (root.damage_valid) {
-            // Dirty-rect (Phase 1e): repaint the tree clipped to the damaged
-            // region — the surface is retained, untouched pixels stay.
+        // Dirty-rect is raster-only: the raster surface is retained between
+        // frames; GPU backends acquire a fresh drawable each frame (no
+        // retained pixels) → full repaint until retained composition lands.
+        const raster = kx.c.kx_backend_of(host.ctx) == kx.c.KX_BACKEND_RASTER;
+        if (raster and root.damage_valid) {
+            // Repaint the tree clipped to the damaged region — and clear the
+            // clip first (SkCanvas::clear is clip-aware): vacated pixels
+            // (moving widgets) are erased, not trailed.
             const d = root.damage;
             kx.c.kx_clip_rect(host.ctx, d.x, d.y, d.w, d.h);
+            kx.c.kx_clear(host.ctx, 0);
             root.paint(host.ctx);
             kx.c.kx_clip_reset(host.ctx);
         } else {

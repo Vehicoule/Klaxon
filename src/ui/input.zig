@@ -207,15 +207,25 @@ fn isDescendant(node: *Node, ancestor: *Node) bool {
 
 /// Deepest visible descendant of `node` containing the point — unlike
 /// Node.hitTest, intermediate bounds are not required to contain the point
-/// (popup children paint and hit outside their parent's bounds).
+/// (popup children paint and hit outside their parent's bounds). Paint
+/// transforms still apply (pre_children_hit) and the popup's own effective
+/// hit rect is hit_bounds-aware.
 fn hitTestSubtree(node: *Node, px: f32, py: f32) ?*Node {
     if (!node.visible) return null;
+    var cx = px;
+    var cy = py;
+    if (node.vtable.pre_children_hit) |pre| {
+        const p = pre(node, px, py);
+        cx = p.x;
+        cy = p.y;
+    }
     var i = node.children.items.len;
     while (i > 0) {
         i -= 1;
-        if (hitTestSubtree(node.children.items[i], px, py)) |hit| return hit;
+        if (hitTestSubtree(node.children.items[i], cx, cy)) |hit| return hit;
     }
-    if (node.bounds.contains(px, py)) return node;
+    const b = if (node.vtable.hit_bounds) |hb| hb(node) else node.bounds;
+    if (b.contains(px, py)) return node;
     return null;
 }
 

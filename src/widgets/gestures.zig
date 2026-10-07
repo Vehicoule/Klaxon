@@ -38,6 +38,11 @@ fn arenaTickCb(userdata: ?*anyopaque, now_ms: u64) void {
     arena.tick(now_ms);
 }
 
+fn arenaHasPendingCb(userdata: ?*anyopaque) bool {
+    const arena: *gestures.GestureArena = @ptrCast(@alignCast(userdata.?));
+    return arena.hasPendingTimeWork();
+}
+
 fn detectorMeasure(n: *Node, c: Constraints) Size {
     var size = Size{};
     if (n.children.items.len > 0) size = n.children.items[0].measure(c);
@@ -79,9 +84,14 @@ pub fn gestureDetector(allocator: std.mem.Allocator, opts: GestureDetectorOption
     errdefer allocator.destroy(s);
     s.* = .{ .arena = gestures.GestureArena.init(opts.callbacks) };
     // Register the arena as a timeline ticker: long-press fires precisely at
-    // the threshold (the host ticks the timeline every loop iteration).
+    // the threshold (the host ticks the timeline every loop iteration), and
+    // has_pending lets the host bound its idle wait while a pointer is held.
     if (anim.timeline()) |tl| {
-        const t = anim.Timeline.Ticker{ .fn_ptr = arenaTickCb, .userdata = &s.arena };
+        const t = anim.Timeline.Ticker{
+            .fn_ptr = arenaTickCb,
+            .userdata = &s.arena,
+            .has_pending = arenaHasPendingCb,
+        };
         tl.addTicker(t);
         s.ticker = t;
     }

@@ -644,6 +644,15 @@ pub const GestureArena = struct {
             }
         }
     }
+
+    /// True while a time-based gesture is pending (a long-press waiting for
+    /// its deadline) — the host bounds its idle wait while this is true.
+    pub fn hasPendingTimeWork(arena: *const GestureArena) bool {
+        for (arena.recognizers[0..arena.count]) |r| {
+            if (r.kind == .long_press and r.state == .possible and !r.long_press_fired) return true;
+        }
+        return false;
+    }
 };
 
 // --- tests (recognizer state machines, synthetic timestamps) ---

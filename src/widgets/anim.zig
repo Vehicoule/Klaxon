@@ -79,7 +79,11 @@ fn sizeEffectCb(userdata: ?*anyopaque) void {
         from[1] = sig.peek();
         to[1] = if (s.opts.height) |h| h.get() else from[1];
     }
-    if (@reduce(.And, from == to)) return;
+    if (@reduce(.And, from == to)) {
+        // Retargeted to the displayed value: stop the channel's animation.
+        if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.size_channel));
+        return;
+    }
     const tl = anim.timeline() orelse {
         if (s.w_sig) |sig| sig.set(to[0]); // no timeline: snap
         if (s.h_sig) |sig| sig.set(to[1]);
@@ -98,7 +102,11 @@ fn colorEffectCb(userdata: ?*anyopaque) void {
     const sig = s.color_sig orelse return;
     const from = anim.colorToVec4(sig.peek());
     const to = anim.colorToVec4(s.opts.color.?.get()); // target: tracked
-    if (@reduce(.And, from == to)) return;
+    if (@reduce(.And, from == to)) {
+        // Retargeted to the displayed value: stop the channel's animation.
+        if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.color_channel));
+        return;
+    }
     const tl = anim.timeline() orelse {
         sig.set(anim.vec4ToColor(to)); // no timeline: snap
         return;
@@ -232,7 +240,11 @@ fn offsetEffectCb(userdata: ?*anyopaque) void {
     const target = s.opts.offset.get(); // tracked
     const from: anim.Vec4 = .{ s.dx, s.dy, 0, 0 };
     const to: anim.Vec4 = .{ target.x, target.y, 0, 0 };
-    if (@reduce(.And, from == to)) return;
+    if (@reduce(.And, from == to)) {
+        // Retargeted to the displayed value: stop the channel's animation.
+        if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.channel));
+        return;
+    }
     const tl = anim.timeline() orelse {
         applyOffset(s, to); // no timeline: snap
         return;
@@ -267,6 +279,20 @@ fn offsetPostPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = n;
     ui.paint.restore(ctx);
 }
+/// The children paint at bounds + (dx, dy): hit area and damage follow.
+fn offsetHitBounds(n: *Node) Rect {
+    const s = stateOf(OffsetState, n);
+    const b = n.bounds;
+    return .{ .x = b.x + s.dx, .y = b.y + s.dy, .w = b.w, .h = b.h };
+}
+fn offsetPreChildrenHit(n: *Node, px: f32, py: f32) ui.node.HitPoint {
+    const s = stateOf(OffsetState, n);
+    return .{ .x = px - s.dx, .y = py - s.dy };
+}
+fn offsetMapPaintRect(n: *Node, rect: Rect) Rect {
+    const s = stateOf(OffsetState, n);
+    return .{ .x = rect.x + s.dx, .y = rect.y + s.dy, .w = rect.w, .h = rect.h };
+}
 fn offsetDeinit(n: *Node) void {
     const s = stateOf(OffsetState, n);
     if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.channel));
@@ -280,6 +306,9 @@ const offset_vtable = ui.node.VTable{
     .deinit = offsetDeinit,
     .pre_children_paint = offsetPrePaint,
     .post_children_paint = offsetPostPaint,
+    .map_paint_rect = offsetMapPaintRect,
+    .hit_bounds = offsetHitBounds,
+    .pre_children_hit = offsetPreChildrenHit,
 };
 
 pub fn animatedOffset(allocator: std.mem.Allocator, opts: AnimatedOffsetOptions) !*Node {
@@ -334,7 +363,11 @@ fn scaleEffectCb(userdata: ?*anyopaque) void {
     const target = s.opts.scale.get(); // tracked
     const from: anim.Vec4 = .{ s.factor, 0, 0, 0 };
     const to: anim.Vec4 = .{ target, 0, 0, 0 };
-    if (@reduce(.And, from == to)) return;
+    if (@reduce(.And, from == to)) {
+        // Retargeted to the displayed value: stop the channel's animation.
+        if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.channel));
+        return;
+    }
     const tl = anim.timeline() orelse {
         applyScale(s, to); // no timeline: snap
         return;
@@ -374,6 +407,31 @@ fn scalePostPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = n;
     ui.paint.restore(ctx);
 }
+/// The children paint scaled around the bounds' center: hit area and damage
+/// follow (a zero factor leaves a degenerate, unhittable rect).
+fn scaleHitBounds(n: *Node) Rect {
+    const s = stateOf(ScaleState, n);
+    return scaledRect(n.bounds, s.factor);
+}
+fn scalePreChildrenHit(n: *Node, px: f32, py: f32) ui.node.HitPoint {
+    const s = stateOf(ScaleState, n);
+    const b = n.bounds;
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    return .{ .x = cx + (px - cx) / s.factor, .y = cy + (py - cy) / s.factor };
+}
+fn scaleMapPaintRect(n: *Node, rect: Rect) Rect {
+    const s = stateOf(ScaleState, n);
+    const b = n.bounds;
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    return .{
+        .x = cx + (rect.x - cx) * s.factor,
+        .y = cy + (rect.y - cy) * s.factor,
+        .w = rect.w * s.factor,
+        .h = rect.h * s.factor,
+    };
+}
 fn scaleDeinit(n: *Node) void {
     const s = stateOf(ScaleState, n);
     if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.channel));
@@ -387,6 +445,9 @@ const scale_vtable = ui.node.VTable{
     .deinit = scaleDeinit,
     .pre_children_paint = scalePrePaint,
     .post_children_paint = scalePostPaint,
+    .map_paint_rect = scaleMapPaintRect,
+    .hit_bounds = scaleHitBounds,
+    .pre_children_hit = scalePreChildrenHit,
 };
 
 pub fn animatedScale(allocator: std.mem.Allocator, opts: AnimatedScaleOptions) !*Node {
@@ -429,6 +490,7 @@ test "animatedContainer: target change animates the display size (tween)" {
     try std.testing.expect(tl.hasActive());
     root.dirty = false;
     root.layout_dirty = false;
+    tl.tick(0); // lazy start
     tl.tick(50); // halfway
     try std.testing.expectApproxEqAbs(@as(f32, 25), root.measure(.{}).w, 0.01);
     try std.testing.expect(root.dirty and root.layout_dirty); // display change flags both
@@ -462,6 +524,7 @@ test "animatedContainer: retargeting mid-flight cancels the previous animation" 
     defer root.deinit();
     root.layout(.{ .x = 0, .y = 0, .w = 200, .h = 200 });
     w.set(40);
+    tl.tick(0); // lazy start
     tl.tick(50); // mid-flight at 25
     try std.testing.expectApproxEqAbs(@as(f32, 25), root.measure(.{}).w, 0.01);
     w.set(10); // retarget back: the size animation is replaced, not stacked
@@ -470,8 +533,32 @@ test "animatedContainer: retargeting mid-flight cancels the previous animation" 
         if (!a.done) active += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), active);
+    tl.tick(50); // the new tween starts here
     tl.tick(100); // 50 ms into the new tween (25 → 10)
     try std.testing.expectApproxEqAbs(@as(f32, 17.5), root.measure(.{}).w, 0.01);
+}
+
+test "animatedContainer: retargeting to the displayed value stops the animation" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    const w = try ui.state.Signal(f32).init(std.testing.allocator, 10);
+    defer w.deinit();
+    const root = try animatedContainer(std.testing.allocator, .{
+        .width = w,
+        .motion = .{ .tween = .{ .duration_ms = 100, .curve = .{ .ease = .linear } } },
+    });
+    defer root.deinit();
+    root.layout(.{ .x = 0, .y = 0, .w = 200, .h = 200 });
+    w.set(40); // animates 10 → 40
+    tl.tick(0); // lazy start
+    tl.tick(50); // displayed = 25
+    try std.testing.expectApproxEqAbs(@as(f32, 25), root.measure(.{}).w, 0.01);
+    w.set(25); // retarget to the displayed value: the animation must stop
+    try std.testing.expect(!tl.hasActive());
+    tl.tick(100); // nothing left running: the display stays at 25
+    try std.testing.expectApproxEqAbs(@as(f32, 25), root.measure(.{}).w, 0.01);
 }
 
 test "animatedContainer: deinit cancels in-flight animations (no UAF)" {
@@ -523,6 +610,7 @@ test "golden: animatedContainer color interpolates mid-animation" {
     try std.testing.expectEqual(red, f1.pixelAt(20, 20));
     // red → blue, halfway: channels at 50%
     color.set(blue);
+    tl.tick(0); // lazy start
     tl.tick(50);
     r.paint(root, bg);
     var f2 = try r.readback(std.testing.allocator);
@@ -560,6 +648,7 @@ test "golden: animatedOffset paints the child at the animated offset" {
     try std.testing.expectEqual(bg, f1.pixelAt(5, 5));
     // animate the offset to (10, 0); halfway the child sits at x=15
     off.set(.{ .x = 10, .y = 0 });
+    tl.tick(0); // lazy start
     tl.tick(50);
     try std.testing.expect(root.damage_valid);
     // damage covers the swept region: (10,10,20,20) ∪ (15,10,20,20)
@@ -586,6 +675,43 @@ test "animatedOffset: without a timeline the offset snaps" {
     const s = stateOf(OffsetState, root);
     try std.testing.expectEqual(@as(f32, 10), s.dx);
     try std.testing.expect(root.dirty);
+}
+
+test "animatedOffset: hit-testing lands on the visual position" {
+    anim.setCurrent(null);
+    const off = try ui.state.Signal(Offset).init(std.testing.allocator, .{});
+    defer off.deinit();
+    const root = try animatedOffset(std.testing.allocator, .{ .offset = off });
+    defer root.deinit();
+    // Child fills the offset node's bounds (fill semantics).
+    const child = try golden.solidBox(std.testing.allocator, 10, 10, 0x00FF00FF);
+    root.add(child);
+    root.layout(.{ .x = 10, .y = 10, .w = 10, .h = 10 });
+    off.set(.{ .x = 20, .y = 0 }); // child visually at (30, 10)
+    // hit at the visual position → the child; at the old (vacated) position
+    // and far outside → nothing (the offset node's hit area moved with it).
+    try std.testing.expectEqual(child, root.hitTest(35, 15).?);
+    try std.testing.expect(root.hitTest(15, 15) == null);
+    try std.testing.expect(root.hitTest(5, 5) == null);
+}
+
+test "animatedOffset: child damage maps to the visual position" {
+    anim.setCurrent(null);
+    const off = try ui.state.Signal(Offset).init(std.testing.allocator, .{});
+    defer off.deinit();
+    const root = try animatedOffset(std.testing.allocator, .{ .offset = off });
+    defer root.deinit();
+    const child = try golden.solidBox(std.testing.allocator, 10, 10, 0x00FF00FF);
+    root.add(child);
+    root.layout(.{ .x = 10, .y = 10, .w = 10, .h = 10 });
+    off.set(.{ .x = 20, .y = 0 }); // visual position (30, 10)
+    root.clearDamage();
+    child.markDirty(); // the child's bounds mapped through the transform
+    try std.testing.expect(root.damage_valid);
+    try std.testing.expectEqual(@as(f32, 30), root.damage.x);
+    try std.testing.expectEqual(@as(f32, 10), root.damage.y);
+    try std.testing.expectEqual(@as(f32, 10), root.damage.w);
+    try std.testing.expectEqual(@as(f32, 10), root.damage.h);
 }
 
 test "golden: animatedScale scales the child around its center" {

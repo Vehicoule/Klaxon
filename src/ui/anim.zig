@@ -96,31 +96,51 @@ pub const Spring = struct {
         const e = @exp(-omega0 * t);
         return ((v0 + omega0 * d0) - omega0 * (d0 + (v0 + omega0 * d0) * t)) * e;
     }
-
-    /// Slowest decay rate of the envelope (1/s) — used for settle estimates.
-    fn decayRate(s: Spring) f32 {
-        const k = @max(s.stiffness, 0.001);
-        const m = @max(s.mass, 0.001);
-        const omega0 = @sqrt(k / m);
-        const zeta = s.damping / (2 * @sqrt(k * m));
-        if (zeta < 1) return zeta * omega0;
-        if (zeta > 1) return omega0 * (zeta - @sqrt(zeta * zeta - 1));
-        return omega0;
-    }
 };
 
 /// Time (ms) for a spring animation to decay below 0.1 units on every lane.
-/// Computed once at play time from the initial state (per-lane amplitude).
+/// Computed once at play time from the initial state (per-lane envelope).
+/// The envelope is (coeff [+ polynomial factor]) * exp(-rate * t):
+///   - underdamped: pure exponential (sin/cos bounded by 1)
+///   - overdamped: two exponentials; the slow root dominates (both coeffs)
+///   - critical: (A + B·t)·e^(-ω0 t) — the polynomial factor is folded in
+///     via a fixed-point solve, so completion never snaps visibly.
 pub fn springSettleMs(spring: Spring, from: Vec4, to: Vec4, v0: Vec4) u32 {
-    const rate = spring.decayRate();
-    if (rate <= 0.0001) return 10_000; // undamped: never settles, cap
-    const omega0 = @sqrt(@max(spring.stiffness, 0.001) / @max(spring.mass, 0.001));
+    const k = @max(spring.stiffness, 0.001);
+    const m = @max(spring.mass, 0.001);
+    const omega0 = @sqrt(k / m);
+    const zeta = spring.damping / (2 * @sqrt(k * m));
+    if (zeta < 1e-4) return 10_000; // undamped: never settles, cap
     var max_ms: f32 = 0;
     inline for (0..4) |i| {
         const d0 = from[i] - to[i];
-        const amp = @max(@abs(d0), @abs(v0[i]) / omega0);
+        var amp: f32 = 0; // exponential coefficient
+        var lin: f32 = 0; // polynomial factor (critical damping only)
+        var rate: f32 = 0; // decay rate (1/s)
+        if (zeta < 1 - 1e-4) {
+            amp = @max(@abs(d0), @abs(v0[i]) / omega0);
+            rate = zeta * omega0;
+        } else if (zeta > 1 + 1e-4) {
+            const sq = @sqrt(zeta * zeta - 1);
+            const r1 = -omega0 * (zeta - sq); // slow root
+            const r2 = -omega0 * (zeta + sq); // fast root
+            const a = (v0[i] - r2 * d0) / (r1 - r2);
+            amp = @abs(a) + @abs(d0 - a); // both coefficients ride the slow root
+            rate = -r1;
+        } else {
+            amp = @abs(d0);
+            lin = @abs(v0[i]) + omega0 * @abs(d0);
+            rate = omega0;
+        }
         if (amp > 0.1) {
-            const t = @log(amp / 0.1) / rate;
+            var t = @log(amp / 0.1) / rate;
+            if (lin > 0) {
+                // Critical: solve (amp + lin·t)·e^(-rate·t) = 0.1 (fixed-point).
+                var j: u32 = 0;
+                while (j < 8) : (j += 1) {
+                    t = @log((amp + lin * t) / 0.1) / rate;
+                }
+            }
             max_ms = @max(max_ms, t * 1000);
         }
     }
@@ -273,7 +293,10 @@ pub const Animation = struct {
 
     kind: Kind,
     from: Vec4,
+    /// Start is lazy: the first tick assigns `start_ms = now + delay_ms`, so
+    /// the clock is always fresh at play time (no jump after an idle block).
     start_ms: u64 = 0,
+    started: bool = false,
     delay_ms: u32 = 0, // stagger (1e.4)
     priority: Priority = .high,
     /// Playing a new animation on the same channel cancels this one.
@@ -306,7 +329,7 @@ pub const Animation = struct {
     /// The animated value at `now_ms` (timeline clock). Pure — the tick rate
     /// never changes the result.
     pub fn valueAt(a: *const Animation, now_ms: u64) Vec4 {
-        if (now_ms < a.start_ms) return a.from; // delayed (stagger)
+        if (!a.started or now_ms < a.start_ms) return a.from; // not started / delayed
         const t_ms = now_ms - a.start_ms;
         return switch (a.kind) {
             .spring => |s| springValue(a.from, s.to, s.spring, s.v0, t_ms),
@@ -317,7 +340,7 @@ pub const Animation = struct {
     /// True once the animation has reached its final value (springs settle:
     /// the envelope decays below 0.1 units per lane).
     pub fn isComplete(a: *const Animation, now_ms: u64) bool {
-        if (now_ms < a.start_ms) return false;
+        if (!a.started or now_ms < a.start_ms) return false;
         const t_ms = now_ms - a.start_ms;
         return switch (a.kind) {
             .spring => |s| t_ms >= s.settle_ms,
@@ -388,6 +411,13 @@ pub const Timeline = struct {
     pub const Ticker = struct {
         fn_ptr: *const fn (userdata: ?*anyopaque, now_ms: u64) void,
         userdata: ?*anyopaque,
+        /// Optional: true while the subscriber has pending timed work (e.g. a
+        /// held pointer waiting for a long-press deadline) — the host uses it
+        /// to bound its idle wait.
+        has_pending: ?*const fn (userdata: ?*anyopaque) bool = null,
+        /// removeTicker marks inactive; tick compacts after the callbacks
+        /// (no index invalidation while user code runs).
+        active: bool = true,
     };
 
     pub fn init(allocator: std.mem.Allocator) Timeline {
@@ -412,8 +442,20 @@ pub const Timeline = struct {
         return false;
     }
 
+    /// True while timed work is pending: a running animation, or a ticker
+    /// with pending timed work (e.g. a held pointer). The host uses this to
+    /// bound its idle wait instead of blocking indefinitely.
+    pub fn hasTimedWork(tl: *const Timeline) bool {
+        if (tl.hasActive()) return true;
+        for (tl.tickers.items) |t| {
+            if (t.active and t.has_pending != null and t.has_pending.?(t.userdata)) return true;
+        }
+        return false;
+    }
+
     /// Register an animation. Same-channel animations are cancelled first
     /// (retargeting mid-flight). Returns the animation id (for cancel).
+    /// The start is lazy: the first tick assigns start_ms (fresh clock).
     pub fn play(tl: *Timeline, a: Animation) u32 {
         if (a.channel) |ch| {
             for (tl.animations.items) |*other| {
@@ -423,7 +465,6 @@ pub const Timeline = struct {
         var anim = a;
         anim.id = tl.next_id;
         tl.next_id += 1;
-        anim.start_ms = tl.last_now_ms + anim.delay_ms;
         tl.animations.append(anim) catch @panic("klaxon: out of memory");
         return anim.id;
     }
@@ -447,42 +488,71 @@ pub const Timeline = struct {
         tl.tickers.append(t) catch @panic("klaxon: out of memory");
     }
 
+    /// Mark a ticker inactive (removed by tick's compaction — safe to call
+    /// from inside a ticker callback).
     pub fn removeTicker(tl: *Timeline, t: Ticker) void {
-        var i: usize = 0;
-        while (i < tl.tickers.items.len) {
-            const cur = tl.tickers.items[i];
-            if (cur.fn_ptr == t.fn_ptr and cur.userdata == t.userdata) {
-                _ = tl.tickers.orderedRemove(i);
-            } else {
-                i += 1;
-            }
+        for (tl.tickers.items) |*cur| {
+            if (cur.fn_ptr == t.fn_ptr and cur.userdata == t.userdata) cur.active = false;
         }
     }
 
     /// Advance the timeline: tick subscribers, then every active animation
     /// (time-based evaluation — the tick rate never changes the result).
+    ///
+    /// Callback safety: user callbacks may play/cancel animations and
+    /// add/remove tickers. No element pointer is held across a callback —
+    /// animations are copied out and written back around the call, completed
+    /// animations are removed BEFORE their callbacks run, and inactive
+    /// tickers are compacted after the ticker pass.
     pub fn tick(tl: *Timeline, now_ms: u64) void {
         tl.last_now_ms = now_ms;
-        for (tl.tickers.items) |t| t.fn_ptr(t.userdata, now_ms);
+        // Tickers (re-read the list every step: callbacks may append).
+        var ti: usize = 0;
+        while (ti < tl.tickers.items.len) {
+            const t = tl.tickers.items[ti];
+            if (t.active) t.fn_ptr(t.userdata, now_ms);
+            ti += 1;
+        }
+        // Compact inactive tickers (after all callbacks — no index shifts).
+        var w: usize = 0;
+        for (tl.tickers.items) |t| {
+            if (t.active) {
+                tl.tickers.items[w] = t;
+                w += 1;
+            }
+        }
+        tl.tickers.items.len = w;
+        // Animations.
         var i: usize = 0;
         while (i < tl.animations.items.len) {
-            var a = &tl.animations.items[i];
+            var a = tl.animations.items[i]; // copy: callbacks may reallocate
             if (a.done) {
                 _ = tl.animations.swapRemove(i);
                 continue;
+            }
+            if (!a.started) {
+                a.started = true;
+                a.start_ms = now_ms + a.delay_ms;
+                tl.animations.items[i] = a;
             }
             if (a.priority == .low and tl.frame_overrun) {
                 i += 1; // paused while the frame budget is blown (1e.7)
                 continue;
             }
             if (a.isComplete(now_ms)) {
+                // Remove BEFORE the callbacks: they may play/cancel.
+                a.done = true;
+                tl.animations.items[i] = a;
+                _ = tl.animations.swapRemove(i);
                 if (a.on_update) |cb| cb.fn_ptr(cb.userdata, a.finalValue());
                 if (a.on_complete) |cb| cb.fn_ptr(cb.userdata);
-                _ = tl.animations.swapRemove(i);
-                continue;
+                continue; // swapRemove moved the last element into slot i
             }
             if (now_ms >= a.start_ms) {
+                tl.animations.items[i] = a; // persist the started flag
                 if (a.on_update) |cb| cb.fn_ptr(cb.userdata, a.valueAt(now_ms));
+            } else {
+                tl.animations.items[i] = a;
             }
             i += 1;
         }
@@ -533,6 +603,10 @@ test "spring: critically damped never overshoots and settles" {
         try std.testing.expect(s.displacement(100, 0, t) > -0.001);
     }
     try std.testing.expect(@abs(s.displacement(100, 0, 1.0)) < 1.0);
+    // the settle estimate folds in the polynomial factor: no visible snap
+    const settle = springSettleMs(s, .{ 100, 0, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 });
+    const t_settle: f32 = @as(f32, @floatFromInt(settle)) / 1000;
+    try std.testing.expect(@abs(s.displacement(100, 0, t_settle)) < 0.5);
 }
 
 test "spring: overdamped converges without oscillation" {
@@ -556,6 +630,7 @@ test "spring: SIMD value is per-lane exact" {
     var a = Animation{
         .kind = Animation.springAnim(.{ 100, 0, 50, 0 }, .{ 0, 0, 0, 0 }, Spring{}, .{ 0, 0, 0, 0 }),
         .from = .{ 100, 0, 50, 0 },
+        .started = true,
     };
     const v0 = a.valueAt(0);
     try std.testing.expectApproxEqAbs(@as(f32, 100), v0[0], 1e-3);
@@ -570,7 +645,7 @@ test "tween: endpoints exact, midpoint interpolated (linear)" {
     var a = Animation{
         .kind = Animation.tweenAnim(.{ 100, 30, 0, 0 }, 100, .{ .ease = .linear }),
         .from = .{ 0, 10, 0, 0 },
-        .start_ms = 0,
+        .started = true,
     };
     try std.testing.expectEqual(@as(Vec4, .{ 0, 10, 0, 0 }), a.valueAt(0));
     try std.testing.expectEqual(@as(Vec4, .{ 100, 30, 0, 0 }), a.valueAt(100));
@@ -677,7 +752,7 @@ test "timeline: tween plays, ticks, completes exactly once" {
     try std.testing.expectEqual(@as(u32, 3), rec.n);
 }
 
-test "timeline: stagger delays the start" {
+test "timeline: stagger delays the start (relative to the first tick)" {
     var tl = testTimeline();
     defer tl.deinit();
     var rec = Rec{};
@@ -687,11 +762,65 @@ test "timeline: stagger delays the start" {
         .delay_ms = 50,
         .on_update = .{ .fn_ptr = recUpdate, .userdata = &rec },
     });
+    tl.tick(0); // lazy start here: start_ms = 0 + 50
     tl.tick(25);
-    try std.testing.expectEqual(@as(u32, 0), rec.n); // not started
+    try std.testing.expectEqual(@as(u32, 0), rec.n); // not started (delay)
     tl.tick(100); // 50 ms into the tween
     try std.testing.expectEqual(@as(u32, 1), rec.n);
     try std.testing.expectApproxEqAbs(@as(f32, 50), rec.values[0], 1e-3);
+}
+
+test "timeline: lazy start — no jump after an idle gap" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    var rec = Rec{};
+    _ = tl.play(.{
+        .kind = Animation.tweenAnim(.{ 100, 0, 0, 0 }, 100, .{ .ease = .linear }),
+        .from = .{ 0, 0, 0, 0 },
+        .on_update = .{ .fn_ptr = recUpdate, .userdata = &rec },
+    });
+    // The timeline was last ticked long ago (idle block): the first tick
+    // starts the animation fresh — the value is `from`, not the end state.
+    tl.tick(10_000);
+    try std.testing.expectEqual(@as(u32, 1), rec.n);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), rec.values[0], 1e-3);
+    tl.tick(10_050);
+    try std.testing.expectApproxEqAbs(@as(f32, 50), rec.values[1], 1e-3);
+}
+
+const PlayCtx = struct { tl: *Timeline, played: u32 = 0 };
+
+fn playDuringUpdate(userdata: ?*anyopaque, v: Vec4) void {
+    _ = v;
+    const ctx: *PlayCtx = @ptrCast(@alignCast(userdata.?));
+    // A callback playing a new animation must not corrupt the tick
+    // (the list may reallocate while the tick iterates).
+    _ = ctx.tl.play(.{
+        .kind = Animation.tweenAnim(.{ 1, 0, 0, 0 }, 10, .{ .ease = .linear }),
+        .from = .{ 0, 0, 0, 0 },
+    });
+    ctx.played += 1;
+}
+
+test "timeline: callbacks may play animations mid-tick (no corruption)" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    var ctx = PlayCtx{ .tl = &tl };
+    var rec = Rec{};
+    _ = tl.play(.{
+        .kind = Animation.tweenAnim(.{ 100, 0, 0, 0 }, 100, .{ .ease = .linear }),
+        .from = .{ 0, 0, 0, 0 },
+        .on_update = .{ .fn_ptr = playDuringUpdate, .userdata = &ctx },
+        .on_complete = .{ .fn_ptr = recComplete, .userdata = &rec },
+    });
+    tl.tick(0);
+    try std.testing.expectEqual(@as(u32, 1), ctx.played); // played during tick
+    try std.testing.expect(tl.hasActive()); // the follow-up animation runs
+    tl.tick(100); // A completes (its on_complete fires), B is still running
+    try std.testing.expectEqual(@as(u32, 1), rec.completed);
+    try std.testing.expect(tl.hasActive());
+    tl.tick(200); // B completes too
+    try std.testing.expect(!tl.hasActive());
 }
 
 test "timeline: cancel stops the animation" {
@@ -724,7 +853,8 @@ test "timeline: playing on a busy channel cancels the previous animation" {
         .on_update = .{ .fn_ptr = recUpdate, .userdata = &rec_a },
         .on_complete = .{ .fn_ptr = recComplete, .userdata = &rec_a },
     });
-    tl.tick(50); // A halfway
+    tl.tick(0); // A starts (lazy), t=0 → 0
+    tl.tick(50); // A halfway → 50
     _ = tl.play(.{
         .kind = Animation.tweenAnim(.{ 200, 0, 0, 0 }, 100, .{ .ease = .linear }),
         .from = .{ 50, 0, 0, 0 },
@@ -732,13 +862,15 @@ test "timeline: playing on a busy channel cancels the previous animation" {
         .on_update = .{ .fn_ptr = recUpdate, .userdata = &rec_b },
         .on_complete = .{ .fn_ptr = recComplete, .userdata = &rec_b },
     });
-    tl.tick(100); // B at its midpoint
-    tl.tick(150); // B completes
-    try std.testing.expectEqual(@as(u32, 1), rec_a.n); // A cancelled after its first tick
+    tl.tick(50); // B starts (lazy), t=0 → 50
+    tl.tick(100); // B at its midpoint → 125
+    tl.tick(150); // B completes → 200
+    try std.testing.expectEqual(@as(u32, 2), rec_a.n); // A cancelled mid-flight
     try std.testing.expectEqual(@as(u32, 0), rec_a.completed); // never completed
-    try std.testing.expectEqual(@as(u32, 2), rec_b.n);
-    try std.testing.expectApproxEqAbs(@as(f32, 125), rec_b.values[0], 1e-3);
-    try std.testing.expectApproxEqAbs(@as(f32, 200), rec_b.values[1], 1e-3);
+    try std.testing.expectEqual(@as(u32, 3), rec_b.n);
+    try std.testing.expectApproxEqAbs(@as(f32, 50), rec_b.values[0], 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 125), rec_b.values[1], 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 200), rec_b.values[2], 1e-3);
     try std.testing.expectEqual(@as(u32, 1), rec_b.completed);
 }
 
@@ -779,6 +911,13 @@ fn testTicker(userdata: ?*anyopaque, now_ms: u64) void {
     ticker_last = now_ms;
 }
 
+var ticker_pending: bool = false;
+
+fn testTickerPending(userdata: ?*anyopaque) bool {
+    _ = userdata;
+    return ticker_pending;
+}
+
 test "timeline: tickers fire on every tick and can be removed" {
     var tl = testTimeline();
     defer tl.deinit();
@@ -791,6 +930,28 @@ test "timeline: tickers fire on every tick and can be removed" {
     tl.removeTicker(t);
     tl.tick(43);
     try std.testing.expectEqual(@as(u32, 1), ticker_calls);
+}
+
+test "timeline: hasTimedWork covers animations and pending tickers" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    try std.testing.expect(!tl.hasTimedWork());
+    ticker_pending = false;
+    tl.addTicker(.{ .fn_ptr = testTicker, .userdata = null, .has_pending = testTickerPending });
+    try std.testing.expect(!tl.hasTimedWork()); // ticker has nothing pending
+    ticker_pending = true;
+    try std.testing.expect(tl.hasTimedWork()); // pending long-press deadline
+    ticker_pending = false;
+    var rec = Rec{};
+    _ = tl.play(.{
+        .kind = Animation.tweenAnim(.{ 100, 0, 0, 0 }, 100, .{ .ease = .linear }),
+        .from = .{ 0, 0, 0, 0 },
+        .on_update = .{ .fn_ptr = recUpdate, .userdata = &rec },
+    });
+    try std.testing.expect(tl.hasTimedWork()); // running animation
+    tl.tick(0); // lazy start
+    tl.tick(1000); // completes
+    try std.testing.expect(!tl.hasTimedWork());
 }
 
 test "timeline: global setCurrent/timeline" {

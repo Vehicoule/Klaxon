@@ -62,7 +62,21 @@ pub const VTable = struct {
     /// post_children_paint (the canvas state is restored right after).
     pre_children_paint: ?*const fn (node: *Node, ctx: *kx.Ctx) void = null,
     post_children_paint: ?*const fn (node: *Node, ctx: *kx.Ctx) void = null,
+    /// Map a rect from this node's child space into its parent space — the
+    /// inverse of the paint transform (pre_children_paint). Dirty marks
+    /// under a transformed ancestor land at the child's VISIBLE position.
+    map_paint_rect: ?*const fn (node: *Node, rect: Rect) Rect = null,
+    /// Effective hit-test rect (defaults to bounds). Transformed widgets
+    /// return where their children actually paint.
+    hit_bounds: ?*const fn (node: *Node) Rect = null,
+    /// Map a point from this node's space into its children's coordinate
+    /// space (matches the paint transform, inverted). Hit-testing through a
+    /// transformed subtree lands on the visual position.
+    pre_children_hit: ?*const fn (node: *Node, px: f32, py: f32) HitPoint = null,
 };
+
+/// A point in a transformed coordinate space (hit-testing, Phase 1e).
+pub const HitPoint = struct { x: f32, y: f32 };
 
 pub const Node = struct {
     allocator: std.mem.Allocator,
@@ -107,30 +121,39 @@ pub const Node = struct {
         }
     }
 
-    fn damageRoot(node: *Node) *Node {
-        var root = node;
-        while (root.parent) |p| root = p;
-        return root;
-    }
-
     fn unionDamage(root: *Node, rect: Rect) void {
         if (rect.w <= 0 or rect.h <= 0) return;
         root.damage = if (root.damage_valid) rectUnion(root.damage, rect) else rect;
         root.damage_valid = true;
     }
 
-    /// Mark this node (and its ancestors) dirty. The node's own bounds are
-    /// unioned into the root's damage region (its content is stale there).
-    pub fn markDirty(node: *Node) void {
-        markDirtyUp(node);
-        unionDamage(damageRoot(node), node.bounds);
+    /// Map a rect (given in the node's parent space) up to the root, applying
+    /// every transformed ancestor's map_paint_rect, and union it into the
+    /// root's damage accumulator.
+    fn damageRectUp(node: *Node, rect: Rect) void {
+        var r = rect;
+        var n = node;
+        while (n.parent) |p| {
+            if (p.vtable.map_paint_rect) |m| r = m(p, r);
+            n = p;
+        }
+        unionDamage(n, r);
     }
 
-    /// Mark dirty + record an explicit damaged rect — e.g. an animated
-    /// offset sweeping old → new position: the union of both regions.
+    /// Mark this node (and its ancestors) dirty. The node's own bounds —
+    /// mapped to its visible position through any transformed ancestors —
+    /// are unioned into the root's damage region.
+    pub fn markDirty(node: *Node) void {
+        markDirtyUp(node);
+        damageRectUp(node, node.bounds);
+    }
+
+    /// Mark dirty + record an explicit damaged rect (given in the node's
+    /// parent space) — e.g. an animated offset sweeping old → new position:
+    /// the union of both regions.
     pub fn markDirtyRect(node: *Node, rect: Rect) void {
         markDirtyUp(node);
-        unionDamage(damageRoot(node), rect);
+        damageRectUp(node, rect);
     }
 
     /// Clear the root's damage accumulator (called by the host after painting).
@@ -167,14 +190,25 @@ pub const Node = struct {
         node.dirty = false;
     }
 
-    /// Deepest visible node containing the point (children are painted last, on top).
+    /// Deepest visible node containing the point (children are painted last,
+    /// on top). Transformed subtrees (animated offset/scale) hit-test at
+    /// their VISUAL position: hit_bounds + pre_children_hit mirror the paint
+    /// transform.
     pub fn hitTest(node: *Node, px: f32, py: f32) ?*Node {
         if (!node.visible) return null;
-        if (!node.bounds.contains(px, py)) return null;
+        const b = if (node.vtable.hit_bounds) |hb| hb(node) else node.bounds;
+        if (!b.contains(px, py)) return null;
+        var cx = px;
+        var cy = py;
+        if (node.vtable.pre_children_hit) |pre| {
+            const p = pre(node, px, py);
+            cx = p.x;
+            cy = p.y;
+        }
         var i = node.children.items.len;
         while (i > 0) {
             i -= 1;
-            if (node.children.items[i].hitTest(px, py)) |hit| return hit;
+            if (node.children.items[i].hitTest(cx, cy)) |hit| return hit;
         }
         return node;
     }
