@@ -51,11 +51,8 @@ pub const LabelState = struct {
 
 fn labelMeasure(n: *Node, c: Constraints) Size {
     const s: *LabelState = @ptrCast(@alignCast(n.state.?));
-    // Approximate metrics for Phase 0 — real text measurement (SkFont::measureText,
-    // SkParagraph) lands with the Text widget in Phase 1b.
-    const w = @as(f32, @floatFromInt(s.text.len)) * s.size * 0.5;
-    const h = s.size * 1.25;
-    return c.constrain(.{ .w = w, .h = h });
+    const m = ui.paint.measureText(s.text, s.size, false);
+    return c.constrain(.{ .w = m.width, .h = m.height });
 }
 fn labelLayout(n: *Node, bounds: Rect) void {
     _ = n;
@@ -64,7 +61,8 @@ fn labelLayout(n: *Node, bounds: Rect) void {
 fn labelPaint(n: *Node, ctx: *kx.Ctx) void {
     const s: *LabelState = @ptrCast(@alignCast(n.state.?));
     // Skia draws from the baseline: place it one ascent below the top.
-    kx.c.kx_draw_text(ctx, s.text, n.bounds.x, n.bounds.y + s.size, s.size, s.color);
+    const m = ui.paint.measureText(s.text, s.size, false);
+    ui.paint.text(ctx, s.text, n.bounds.x, n.bounds.y + m.ascent, s.size, false, s.color);
 }
 fn labelDeinit(n: *Node) void {
     const s: *LabelState = @ptrCast(@alignCast(n.state.?));
@@ -97,7 +95,7 @@ fn columnMeasure(n: *Node, c: Constraints) Size {
 }
 fn columnLayout(n: *Node, bounds: Rect) void {
     const s: *ColumnState = @ptrCast(@alignCast(n.state.?));
-    ui.layout.flexLayout(n, bounds, .vertical, s.gap, s.padding);
+    ui.layout.flexLayout(n, bounds, .vertical, s.gap, s.padding, .start, .stretch);
 }
 fn columnPaint(n: *Node, ctx: *kx.Ctx) void {
     const s: *ColumnState = @ptrCast(@alignCast(n.state.?));

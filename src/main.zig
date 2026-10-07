@@ -70,3 +70,13 @@ fn countNodes(node: *ui.node.Node) u64 {
 test "smoke" {
     try std.testing.expectEqual(@as(u64, 600), max_frames);
 }
+
+// Pull the widget library's tests into the test build (test discovery follows
+// referenced decls; refAllDecls on each module makes it deterministic).
+test "widgets" {
+    const widgets = @import("widgets.zig");
+    std.testing.refAllDecls(widgets);
+    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider }) |mod| {
+        std.testing.refAllDecls(mod);
+    }
+}

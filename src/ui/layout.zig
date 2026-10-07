@@ -58,11 +58,98 @@ pub const Constraints = struct {
         };
     }
 
+    /// Shrink the constraints by per-side insets (EdgeInsets).
+    pub fn deflateEdge(c: Constraints, e: EdgeInsets) Constraints {
+        return .{
+            .min_w = @max(0, c.min_w - e.hSum()),
+            .max_w = @max(0, c.max_w - e.hSum()),
+            .min_h = @max(0, c.min_h - e.vSum()),
+            .max_h = @max(0, c.max_h - e.vSum()),
+        };
+    }
+
+    /// Apply additional constraints on top of these (ConstrainedBox), Flutter's
+    /// BoxConstraints.enforce semantics: each additional limit is clamped into
+    /// the incoming range, so the result is always valid (min <= max) even when
+    /// the additional limits do not intersect the incoming ones.
+    pub fn enforcedBy(c: Constraints, add: Constraints) Constraints {
+        return .{
+            .min_w = std.math.clamp(add.min_w, c.min_w, c.max_w),
+            .max_w = std.math.clamp(add.max_w, c.min_w, c.max_w),
+            .min_h = std.math.clamp(add.min_h, c.min_h, c.max_h),
+            .max_h = std.math.clamp(add.max_h, c.min_h, c.max_h),
+        };
+    }
+
     /// Loosen the main axis (children may take any size along it).
     pub fn loosenMain(c: Constraints, axis: Axis) Constraints {
         return switch (axis) {
             .horizontal => .{ .min_w = 0, .max_w = c.max_w, .min_h = c.min_h, .max_h = c.max_h },
             .vertical => .{ .min_w = c.min_w, .max_w = c.max_w, .min_h = 0, .max_h = c.max_h },
+        };
+    }
+
+    /// Loosen both axes.
+    pub fn loosen(c: Constraints) Constraints {
+        return .{ .min_w = 0, .max_w = c.max_w, .min_h = 0, .max_h = c.max_h };
+    }
+};
+
+/// Insets on the four sides (Flutter's EdgeInsets).
+pub const EdgeInsets = struct {
+    left: f32 = 0,
+    top: f32 = 0,
+    right: f32 = 0,
+    bottom: f32 = 0,
+
+    pub fn all(v: f32) EdgeInsets {
+        return .{ .left = v, .top = v, .right = v, .bottom = v };
+    }
+
+    pub fn symmetric(horizontal: f32, vertical: f32) EdgeInsets {
+        return .{ .left = horizontal, .right = horizontal, .top = vertical, .bottom = vertical };
+    }
+
+    pub fn hSum(e: EdgeInsets) f32 {
+        return e.left + e.right;
+    }
+
+    pub fn vSum(e: EdgeInsets) f32 {
+        return e.top + e.bottom;
+    }
+};
+
+/// Main-axis alignment inside a flex container (Row/Column).
+pub const MainAlign = enum { start, center, end, space_between, space_around, space_evenly };
+
+/// Cross-axis alignment inside a flex container (Row/Column).
+pub const CrossAlign = enum { start, center, end, stretch };
+
+/// Horizontal text alignment (Text).
+pub const TextAlign = enum { left, center, right };
+
+/// 9-point alignment: x/y in [-1, 1] (-1 = top/left, 0 = center, +1 = bottom/right).
+pub const Alignment = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+
+    pub const top_left = Alignment{ .x = -1, .y = -1 };
+    pub const top_center = Alignment{ .x = 0, .y = -1 };
+    pub const top_right = Alignment{ .x = 1, .y = -1 };
+    pub const center_left = Alignment{ .x = -1, .y = 0 };
+    pub const center = Alignment{ .x = 0, .y = 0 };
+    pub const center_right = Alignment{ .x = 1, .y = 0 };
+    pub const bottom_left = Alignment{ .x = -1, .y = 1 };
+    pub const bottom_center = Alignment{ .x = 0, .y = 1 };
+    pub const bottom_right = Alignment{ .x = 1, .y = 1 };
+
+    /// Rect for a child of size `s` placed inside `bounds` per this alignment.
+    pub fn position(a: Alignment, bounds: Rect, s: Size) Rect {
+        return .{
+            .x = bounds.x + (bounds.w - s.w) * (a.x + 1) / 2,
+            .y = bounds.y + (bounds.h - s.h) * (a.y + 1) / 2,
+            .w = s.w,
+            .h = s.h,
         };
     }
 };
@@ -87,24 +174,87 @@ pub fn flexMeasure(node: *Node, c: Constraints, axis: Axis, gap: f32, padding: f
     return c.constrain(Size.fromMainCross(axis, main_total + padding * 2, cross_max + padding * 2));
 }
 
-/// Layout pass for a flex container: children are stacked along the main axis
-/// (gap + padding), stretched to the cross size, then recursively laid out.
-pub fn flexLayout(node: *Node, bounds: Rect, axis: Axis, gap: f32, padding: f32) void {
-    var cursor: f32 = padding;
+/// Layout pass for a flex container: children are measured, then placed along
+/// the main axis (gap + padding, free space distributed per `main_align`) and
+/// positioned on the cross axis per `cross_align` (default: stretch).
+/// Children are sized by their measure pass; the container never clips (P0).
+pub fn flexLayout(
+    node: *Node,
+    bounds: Rect,
+    axis: Axis,
+    gap: f32,
+    padding: f32,
+    main_align: MainAlign,
+    cross_align: CrossAlign,
+) void {
+    const n = node.children.items.len;
+    if (n == 0) return;
+    // Scratch for child sizes: stack for the common case, heap only for
+    // containers with > 32 children (keeps allocs_per_frame = 0 in practice).
+    var stack_buf: [32]Size = undefined;
+    const sizes: []Size = if (n <= stack_buf.len)
+        stack_buf[0..n]
+    else
+        node.allocator.alloc(Size, n) catch @panic("klaxon: out of memory");
+    defer if (n > stack_buf.len) node.allocator.free(sizes);
+
+    const inner_main = @max(0, bounds.main(axis) - padding * 2);
     const cross_avail = @max(0, bounds.cross(axis) - padding * 2);
-    for (node.children.items) |child| {
-        const remaining = @max(0, bounds.main(axis) - padding * 2 - cursor);
+
+    // Pass 1: measure every child with the full inner main axis available.
+    var natural_main: f32 = padding * 2;
+    for (node.children.items, 0..) |child, i| {
         const child_c = switch (axis) {
-            .horizontal => Constraints{ .max_w = remaining, .max_h = cross_avail },
-            .vertical => Constraints{ .max_w = cross_avail, .max_h = remaining },
+            .horizontal => Constraints{ .max_w = inner_main, .max_h = cross_avail },
+            .vertical => Constraints{ .max_w = cross_avail, .max_h = inner_main },
         };
-        const size = child.measure(child_c);
+        sizes[i] = child.measure(child_c);
+        natural_main += sizes[i].main(axis);
+    }
+    if (n > 1) natural_main += gap * @as(f32, @floatFromInt(n - 1));
+
+    // Free space distribution along the main axis.
+    const free = @max(0, bounds.main(axis) - natural_main);
+    var start: f32 = padding;
+    var extra_gap: f32 = 0;
+    switch (main_align) {
+        .start => {},
+        .center => start += free / 2,
+        .end => start += free,
+        .space_between => {
+            if (n > 1) extra_gap = free / @as(f32, @floatFromInt(n - 1));
+        },
+        .space_around => {
+            const nf: f32 = @floatFromInt(n);
+            start += free / (2 * nf);
+            extra_gap = free / nf;
+        },
+        .space_evenly => {
+            const nf: f32 = @floatFromInt(n + 1);
+            start += free / nf;
+            extra_gap = free / nf;
+        },
+    }
+
+    // Pass 2: place children.
+    var cursor = start;
+    for (node.children.items, 0..) |child, i| {
+        const s = sizes[i];
+        const cross_pos: f32 = switch (cross_align) {
+            .start, .stretch => padding,
+            .center => padding + (cross_avail - s.cross(axis)) / 2,
+            .end => padding + (cross_avail - s.cross(axis)),
+        };
+        const cross_size: f32 = if (cross_align == .stretch)
+            cross_avail
+        else
+            @min(s.cross(axis), cross_avail);
         const child_bounds = switch (axis) {
-            .horizontal => Rect{ .x = bounds.x + cursor, .y = bounds.y + padding, .w = size.w, .h = cross_avail },
-            .vertical => Rect{ .x = bounds.x + padding, .y = bounds.y + cursor, .w = cross_avail, .h = size.h },
+            .horizontal => Rect{ .x = bounds.x + cursor, .y = bounds.y + cross_pos, .w = s.w, .h = cross_size },
+            .vertical => Rect{ .x = bounds.x + cross_pos, .y = bounds.y + cursor, .w = cross_size, .h = s.h },
         };
         child.layout(child_bounds);
-        cursor += size.main(axis) + gap;
+        cursor += s.main(axis) + gap + extra_gap;
     }
 }
 
@@ -127,4 +277,66 @@ test "size main/cross by axis" {
     try std.testing.expectEqual(@as(f32, 40), s.cross(.horizontal));
     try std.testing.expectEqual(@as(f32, 40), s.main(.vertical));
     try std.testing.expectEqual(@as(f32, 30), s.cross(.vertical));
+}
+
+test "edge insets sums" {
+    const e = EdgeInsets{ .left = 2, .top = 4, .right = 6, .bottom = 8 };
+    try std.testing.expectEqual(@as(f32, 8), e.hSum());
+    try std.testing.expectEqual(@as(f32, 12), e.vSum());
+    try std.testing.expectEqual(@as(f32, 10), EdgeInsets.all(5).hSum());
+    try std.testing.expectEqual(@as(f32, 18), EdgeInsets.symmetric(3, 9).vSum()); // 9 + 9
+    try std.testing.expectEqual(@as(f32, 6), EdgeInsets.symmetric(3, 9).hSum()); // 3 + 3
+}
+
+test "constraints deflateEdge shrinks per side" {
+    const c = (Constraints{ .min_w = 10, .max_w = 100, .min_h = 10, .max_h = 100 })
+        .deflateEdge(.{ .left = 2, .top = 4, .right = 6, .bottom = 8 });
+    try std.testing.expectEqual(@as(f32, 2), c.min_w); // 10 - 8
+    try std.testing.expectEqual(@as(f32, 92), c.max_w); // 100 - 8
+    try std.testing.expectEqual(@as(f32, 0), c.min_h); // 10 - 12 → clamped to 0
+    try std.testing.expectEqual(@as(f32, 88), c.max_h); // 100 - 12
+}
+
+test "constraints enforcedBy intersects with additional constraints" {
+    const c = Constraints{ .min_w = 10, .max_w = 100, .min_h = 0, .max_h = 50 };
+    const e = c.enforcedBy(.{ .min_w = 40, .max_w = 60, .min_h = 5, .max_h = 200 });
+    try std.testing.expectEqual(@as(f32, 40), e.min_w);
+    try std.testing.expectEqual(@as(f32, 60), e.max_w);
+    try std.testing.expectEqual(@as(f32, 5), e.min_h);
+    try std.testing.expectEqual(@as(f32, 50), e.max_h);
+}
+
+test "constraints enforcedBy clamps non-intersecting limits into range" {
+    // Parent allows at most 50 wide; the additional constraints request 80+.
+    const c = Constraints{ .max_w = 50, .max_h = 50 };
+    const e = c.enforcedBy(.{ .min_w = 80, .min_h = 80 });
+    try std.testing.expectEqual(@as(f32, 50), e.min_w); // clamped to the parent's max
+    try std.testing.expectEqual(@as(f32, 50), e.max_w);
+    try std.testing.expectEqual(@as(f32, 50), e.min_h);
+    try std.testing.expectEqual(@as(f32, 50), e.max_h);
+    try std.testing.expect(e.min_w <= e.max_w); // always a valid range
+    try std.testing.expect(e.min_h <= e.max_h);
+}
+
+test "constraints loosen zeroes the minimums" {
+    const c = (Constraints{ .min_w = 10, .max_w = 100, .min_h = 20, .max_h = 50 }).loosen();
+    try std.testing.expectEqual(@as(f32, 0), c.min_w);
+    try std.testing.expectEqual(@as(f32, 100), c.max_w);
+    try std.testing.expectEqual(@as(f32, 0), c.min_h);
+    try std.testing.expectEqual(@as(f32, 50), c.max_h);
+}
+
+test "alignment position centers a child in bounds" {
+    const bounds = Rect{ .x = 10, .y = 20, .w = 100, .h = 50 };
+    const r = Alignment.center.position(bounds, .{ .w = 20, .h = 10 });
+    try std.testing.expectEqual(@as(f32, 50), r.x); // 10 + (100-20)/2
+    try std.testing.expectEqual(@as(f32, 40), r.y); // 20 + (50-10)/2
+    try std.testing.expectEqual(@as(f32, 20), r.w);
+    try std.testing.expectEqual(@as(f32, 10), r.h);
+    const tl = Alignment.top_left.position(bounds, .{ .w = 20, .h = 10 });
+    try std.testing.expectEqual(@as(f32, 10), tl.x);
+    try std.testing.expectEqual(@as(f32, 20), tl.y);
+    const br = Alignment.bottom_right.position(bounds, .{ .w = 20, .h = 10 });
+    try std.testing.expectEqual(@as(f32, 90), br.x);
+    try std.testing.expectEqual(@as(f32, 60), br.y);
 }
