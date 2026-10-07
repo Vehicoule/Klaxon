@@ -379,7 +379,70 @@ pub fn constrainedBox(allocator: std.mem.Allocator, opts: ConstrainedBoxOptions)
     return node;
 }
 
+// --- Expanded (flex weight on the main axis) ---
+
+fn expandedMeasure(n: *Node, c: Constraints) Size {
+    var size = Size{};
+    if (n.children.items.len > 0) size = n.children.items[0].measure(c);
+    return c.constrain(size);
+}
+fn expandedLayout(n: *Node, bounds: Rect) void {
+    if (n.children.items.len == 0) return;
+    n.children.items[0].layout(bounds); // fill semantics
+}
+const expanded_vtable = ui.node.VTable{ .measure = expandedMeasure, .layout = expandedLayout, .paint = noopPaint };
+
+/// Expanded — the child takes a share (weight) of the flex container's
+/// REMAINING main-axis space (after non-flex children, gaps and padding).
+/// Flutter's Expanded. weight 1 = equal shares; weight 0 degrades to 1.
+pub fn expanded(allocator: std.mem.Allocator, weight: u32) !*Node {
+    const node = try Node.create(allocator, &expanded_vtable);
+    node.flex = @max(1, weight);
+    return node;
+}
+
 // --- tests ---
+
+test "expanded: column gives the flex child the remaining height" {
+    const root = try column(std.testing.allocator, .{ .gap = 10 });
+    defer root.deinit();
+    root.add(try golden.solidBox(std.testing.allocator, 50, 50, 0xFF000000)); // fixed
+    const ex = try expanded(std.testing.allocator, 1);
+    ex.add(try golden.solidBox(std.testing.allocator, 10, 10, 0x00FF0000)); // fills
+    root.add(ex);
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    // 200 - 50 (fixed) - 10 (gap) = 140 for the expanded child
+    try std.testing.expectEqual(@as(f32, 140), ex.bounds.h);
+    try std.testing.expectEqual(@as(f32, 60), ex.bounds.y); // below the fixed child
+    try std.testing.expectEqual(@as(f32, 100), ex.bounds.w); // cross stretch
+}
+
+test "expanded: weights split the remaining space 1:2" {
+    const root = try row(std.testing.allocator, .{ .gap = 0 });
+    defer root.deinit();
+    root.add(try golden.solidBox(std.testing.allocator, 40, 10, 0xFF000000)); // fixed
+    const e1 = try expanded(std.testing.allocator, 1);
+    e1.add(try golden.solidBox(std.testing.allocator, 10, 10, 0x00FF0000));
+    root.add(e1);
+    const e2 = try expanded(std.testing.allocator, 2);
+    e2.add(try golden.solidBox(std.testing.allocator, 10, 10, 0x0000FF00));
+    root.add(e2);
+    root.layout(.{ .x = 0, .y = 0, .w = 340, .h = 20 });
+    // remaining 300 → 100 (1/3) + 200 (2/3)
+    try std.testing.expectEqual(@as(f32, 100), e1.bounds.w);
+    try std.testing.expectEqual(@as(f32, 200), e2.bounds.w);
+    try std.testing.expectEqual(@as(f32, 140), e2.bounds.x);
+}
+
+test "expanded: unbounded main axis keeps the natural size" {
+    const root = try column(std.testing.allocator, .{});
+    defer root.deinit();
+    const ex = try expanded(std.testing.allocator, 1);
+    ex.add(try golden.solidBox(std.testing.allocator, 30, 25, 0xFF000000));
+    root.add(ex);
+    const size = root.measure(.{}); // unbounded
+    try std.testing.expectEqual(@as(f32, 25), size.h); // natural, not stretched
+}
 
 test "row measure sums child widths + gap, cross is the max" {
     const root = try row(std.testing.allocator, .{ .gap = 10 });

@@ -66,6 +66,74 @@ pub fn text(allocator: std.mem.Allocator, str: []const u8, opts: TextOptions) !*
     return node;
 }
 
+// --- BoundText: a Text whose string follows a signal ---
+
+/// Text bound to a signal: the string is `fmt(sig.peek())`, reformatted and
+/// re-measured on every change (the size may change → markLayoutDirty, not
+/// just markDirty). `fmt` writes into the provided buffer and returns the
+/// slice used (the widget appends the null sentinel).
+pub fn BoundText(comptime T: type) type {
+    return struct {
+        const State = struct {
+            sig: *ui.state.Signal(T),
+            fmt: *const fn (T, []u8) []const u8,
+            opts: TextOptions,
+            buf: [128]u8 = undefined,
+        };
+
+        fn bound(n: *Node) [:0]const u8 {
+            const s: *State = @ptrCast(@alignCast(n.state.?));
+            const out = s.fmt(s.sig.peek(), &s.buf);
+            const len = @min(out.len, s.buf.len - 1);
+            s.buf[len] = 0;
+            return s.buf[0..len :0];
+        }
+
+        fn measure(n: *Node, c: Constraints) Size {
+            const s: *State = @ptrCast(@alignCast(n.state.?));
+            const m = ui.paint.measureText(bound(n), s.opts.size, s.opts.bold);
+            return c.constrain(.{ .w = m.width, .h = m.height });
+        }
+        fn layout(n: *Node, bounds: Rect) void {
+            _ = n;
+            _ = bounds; // leaf: bounds come from the parent
+        }
+        fn paint(n: *Node, ctx: *kx.Ctx) void {
+            const s: *State = @ptrCast(@alignCast(n.state.?));
+            const str = bound(n);
+            const m = ui.paint.measureText(str, s.opts.size, s.opts.bold);
+            const x = switch (s.opts.text_align) {
+                .left => n.bounds.x,
+                .center => n.bounds.x + (n.bounds.w - m.width) / 2,
+                .right => n.bounds.x + n.bounds.w - m.width,
+            };
+            ui.paint.text(ctx, str, x, n.bounds.y + m.ascent, s.opts.size, s.opts.bold, s.opts.color);
+        }
+        fn dirtyCb(userdata: ?*anyopaque) void {
+            const n: *Node = @ptrCast(@alignCast(userdata.?));
+            n.markLayoutDirty(); // the text (and its size) changed
+            n.markDirty(); // wake the dirty-flag render path (idle repaint)
+        }
+        fn deinit(n: *Node) void {
+            const s: *State = @ptrCast(@alignCast(n.state.?));
+            s.sig.unsubscribe(.{ .callback = .{ .fn_ptr = dirtyCb, .userdata = n } });
+            n.allocator.destroy(s);
+        }
+        const vtable = ui.node.VTable{ .measure = measure, .layout = layout, .paint = paint, .deinit = deinit };
+
+        pub fn text(allocator: std.mem.Allocator, sig: *ui.state.Signal(T), fmt: *const fn (T, []u8) []const u8, opts: TextOptions) !*Node {
+            const node = try Node.create(allocator, &vtable);
+            errdefer node.allocator.destroy(node); // no state yet
+            const s = try allocator.create(State);
+            errdefer allocator.destroy(s);
+            s.* = .{ .sig = sig, .fmt = fmt, .opts = opts };
+            node.state = s;
+            sig.subscribe(.{ .callback = .{ .fn_ptr = dirtyCb, .userdata = node } });
+            return node;
+        }
+    };
+}
+
 // --- RichText ---
 
 pub const TextSpan = struct {
@@ -223,4 +291,58 @@ test "golden: rich text paints both spans" {
     try std.testing.expect(frame.countNot(bg) > 0);
     try std.testing.expect(frame.countColor(white) > 0);
     try std.testing.expect(frame.countColor(red) > 0);
+}
+
+fn fmtBoundCount(v: u32, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Pressed {d} times", .{v}) catch "Pressed";
+}
+
+test "boundText: follows the signal and re-layouts on change" {
+    const sig = try ui.state.Signal(u32).init(std.testing.allocator, 1);
+    defer sig.deinit();
+    const node = try BoundText(u32).text(std.testing.allocator, sig, fmtBoundCount, .{ .size = 16, .color = 0xFFFFFFFF });
+    defer node.deinit();
+    const m1 = ui.paint.measureText("Pressed 1 times", 16, false);
+    const s1 = node.measure(.{ .max_w = 400, .max_h = 20 });
+    try std.testing.expectApproxEqAbs(m1.width, s1.w, 0.01);
+    try std.testing.expectApproxEqAbs(m1.height, s1.h, 0.01);
+    node.layout_dirty = false;
+    node.dirty = false;
+    sig.set(12345); // value changed → the node must re-layout (size changes)
+    try std.testing.expect(node.layout_dirty);
+    try std.testing.expect(node.dirty); // and repaint (idle host renders only when dirty)
+    const m2 = ui.paint.measureText("Pressed 12345 times", 16, false);
+    const s2 = node.measure(.{ .max_w = 400, .max_h = 20 });
+    try std.testing.expectApproxEqAbs(m2.width, s2.w, 0.01);
+    // no-op set: no re-layout
+    node.layout_dirty = false;
+    sig.set(12345);
+    try std.testing.expect(!node.layout_dirty);
+}
+
+test "golden: boundText paints the current signal value" {
+    const bg = 0x101010FF;
+    const white = 0xFFFFFFFF;
+    const sig = try ui.state.Signal(u32).init(std.testing.allocator, 7);
+    defer sig.deinit();
+    // Deinit order: the tree BEFORE the renderer (ctx-bound resources rule).
+    var r = try golden.Renderer.init(std.testing.allocator, 384, 64);
+    defer r.deinit(); // runs LAST
+    const root = try BoundText(u32).text(std.testing.allocator, sig, fmtBoundCount, .{ .size = 24, .color = white });
+    defer root.deinit(); // runs FIRST (LIFO)
+    root.layout(.{ .x = 0, .y = 0, .w = 384, .h = 64 });
+    r.paint(root, bg);
+    var frame = try r.readback(std.testing.allocator);
+    defer frame.deinit();
+    const m = ui.paint.measureText("Pressed 7 times", 24, false);
+    try std.testing.expect(frame.countNotIn(.{ .x = 0, .y = 0, .w = m.width, .h = 64 }, bg) > 0);
+    // after a change + relayout + repaint, the wider string paints wider ink
+    sig.set(100000);
+    root.layout(.{ .x = 0, .y = 0, .w = 384, .h = 64 });
+    r.paint(root, bg);
+    var frame2 = try r.readback(std.testing.allocator);
+    defer frame2.deinit();
+    const m2 = ui.paint.measureText("Pressed 100000 times", 24, false);
+    try std.testing.expect(m2.width > m.width);
+    try std.testing.expect(frame2.countNotIn(.{ .x = 0, .y = 0, .w = m2.width, .h = 64 }, bg) > 0);
 }

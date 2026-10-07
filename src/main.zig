@@ -85,3 +85,8 @@ test "widgets" {
     std.testing.refAllDecls(ui.anim);
     std.testing.refAllDecls(ui.scroll);
 }
+
+test "gallery" {
+    std.testing.refAllDecls(@import("theme.zig"));
+    std.testing.refAllDecls(@import("gallery.zig"));
+}

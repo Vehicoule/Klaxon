@@ -161,16 +161,51 @@ pub const Alignment = struct {
 /// is the max child cross size (+ padding).
 pub fn flexMeasure(node: *Node, c: Constraints, axis: Axis, gap: f32, padding: f32) Size {
     const inner = c.deflate(padding * 2);
+    const gaps: f32 = if (node.children.items.len > 1)
+        gap * @as(f32, @floatFromInt(node.children.items.len - 1))
+    else
+        0;
     var main_total: f32 = 0;
     var cross_max: f32 = 0;
+    var flex_total: u32 = 0;
+    var non_flex_main: f32 = 0;
     for (node.children.items) |child| {
+        if (child.flex > 0) {
+            flex_total += child.flex;
+            continue;
+        }
         const size = child.measure(inner.loosenMain(axis));
-        main_total += size.main(axis);
+        non_flex_main += size.main(axis);
         cross_max = @max(cross_max, size.cross(axis));
     }
-    if (node.children.items.len > 1) {
-        main_total += gap * @as(f32, @floatFromInt(node.children.items.len - 1));
+    // Flex children (Expanded) share the remaining main space, tight, by
+    // weight. On an unbounded main axis they keep their natural size.
+    const inner_main_max: f32 = switch (axis) {
+        .horizontal => inner.max_w,
+        .vertical => inner.max_h,
+    };
+    if (flex_total > 0 and std.math.isFinite(inner_main_max)) {
+        const remaining = @max(0, inner_main_max - non_flex_main - gaps);
+        for (node.children.items) |child| {
+            if (child.flex == 0) continue;
+            const alloc = remaining * @as(f32, @floatFromInt(child.flex)) / @as(f32, @floatFromInt(flex_total));
+            const child_c = switch (axis) {
+                .horizontal => Constraints{ .min_w = alloc, .max_w = alloc, .max_h = inner.max_h },
+                .vertical => Constraints{ .min_h = alloc, .max_h = alloc, .max_w = inner.max_w },
+            };
+            const size = child.measure(child_c);
+            main_total += alloc;
+            cross_max = @max(cross_max, size.cross(axis));
+        }
+    } else {
+        for (node.children.items) |child| {
+            if (child.flex == 0) continue;
+            const size = child.measure(inner.loosenMain(axis));
+            main_total += size.main(axis);
+            cross_max = @max(cross_max, size.cross(axis));
+        }
     }
+    main_total += non_flex_main + gaps;
     return c.constrain(Size.fromMainCross(axis, main_total + padding * 2, cross_max + padding * 2));
 }
 
@@ -201,17 +236,45 @@ pub fn flexLayout(
     const inner_main = @max(0, bounds.main(axis) - padding * 2);
     const cross_avail = @max(0, bounds.cross(axis) - padding * 2);
 
-    // Pass 1: measure every child with the full inner main axis available.
+    // Pass 1: measure every child. Non-flex children get the full inner main
+    // axis; flex children (Expanded) share the REMAINING main space, tight,
+    // by weight (natural size on an unbounded main axis).
     var natural_main: f32 = padding * 2;
+    var flex_total: u32 = 0;
+    var non_flex_main: f32 = 0;
+    const gaps_total: f32 = if (n > 1) gap * @as(f32, @floatFromInt(n - 1)) else 0;
     for (node.children.items, 0..) |child, i| {
+        if (child.flex > 0) {
+            flex_total += child.flex;
+            continue;
+        }
         const child_c = switch (axis) {
             .horizontal => Constraints{ .max_w = inner_main, .max_h = cross_avail },
             .vertical => Constraints{ .max_w = cross_avail, .max_h = inner_main },
         };
         sizes[i] = child.measure(child_c);
-        natural_main += sizes[i].main(axis);
+        non_flex_main += sizes[i].main(axis);
     }
-    if (n > 1) natural_main += gap * @as(f32, @floatFromInt(n - 1));
+    const remaining = @max(0, inner_main - non_flex_main - gaps_total);
+    for (node.children.items, 0..) |child, i| {
+        if (child.flex == 0) continue;
+        if (flex_total > 0 and std.math.isFinite(inner_main)) {
+            const alloc = remaining * @as(f32, @floatFromInt(child.flex)) / @as(f32, @floatFromInt(flex_total));
+            const child_c = switch (axis) {
+                .horizontal => Constraints{ .min_w = alloc, .max_w = alloc, .max_h = cross_avail },
+                .vertical => Constraints{ .min_h = alloc, .max_h = alloc, .max_w = cross_avail },
+            };
+            sizes[i] = child.measure(child_c);
+        } else {
+            const child_c = switch (axis) {
+                .horizontal => Constraints{ .max_w = inner_main, .max_h = cross_avail },
+                .vertical => Constraints{ .max_w = cross_avail, .max_h = inner_main },
+            };
+            sizes[i] = child.measure(child_c);
+        }
+    }
+    for (sizes) |s| natural_main += s.main(axis);
+    natural_main += gaps_total;
 
     // Free space distribution along the main axis.
     const free = @max(0, bounds.main(axis) - natural_main);

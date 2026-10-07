@@ -63,8 +63,14 @@ jobs:
       - name: Test
         run: zig build test
 
+      - name: Golden tests
+        run: zig build test-golden
+
       - name: Headless smoke (raster, 600 frames)
         run: SDL_VIDEODRIVER=dummy ./zig-out/bin/hello
+
+      - name: Gallery headless smoke (raster, 600 frames)
+        run: SDL_VIDEODRIVER=dummy ./zig-out/bin/gallery
 
       - name: ReleaseSmall build + size gate (< 10 Mo)
         run: |

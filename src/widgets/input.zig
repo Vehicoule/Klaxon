@@ -585,6 +585,13 @@ pub fn textField(allocator: std.mem.Allocator, opts: TextFieldOptions, on_change
     return node;
 }
 
+/// Current TextField text — borrowed from the widget's buffer (valid until
+/// the next edit or deinit). Apps read it from on_changed/on_submitted.
+pub fn textFieldText(n: *Node) [:0]const u8 {
+    const s = stateOf(TextFieldState, n);
+    return s.text();
+}
+
 // --- Dropdown (popup menu) ---
 
 pub const DropdownOptions = struct {
@@ -595,6 +602,7 @@ pub const DropdownOptions = struct {
     radius: f32 = 6,
     padding: EdgeInsets = .{ .left = 10, .top = 4, .right = 10, .bottom = 4 },
     size: f32 = 16, // text size
+    initial_selected: usize = 0, // shown on the closed box before any selection
 };
 
 const DropdownState = struct {
@@ -794,6 +802,7 @@ fn nodeWithLabels(
         owned.deinit();
     }
     s.* = .{ .items = owned.*, .opts = opts, .on_changed = on_changed };
+    if (s.items.items.len > 0) s.selected = @min(opts.initial_selected, s.items.items.len - 1);
     node.state = s;
     return node; // labels owned by the state from here (no fallible ops after)
 }
@@ -806,6 +815,13 @@ pub fn dropdown(allocator: std.mem.Allocator, items: []const []const u8, opts: D
         node.add(try menuItem(allocator, label, i, node));
     }
     return node;
+}
+
+/// Index of the selected Dropdown item (0 before any selection; the closed
+/// box always shows it). Read it from on_changed.
+pub fn dropdownSelected(n: *Node) usize {
+    const s = stateOf(DropdownState, n);
+    return s.selected;
 }
 
 // --- Chip ---
@@ -1042,6 +1058,16 @@ test "text field deletes multi-byte codepoints correctly" {
     try std.testing.expectEqualStrings("a\u{25CF}", s.text());
     router.dispatchKey(.{ .kind = .key_down, .key = .backspace }); // deletes ● (3 bytes at once)
     try std.testing.expectEqualStrings("a", s.text());
+}
+
+test "dropdown: initial_selected picks the starting item (clamped)" {
+    const dd = try dropdown(std.testing.allocator, &.{ "A", "B", "C" }, .{ .initial_selected = 1 }, null);
+    defer dd.deinit();
+    try std.testing.expectEqual(@as(usize, 1), dropdownSelected(dd));
+    // out of range clamps to the last item
+    const dd2 = try dropdown(std.testing.allocator, &.{ "A", "B" }, .{ .initial_selected = 99 }, null);
+    defer dd2.deinit();
+    try std.testing.expectEqual(@as(usize, 1), dropdownSelected(dd2));
 }
 
 test "dropdown opens on click, selects an item, closes on outside click" {
