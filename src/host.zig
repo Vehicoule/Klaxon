@@ -165,12 +165,17 @@ pub const Host = struct {
             const h: c_int = @intCast(event.window.data2);
             if (w > 0 and h > 0) host.resize(w, h);
         }
-        // Input routing (Phase 1c): platform events → router → widget tree.
+        // Input routing (Phase 1c/1d): platform events → router → widget tree.
+        // Every pointer event carries its pointer id (mouse = which, touch =
+        // finger id) and a timestamp (gesture timing).
+        const time_ms: u64 = sdl.c.SDL_GetTicks();
         switch (event.type) {
             sdl.c.SDL_EVENT_MOUSE_MOTION => host.input.dispatchPointer(root, .{
                 .phase = .move,
                 .x = event.motion.x,
                 .y = event.motion.y,
+                .pointer = event.motion.which,
+                .time_ms = time_ms,
             }),
             sdl.c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == sdl.c.SDL_BUTTON_LEFT) {
@@ -178,6 +183,8 @@ pub const Host = struct {
                         .phase = .down,
                         .x = event.button.x,
                         .y = event.button.y,
+                        .pointer = event.button.which,
+                        .time_ms = time_ms,
                     });
                 }
             },
@@ -187,24 +194,32 @@ pub const Host = struct {
                         .phase = .up,
                         .x = event.button.x,
                         .y = event.button.y,
+                        .pointer = event.button.which,
+                        .time_ms = time_ms,
                     });
                 }
             },
-            // Touch: normalized finger coords → window pixels (single-pointer P0).
+            // Touch: normalized finger coords → window pixels (multi-touch).
             sdl.c.SDL_EVENT_FINGER_DOWN => host.input.dispatchPointer(root, .{
                 .phase = .down,
                 .x = event.tfinger.x * @as(f32, @floatFromInt(host.width)),
                 .y = event.tfinger.y * @as(f32, @floatFromInt(host.height)),
+                .pointer = @intCast(event.tfinger.fingerID),
+                .time_ms = time_ms,
             }),
             sdl.c.SDL_EVENT_FINGER_MOTION => host.input.dispatchPointer(root, .{
                 .phase = .move,
                 .x = event.tfinger.x * @as(f32, @floatFromInt(host.width)),
                 .y = event.tfinger.y * @as(f32, @floatFromInt(host.height)),
+                .pointer = @intCast(event.tfinger.fingerID),
+                .time_ms = time_ms,
             }),
             sdl.c.SDL_EVENT_FINGER_UP => host.input.dispatchPointer(root, .{
                 .phase = .up,
                 .x = event.tfinger.x * @as(f32, @floatFromInt(host.width)),
                 .y = event.tfinger.y * @as(f32, @floatFromInt(host.height)),
+                .pointer = @intCast(event.tfinger.fingerID),
+                .time_ms = time_ms,
             }),
             sdl.c.SDL_EVENT_TEXT_INPUT => host.input.dispatchKey(.{
                 .kind = .text_input,

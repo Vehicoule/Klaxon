@@ -24,6 +24,8 @@ pub const PointerEvent = struct {
     x: f32,
     y: f32,
     button: u8 = 1, // 1 = primary (SDL_BUTTON_LEFT)
+    pointer: u64 = 0, // 0 = primary (mouse); touch = SDL finger id (multi-touch)
+    time_ms: u64 = 0, // event timestamp (SDL_GetTicks) — gesture timing
 };
 
 /// Platform-independent keys (the host maps SDL_Keycode → Key).
@@ -46,11 +48,56 @@ pub const KeyEvent = struct {
     text: []const u8 = "", // text_input (UTF-8, borrowed from the event source)
 };
 
+/// Max simultaneously captured pointers (mouse + fingers). Fixed slots: the
+/// router never allocates.
+pub const MAX_POINTERS = 8;
+
+pub const Capture = struct { pointer: u64, node: *Node };
+
+fn nullCaptureSlots() [MAX_POINTERS]?Capture {
+    var slots: [MAX_POINTERS]?Capture = undefined;
+    for (&slots) |*s| s.* = null;
+    return slots;
+}
+
 pub const InputRouter = struct {
-    captured: ?*Node = null, // pointer-down target: receives move/up (drag)
+    captured: [MAX_POINTERS]?Capture = nullCaptureSlots(), // per-pointer capture (drag)
     hovered: ?*Node = null,
     focused: ?*Node = null,
     open_popup: ?*Node = null,
+
+    fn captureSlot(self: *InputRouter, pointer: u64) ?usize {
+        for (self.captured, 0..) |slot, i| {
+            if (slot) |c| {
+                if (c.pointer == pointer) return i;
+            }
+        }
+        return null;
+    }
+
+    fn captureSet(self: *InputRouter, pointer: u64, node: *Node) void {
+        if (self.captureSlot(pointer)) |i| {
+            self.captured[i] = .{ .pointer = pointer, .node = node };
+            return;
+        }
+        for (self.captured, 0..) |slot, i| {
+            if (slot == null) {
+                self.captured[i] = .{ .pointer = pointer, .node = node };
+                return;
+            }
+        }
+        // No free slot (8+ simultaneous pointers): drop the capture.
+    }
+
+    fn captureClear(self: *InputRouter, pointer: u64) void {
+        if (self.captureSlot(pointer)) |i| self.captured[i] = null;
+    }
+
+    /// The node currently capturing `pointer` (receives its move/up), if any.
+    pub fn capturedNode(self: *InputRouter, pointer: u64) ?*Node {
+        if (self.captureSlot(pointer)) |i| return self.captured[i].?.node;
+        return null;
+    }
 
     pub fn dispatchPointer(self: *InputRouter, root: *Node, ev: PointerEvent) void {
         switch (ev.phase) {
@@ -65,32 +112,37 @@ pub const InputRouter = struct {
                     const inside = if (hit) |h| isDescendant(h, popup) else false;
                     if (!inside) {
                         self.open_popup = null;
-                        _ = sendPointer(popup, .{ .phase = .outside_down, .x = ev.x, .y = ev.y });
+                        _ = sendPointer(popup, .{ .phase = .outside_down, .x = ev.x, .y = ev.y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                         return;
                     }
-                    self.captured = hit;
-                    if (hit) |t| _ = sendPointer(t, ev);
+                    if (hit) |t| {
+                        self.captureSet(ev.pointer, t);
+                        _ = sendPointer(t, ev);
+                    }
                     return;
                 }
                 const target = root.hitTest(ev.x, ev.y);
-                self.captured = target;
-                if (target) |t| _ = sendPointer(t, ev);
+                if (target) |t| {
+                    self.captureSet(ev.pointer, t);
+                    _ = sendPointer(t, ev);
+                }
             },
             .move => {
-                if (self.captured) |c| {
+                if (self.capturedNode(ev.pointer)) |c| {
                     _ = sendPointer(c, ev);
-                } else {
+                } else if (ev.pointer == 0) {
+                    // Hover follows the primary (mouse) pointer only.
                     const hit = root.hitTest(ev.x, ev.y);
                     if (hit != self.hovered) {
-                        if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = ev.x, .y = ev.y });
+                        if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = ev.x, .y = ev.y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                         self.hovered = hit;
-                        if (hit) |h| _ = sendPointer(h, .{ .phase = .enter, .x = ev.x, .y = ev.y });
+                        if (hit) |h| _ = sendPointer(h, .{ .phase = .enter, .x = ev.x, .y = ev.y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                     }
                 }
             },
             .up => {
-                if (self.captured) |c| {
-                    self.captured = null;
+                if (self.capturedNode(ev.pointer)) |c| {
+                    self.captureClear(ev.pointer);
                     _ = sendPointer(c, ev);
                 } else if (root.hitTest(ev.x, ev.y)) |t| {
                     _ = sendPointer(t, ev);
@@ -112,7 +164,11 @@ pub const InputRouter = struct {
     /// Release every reference to a node being destroyed. No GC: widgets with
     /// input handlers call this from their deinit (dangling pointers are fatal).
     pub fn releaseNode(self: *InputRouter, node: *Node) void {
-        if (self.captured == node) self.captured = null;
+        for (&self.captured) |*slot| {
+            if (slot.*) |c| {
+                if (c.node == node) slot.* = null;
+            }
+        }
         if (self.hovered == node) self.hovered = null;
         if (self.focused == node) self.focused = null;
         if (self.open_popup == node) self.open_popup = null;
@@ -373,14 +429,41 @@ test "releaseNode clears every router reference to the node" {
     try std.testing.expect(router.hovered == root);
     // then capture (a down while hovering)
     router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 10 });
-    try std.testing.expect(router.captured == root);
+    try std.testing.expect(router.capturedNode(0) == root);
     router.focus(root);
     router.open_popup = root;
     router.releaseNode(root);
-    try std.testing.expect(router.captured == null);
+    try std.testing.expect(router.capturedNode(0) == null);
     try std.testing.expect(router.hovered == null);
     try std.testing.expect(router.focused == null);
     try std.testing.expect(router.open_popup == null);
+}
+
+test "multiple pointers are captured independently (multi-touch)" {
+    const root = try recNode(std.testing.allocator, false);
+    defer root.deinit();
+    const a = try recNode(std.testing.allocator, true);
+    const b = try recNode(std.testing.allocator, true);
+    root.add(a);
+    root.add(b);
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    a.layout(.{ .x = 0, .y = 0, .w = 50, .h = 100 });
+    b.layout(.{ .x = 50, .y = 0, .w = 50, .h = 100 });
+    var router = InputRouter{};
+    // Two fingers down on A and B.
+    router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 10, .pointer = 1 });
+    router.dispatchPointer(root, .{ .phase = .down, .x = 80, .y = 10, .pointer = 2 });
+    try std.testing.expect(router.capturedNode(1) == a);
+    try std.testing.expect(router.capturedNode(2) == b);
+    // Moving finger 1 reaches A only.
+    router.dispatchPointer(root, .{ .phase = .move, .x = 20, .y = 10, .pointer = 1 });
+    try std.testing.expectEqual(@as(usize, 2), recState(a).log.items.len); // down + move
+    try std.testing.expectEqual(@as(usize, 1), recState(b).log.items.len); // down only
+    // Lifting finger 2 releases B; A stays captured.
+    router.dispatchPointer(root, .{ .phase = .up, .x = 80, .y = 10, .pointer = 2 });
+    try std.testing.expect(router.capturedNode(2) == null);
+    try std.testing.expect(router.capturedNode(1) == a);
+    try std.testing.expectEqual(PointerPhase.up, recState(b).log.items[1]);
 }
 
 test "invisible nodes are neither painted nor hit-tested" {
