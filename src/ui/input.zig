@@ -23,6 +23,11 @@ pub const PointerEvent = struct {
     phase: PointerPhase,
     x: f32,
     y: f32,
+    /// Window (viewport) coordinates before ancestor transforms — drag
+    /// deltas are physical finger motion and must use these (a scrollable
+    /// scrolling under a held finger shifts its content-space coords).
+    raw_x: f32 = 0,
+    raw_y: f32 = 0,
     button: u8 = 1, // 1 = primary (SDL_BUTTON_LEFT)
     pointer: u64 = 0, // 0 = primary (mouse); touch = SDL finger id (multi-touch)
     time_ms: u64 = 0, // event timestamp (SDL event ns / 1e6) — gesture timing
@@ -109,7 +114,14 @@ pub const InputRouter = struct {
         return null;
     }
 
-    pub fn dispatchPointer(self: *InputRouter, root: *Node, ev: PointerEvent) void {
+    pub fn dispatchPointer(self: *InputRouter, root: *Node, ev_in: PointerEvent) void {
+        // Events arrive in window (viewport) coordinates; keep a copy as
+        // raw_* before any local-space mapping below. Drag deltas are
+        // physical finger motion: a scrollable scrolling under a held
+        // finger shifts the content-space coordinates it receives.
+        var ev = ev_in;
+        ev.raw_x = ev_in.x;
+        ev.raw_y = ev_in.y;
         switch (ev.phase) {
             .down => {
                 // A click outside an open popup closes it and is consumed
@@ -117,45 +129,57 @@ pub const InputRouter = struct {
                 if (self.open_popup) |popup| {
                     // Popup children live outside the popup's bounds (overlay):
                     // hit-test within the popup subtree without the
-                    // ancestor-bounds gate.
-                    const hit = hitTestSubtree(popup, ev.x, ev.y) orelse root.hitTest(ev.x, ev.y);
+                    // ancestor-bounds gate. The point is mapped into the
+                    // popup's parent space first (it may sit in a scrollable).
+                    const p = Node.mapPointToParentSpace(popup, ev.x, ev.y);
+                    const hit: ?*Node = if (hitTestSubtree(popup, p.x, p.y)) |h|
+                        h
+                    else if (root.hitTestMapped(ev.x, ev.y)) |m|
+                        m.node
+                    else
+                        null;
                     const inside = if (hit) |h| isDescendant(h, popup) else false;
                     if (!inside) {
                         self.open_popup = null;
-                        _ = sendPointer(popup, .{ .phase = .outside_down, .x = ev.x, .y = ev.y, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                        _ = sendPointer(popup, .{ .phase = .outside_down, .x = ev.x, .y = ev.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                         return;
                     }
                     if (hit) |t| {
                         self.captureSet(ev.pointer, t);
-                        _ = sendPointer(t, ev);
+                        const local = Node.mapPointToParentSpace(t, ev.x, ev.y);
+                        _ = sendPointer(t, .{ .phase = ev.phase, .x = local.x, .y = local.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                     }
                     return;
                 }
-                const target = root.hitTest(ev.x, ev.y);
-                if (target) |t| {
-                    self.captureSet(ev.pointer, t);
-                    _ = sendPointer(t, ev);
+                if (root.hitTestMapped(ev.x, ev.y)) |hit| {
+                    self.captureSet(ev.pointer, hit.node);
+                    // Deliver the event in the hit node's parent space:
+                    // scrolled/transformed controls get local coordinates.
+                    _ = sendPointer(hit.node, .{ .phase = ev.phase, .x = hit.x, .y = hit.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                 }
             },
             .move => {
                 if (self.capturedNode(ev.pointer)) |c| {
-                    _ = sendPointer(c, ev);
+                    const local = Node.mapPointToParentSpace(c, ev.x, ev.y);
+                    _ = sendPointer(c, .{ .phase = ev.phase, .x = local.x, .y = local.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                 } else if (ev.pointer == 0) {
                     // Hover follows the primary (mouse) pointer only.
-                    const hit = root.hitTest(ev.x, ev.y);
-                    if (hit != self.hovered) {
-                        if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = ev.x, .y = ev.y, .pointer = ev.pointer, .time_ms = ev.time_ms });
-                        self.hovered = hit;
-                        if (hit) |h| _ = sendPointer(h, .{ .phase = .enter, .x = ev.x, .y = ev.y, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                    const hit = root.hitTestMapped(ev.x, ev.y);
+                    const hovered = if (hit) |h| h.node else null;
+                    if (hovered != self.hovered) {
+                        if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = ev.x, .y = ev.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                        self.hovered = hovered;
+                        if (hit) |h| _ = sendPointer(h.node, .{ .phase = .enter, .x = h.x, .y = h.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                     }
                 }
             },
             .up => {
                 if (self.capturedNode(ev.pointer)) |c| {
                     self.captureClear(ev.pointer);
-                    _ = sendPointer(c, ev);
-                } else if (root.hitTest(ev.x, ev.y)) |t| {
-                    _ = sendPointer(t, ev);
+                    const local = Node.mapPointToParentSpace(c, ev.x, ev.y);
+                    _ = sendPointer(c, .{ .phase = ev.phase, .x = local.x, .y = local.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                } else if (root.hitTestMapped(ev.x, ev.y)) |hit| {
+                    _ = sendPointer(hit.node, .{ .phase = ev.phase, .x = hit.x, .y = hit.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                 }
             },
             // enter/leave/outside_down are synthesized by the router itself.

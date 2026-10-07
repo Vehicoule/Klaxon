@@ -77,6 +77,7 @@ fn listLayout(n: *Node, bounds: Rect) void {
     const s = stateOf(ListState, n);
     s.scroll.viewport = bounds.h;
     s.scroll.content = contentHeight(s);
+    _ = s.scroll.setOffset(s.scroll.offset); // re-clamp after a resize
     if (s.scroll.viewport > 0) {
         const range = scroll_mod.visibleRange(s.opts.item_count, strideOf(s), s.scroll.viewport, s.scroll.offset, s.opts.margin);
         scroll_util.syncItemWindow(n, &s.first, s.opts.factory, range, layoutItem);
@@ -312,6 +313,92 @@ test "listView: hit-testing lands on the item under the pointer" {
     try std.testing.expectEqual(@as(usize, 18), stateOf(ListState, list).first);
     const hit2 = list.hitTest(50, 10).?;
     try std.testing.expectEqual(list.children.items[2], hit2); // item 20
+}
+
+test "listView: a large backward jump rebuilds only the new window" {
+    const list = try testList(10_000);
+    defer list.deinit();
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    _ = setScrollOffset(list, 48 * 5000);
+    try std.testing.expectEqual(@as(usize, 9), list.children.items.len);
+    // jump back to the top: ~7 children, NOT 5000 materialized
+    _ = setScrollOffset(list, 0);
+    try std.testing.expectEqual(@as(usize, 7), list.children.items.len);
+    try std.testing.expectEqual(@as(usize, 0), stateOf(ListState, list).first);
+}
+
+test "listView: scrolling away a captured item releases the router capture" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const list = try testList(100);
+    defer list.deinit();
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    router.dispatchPointer(list, .{ .phase = .down, .x = 50, .y = 10 });
+    try std.testing.expect(router.capturedNode(0) != null);
+    _ = setScrollOffset(list, 48 * 50); // the captured item is virtualized out
+    try std.testing.expect(router.capturedNode(0) == null); // no dangling capture
+    router.dispatchPointer(list, .{ .phase = .move, .x = 50, .y = 10 }); // safe (hover path)
+}
+
+test "listView: growing the viewport re-clamps the offset" {
+    const list = try testList(10); // content 480
+    defer list.deinit();
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    _ = setScrollOffset(list, 280); // max at viewport 200
+    try std.testing.expectEqual(@as(f32, 280), scrollOffset(list));
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 400 }); // viewport grows → max 80
+    try std.testing.expectEqual(@as(f32, 80), scrollOffset(list));
+}
+
+test "listView: concurrent fingers drag independently (per-pointer tracks)" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const list = try testList(100);
+    defer list.deinit();
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    // two fingers press items and drag up 10px each
+    router.dispatchPointer(list, .{ .phase = .down, .x = 50, .y = 100, .pointer = 1 });
+    router.dispatchPointer(list, .{ .phase = .down, .x = 50, .y = 50, .pointer = 2 });
+    router.dispatchPointer(list, .{ .phase = .move, .x = 50, .y = 90, .pointer = 1 });
+    router.dispatchPointer(list, .{ .phase = .move, .x = 50, .y = 40, .pointer = 2 });
+    // 10 + 10 — a shared drag position would scroll 60 on the second finger
+    try std.testing.expectEqual(@as(f32, 20), scrollOffset(list));
+    router.dispatchPointer(list, .{ .phase = .up, .x = 50, .y = 90, .pointer = 1 });
+    router.dispatchPointer(list, .{ .phase = .up, .x = 50, .y = 40, .pointer = 2 });
+}
+
+const input_widgets = @import("input.zig");
+
+fn countPressedCb(userdata: ?*anyopaque) void {
+    const c: *u32 = @ptrCast(@alignCast(userdata.?));
+    c.* += 1;
+}
+
+fn btnItem(userdata: ?*anyopaque, index: usize) *Node {
+    _ = index;
+    const cb: ui.state.Callback = .{ .fn_ptr = countPressedCb, .userdata = userdata };
+    return input_widgets.button(std.testing.allocator, cb, .{}) catch @panic("klaxon: out of memory");
+}
+
+test "listView: a button inside a scrolled item receives clicks at its visual position" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    var pressed: u32 = 0;
+    const list = try listView(std.testing.allocator, .{
+        .item_count = 100,
+        .factory = .{ .fn_ptr = btnItem, .userdata = &pressed },
+        .item_height = 48,
+    });
+    defer list.deinit();
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    _ = setScrollOffset(list, 48 * 10); // item 10's button at content y 480
+    // click at viewport (50, 10) → content (50, 490) → inside the button
+    router.dispatchPointer(list, .{ .phase = .down, .x = 50, .y = 10 });
+    router.dispatchPointer(list, .{ .phase = .up, .x = 50, .y = 10 });
+    try std.testing.expectEqual(@as(u32, 1), pressed);
 }
 
 test "listView: 10k items render a frame fast (virtualized)" {

@@ -59,6 +59,7 @@ fn scrollViewLayout(n: *Node, bounds: Rect) void {
         const cs = n.children.items[0].measure(child_c);
         s.content_h = cs.h;
         s.scroll.content = cs.h;
+        _ = s.scroll.setOffset(s.scroll.offset); // re-clamp after a resize
         n.children.items[0].layout(.{
             .x = bounds.x,
             .y = bounds.y,

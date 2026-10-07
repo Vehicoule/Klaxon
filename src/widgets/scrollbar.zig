@@ -12,6 +12,7 @@ const kx = @import("../kx.zig");
 const ui = @import("../ui.zig");
 const input = @import("../ui/input.zig");
 const scroll_mod = @import("../ui/scroll.zig");
+const anim = @import("../ui/anim.zig");
 const golden = @import("../golden.zig");
 
 const Node = ui.node.Node;
@@ -34,8 +35,27 @@ pub const ScrollbarOptions = struct {
 
 const ScrollbarState = struct {
     opts: ScrollbarOptions,
+    node: *Node,
     dragging: bool = false,
+    /// Last offset seen by the tracker ticker — the thumb follows the
+    /// scrollable's offset changes even when the scrollable (a sibling)
+    /// is the only node whose damage region is repainted.
+    last_offset: f32 = -1,
+    ticker: ?anim.Timeline.Ticker = null,
 };
+
+/// Timeline ticker: mark the scrollbar dirty when the scroll offset moved
+/// (wheel / list-drag scroll the list without touching the scrollbar's
+/// damage region — the sibling must repaint its thumb).
+fn sbTickCb(userdata: ?*anyopaque, now_ms: u64) void {
+    _ = now_ms;
+    const s: *ScrollbarState = @ptrCast(@alignCast(userdata.?));
+    const info = s.opts.scroll.vtable.scroll_info.?(s.opts.scroll);
+    if (info.offset != s.last_offset) {
+        s.last_offset = info.offset;
+        s.node.markDirty();
+    }
+}
 
 fn thumbRect(s: *const ScrollbarState, b: Rect) Rect {
     const info = s.opts.scroll.vtable.scroll_info.?(s.opts.scroll);
@@ -108,8 +128,12 @@ fn scrollbarOnPointer(n: *Node, ev: input.PointerEvent) bool {
     }
 }
 fn scrollbarDeinit(n: *Node) void {
+    const s = stateOf(ScrollbarState, n);
+    if (s.ticker) |t| {
+        if (anim.timeline()) |tl| tl.removeTicker(t);
+    }
     input.releaseNode(n);
-    n.allocator.destroy(stateOf(ScrollbarState, n));
+    n.allocator.destroy(s);
 }
 const scrollbar_vtable = ui.node.VTable{
     .measure = scrollbarMeasure,
@@ -124,7 +148,15 @@ pub fn scrollbar(allocator: std.mem.Allocator, opts: ScrollbarOptions) !*Node {
     errdefer node.allocator.destroy(node);
     const s = try allocator.create(ScrollbarState);
     errdefer allocator.destroy(s);
-    s.* = .{ .opts = opts };
+    s.* = .{ .opts = opts, .node = node };
+    // Track the scrollable's offset: the thumb repaints when it moves.
+    // (The scrollbar must not outlive its scrollable — the ticker borrows it,
+    // same convention as the dropdown's borrowed menu-item labels.)
+    if (anim.timeline()) |tl| {
+        const t = anim.Timeline.Ticker{ .fn_ptr = sbTickCb, .userdata = s };
+        tl.addTicker(t);
+        s.ticker = t;
+    }
     node.state = s;
     return node;
 }
@@ -187,6 +219,24 @@ test "scrollbar: dragging the thumb scrolls the list" {
     // after release, moves no longer scroll
     router.dispatchPointer(sb, .{ .phase = .move, .x = 104, .y = 10 });
     try std.testing.expectEqual(off, list_mod.scrollOffset(list));
+}
+
+test "scrollbar: the thumb follows external scrolls (ticker)" {
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    const list = try testList();
+    defer list.deinit();
+    const sb = try scrollbar(std.testing.allocator, .{ .scroll = list, .width = 8 });
+    defer sb.deinit();
+    list.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    sb.layout(.{ .x = 100, .y = 0, .w = 8, .h = 200 });
+    const list_mod = @import("list_view.zig");
+    _ = list_mod.setScrollOffset(list, 1000); // external scroll (wheel path)
+    sb.dirty = false;
+    tl.tick(0); // the tracker notices the offset change → thumb repaints
+    try std.testing.expect(sb.dirty);
 }
 
 test "golden: scrollbar paints track + thumb at the scroll position" {

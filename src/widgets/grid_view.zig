@@ -85,6 +85,7 @@ fn gridLayout(n: *Node, bounds: Rect) void {
     const s = stateOf(GridState, n);
     s.scroll.viewport = bounds.h;
     s.scroll.content = contentHeight(s);
+    _ = s.scroll.setOffset(s.scroll.offset); // re-clamp after a resize
     if (s.scroll.viewport > 0 and s.opts.cross_axis_count > 0) {
         // Row-aligned window: convert the row range to an item range.
         const stride = strideOf(s);
@@ -154,11 +155,13 @@ const grid_vtable = ui.node.VTable{
 };
 
 pub fn gridView(allocator: std.mem.Allocator, opts: GridViewOptions) !*Node {
+    var o = opts;
+    if (o.cross_axis_count == 0) o.cross_axis_count = 1; // normalize (rowsOf divides)
     const node = try Node.create(allocator, &grid_vtable);
     errdefer node.allocator.destroy(node);
     const s = try allocator.create(GridState);
     errdefer allocator.destroy(s);
-    s.* = .{ .opts = opts };
+    s.* = .{ .opts = o };
     node.state = s;
     return node;
 }
@@ -236,6 +239,20 @@ test "gridView: items lay out in columns within a row" {
     // item 2 starts the second row
     try std.testing.expectEqual(@as(f32, 0), grid.children.items[2].bounds.x);
     try std.testing.expectEqual(@as(f32, 48), grid.children.items[2].bounds.y);
+}
+
+test "gridView: zero columns normalize to one (no division by zero)" {
+    const grid = try gridView(std.testing.allocator, .{
+        .item_count = 10,
+        .factory = .{ .fn_ptr = testItem, .userdata = null },
+        .cross_axis_count = 0,
+        .item_height = 48,
+    });
+    defer grid.deinit();
+    grid.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    try std.testing.expectEqual(@as(usize, 1), stateOf(GridState, grid).opts.cross_axis_count);
+    try std.testing.expect(grid.children.items.len > 0);
+    try std.testing.expectEqual(@as(f32, 48), grid.children.items[1].bounds.y); // 1 column
 }
 
 test "golden: gridView paints the visible cells, clipped" {

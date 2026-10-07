@@ -24,26 +24,48 @@ pub const ItemFactory = struct {
 /// Drag: .move events reach the scrollable by bubbling (items consume
 /// down/up for taps but not moves). A move only scrolls while the router
 /// has a capture for the pointer (a real drag — hover moves never scroll).
-/// last_y tracks the pointer across down + hover + drag so a new drag starts
-/// without a jump.
+/// Each pointer has its own track (down/hover/drag positions) so concurrent
+/// fingers never jump the content, and a new drag starts without a jump.
+/// Tracks live in window space (raw_*): the delta is physical finger
+/// motion — the content scrolling under a held finger must not cancel it.
 ///
 /// `set_offset` is the widget's apply function: it clamps, shifts the
 /// virtualization window and marks the node dirty — and returns whether the
 /// offset changed.
 pub const ScrollInput = struct {
-    last_y: ?f32 = null,
+    pub const MAX_TRACKS = 8; // matches input.MAX_POINTERS
+    /// y is window-space (raw_y) — see the struct doc above.
+    const Track = struct { pointer: u64 = 0, y: f32 = 0, active: bool = false };
+    tracks: [MAX_TRACKS]Track = std.mem.zeroes([MAX_TRACKS]Track),
 
     pub const SetOffset = *const fn (n: *Node, value: f32) bool;
+
+    fn trackFor(inp: *ScrollInput, pointer: u64) *Track {
+        for (&inp.tracks) |*t| {
+            if (t.active and t.pointer == pointer) return t;
+        }
+        for (&inp.tracks) |*t| {
+            if (!t.active) return t;
+        }
+        return &inp.tracks[0]; // full: reuse slot 0 (P0)
+    }
+
+    fn releaseTrack(inp: *ScrollInput, pointer: u64) void {
+        for (&inp.tracks) |*t| {
+            if (t.active and t.pointer == pointer) t.active = false;
+        }
+    }
 
     /// Call from the widget's on_pointer.
     pub fn onPointer(inp: *ScrollInput, ev: input.PointerEvent, scroll: *scroll_mod.ScrollState, set_offset: SetOffset, n: *Node) bool {
         switch (ev.phase) {
             .down => {
-                inp.last_y = ev.y;
+                const t = inp.trackFor(ev.pointer);
+                t.* = .{ .pointer = ev.pointer, .y = ev.raw_y, .active = true };
                 return false; // items handle taps
             },
             .up, .outside_down => {
-                inp.last_y = null;
+                inp.releaseTrack(ev.pointer);
                 return false;
             },
             .move => {},
@@ -51,13 +73,11 @@ pub const ScrollInput = struct {
         }
         const router = input.current() orelse return false;
         const dragging = router.capturedNode(ev.pointer) != null;
-        const last = inp.last_y orelse {
-            inp.last_y = ev.y;
-            return false;
-        };
-        inp.last_y = ev.y;
+        const t = inp.trackFor(ev.pointer);
+        const last = if (t.active and t.pointer == ev.pointer) t.y else ev.raw_y;
+        t.* = .{ .pointer = ev.pointer, .y = ev.raw_y, .active = true };
         if (!dragging) return false; // hover move: no scroll
-        const dy = ev.y - last;
+        const dy = ev.raw_y - last;
         if (dy == 0) return false;
         // The finger drags the content: moving up (dy < 0) increases the offset.
         return set_offset(n, scroll.offset - dy);
@@ -83,6 +103,15 @@ pub fn syncItemWindow(
     range: scroll_mod.Range,
     layout_item: *const fn (n: *Node, child: *Node, index: usize) void,
 ) void {
+    // Non-overlapping windows (or an empty window): drop everything and
+    // re-anchor — a large jump must NOT materialize the intervening items.
+    const old_last = first.* + n.children.items.len;
+    const overlaps = first.* < range.last and range.first < old_last;
+    if (!overlaps) {
+        for (n.children.items) |child| child.deinit();
+        n.children.clearRetainingCapacity();
+        first.* = range.first;
+    }
     // Trim items that left the window (front): destroy the child and
     // advance `first` — advancing continues past an empty window (the
     // children were never created or are already gone).
