@@ -40,7 +40,7 @@
 - ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.2.0: raster, text+metrics, images, readback), `src/kx_skia_common.cpp` (raster + image registry), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
 - ✅ `.github/workflows/ci.yml` — build + test + smoke + size gate on ubuntu + macOS
-- ✅ `docs/` — planning set (ARCHITECTURE, ROADMAP, PERF-BUDGETS, STATUS, README, 9 ADRs)
+- ✅ `docs/` — planning set (ARCHITECTURE, ROADMAP, PERF-BUDGETS, STATUS, README, STATE.md, 9 ADRs)
 - ✅ `deps/` (gitignored) — built artifacts, macos-arm64
 
 ## What exists (from spikes — knowledge, not code)
@@ -130,5 +130,5 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 7. ~~CI~~ done — workflow written (ubuntu + macOS); first run validates Linux build
 8. ~~Phase 1a: `ui/state.zig` — Signal/Memo/Effect/Store (fine-grained reactivity) + unit tests~~ done (PR #2)
 9. ~~Phase 1b: widgets P0 (Row, Column, Stack, Grid, Padding, Center, Align, ConstrainedBox, Text, RichText, Icon, Image, Container, Divider) + golden tests~~ done (PR #3)
-10. ~~Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip) + input router~~ done (this PR)
+10. ~~Phase 1c: input widgets (Button, Toggle, Checkbox, Radio, Slider, TextField, Dropdown, Chip) + input router~~ done (PR #4)
 11. **Phase 1d: gestures (GestureArena: tap/double-tap/long-press/pan/swipe/pinch/rotate)**

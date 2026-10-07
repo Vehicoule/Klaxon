@@ -27,8 +27,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const shim_flags = &[_][]const u8{
-        "-std=c++20", "-fno-exceptions", "-fno-rtti",
-        "-DSK_GANESH", "-DSK_GRAPHITE", "-DNDEBUG",
+        "-std=c++20",  "-fno-exceptions", "-fno-rtti",
+        "-DSK_GANESH", "-DSK_GRAPHITE",   "-DNDEBUG",
     };
     kx_skia.root_module.addCSourceFiles(.{
         .files = &.{"kx_skia/src/kx_skia_common.cpp"},
@@ -127,10 +127,9 @@ fn linkRuntime(
     module.addObjectFile(b.path(b.fmt("deps/SDL/build-{s}/libSDL3.a", .{tag})));
     if (is_macos) {
         inline for (.{
-            "Cocoa", "IOKit", "CoreVideo", "CoreAudio", "AudioToolbox", "AudioUnit",
-            "ForceFeedback", "GameController", "Metal", "QuartzCore", "CoreHaptics",
-            "AVFoundation", "UniformTypeIdentifiers", "CoreBluetooth", "CoreFoundation",
-            "CoreGraphics", "Carbon",
+            "Cocoa",                  "IOKit",          "CoreVideo",      "CoreAudio",    "AudioToolbox", "AudioUnit",
+            "ForceFeedback",          "GameController", "Metal",          "QuartzCore",   "CoreHaptics",  "AVFoundation",
+            "UniformTypeIdentifiers", "CoreBluetooth",  "CoreFoundation", "CoreGraphics", "Carbon",
         }) |framework| {
             module.linkFramework(framework, .{});
         }
@@ -140,9 +139,9 @@ fn linkRuntime(
     // args.gn (scripts/fetch-deps.sh) — update both together if args.gn changes.
     module.linkLibrary(kx_skia);
     const skia_libs = [_][]const u8{
-        "libfreetype2.a", "libharfbuzz.a", "libicu.a", "libpng.a", "libskcms.a",
-        "libskia.a", "libskparagraph.a", "libskshaper.a",
-        "libskunicode_core.a", "libskunicode_icu.a", "libzlib.a",
+        "libfreetype2.a", "libharfbuzz.a",    "libicu.a",      "libpng.a",            "libskcms.a",
+        "libskia.a",      "libskparagraph.a", "libskshaper.a", "libskunicode_core.a", "libskunicode_icu.a",
+        "libzlib.a",
     };
     for (skia_libs) |lib| {
         module.addObjectFile(b.path(b.fmt("deps/skia/out/{s}/{s}", .{ tag, lib })));
