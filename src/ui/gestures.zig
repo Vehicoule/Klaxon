@@ -1,10 +1,12 @@
 // Gestures (Phase 1d) — GestureArena + recognizers.
 //
 // Pointer events (ui/input.zig, multi-touch) → GestureArena → recognizers →
-// callbacks. The arena arbitrates conflicts: recognizers within a detector
-// compete for the same pointer; when one claims (tap completes, pan exceeds
-// slop, …) it wins and the others have already rejected themselves (their
-// state machines are mutually exclusive by construction).
+// callbacks. The arena arbitrates conflicts: two-pointer recognizers
+// (pinch/rotate) are fed first and co-fire; when one accepts it claims the
+// interaction (single-pointer recognizers are reset and skipped while it is
+// active). Among single-pointer recognizers, ongoing gestures (pan) fire
+// immediately and terminal ones (tap, …) are resolved after the pass
+// (double-tap suppresses the same-event tap).
 //
 // Recognizers (tuned constants below; P0: px == dp, density lands with themes):
 //   Tap        down + up within slop and < 200 ms
@@ -13,7 +15,7 @@
 //   Pan        move > slop → drag (start / update deltas / end velocity)
 //   Swipe      pan released with velocity > 500 px/s (dominant axis)
 //   Pinch      2 pointers → scale = current distance / initial distance
-//   Rotate     2 pointers → angle = atan2 delta from the initial angle
+//   Rotate     2 pointers → per-move atan2 delta, wrapped to [-π, π]
 //
 // P0 deviations (documented, fixed by later phases):
 //   - Long-press has no platform timer: it fires on the first event after the
@@ -45,8 +47,13 @@ pub const PanCallback = struct {
     userdata: ?*anyopaque,
 };
 
+pub const PanStartCallback = struct {
+    fn_ptr: *const fn (userdata: ?*anyopaque, dx: f32, dy: f32) void,
+    userdata: ?*anyopaque,
+};
+
 pub const PanEndCallback = struct {
-    fn_ptr: *const fn (userdata: ?*anyopaque, vx: f32, vy: f32) void,
+    fn_ptr: *const fn (userdata: ?*anyopaque, vx: f32, vy: f32, dx: f32, dy: f32) void,
     userdata: ?*anyopaque,
 };
 
@@ -71,7 +78,7 @@ pub const GestureCallbacks = struct {
     on_tap: ?Callback = null,
     on_double_tap: ?Callback = null,
     on_long_press: ?Callback = null,
-    on_pan_start: ?Callback = null,
+    on_pan_start: ?PanStartCallback = null,
     on_pan_update: ?PanCallback = null,
     on_pan_end: ?PanEndCallback = null,
     on_swipe: ?SwipeCallback = null,
@@ -85,12 +92,12 @@ pub const Fire = union(enum) {
     tap,
     double_tap,
     long_press,
-    pan_start,
+    pan_start: struct { dx: f32, dy: f32 }, // down → claiming move
     pan_update: struct { dx: f32, dy: f32 },
-    pan_end: struct { vx: f32, vy: f32 },
+    pan_end: struct { vx: f32, vy: f32, dx: f32, dy: f32 }, // velocity + last move → up
     swipe: struct { dir: SwipeDirection, vx: f32, vy: f32 },
     pinch: struct { scale: f32 },
-    rotate: struct { delta: f32 },
+    rotate: struct { delta: f32 }, // per-move delta, wrapped to [-π, π]
 };
 
 // --- Recognizer (one state machine per gesture kind) ---
@@ -125,6 +132,7 @@ pub const Recognizer = struct {
     ptr_b: ?TrackedPointer = null,
     initial_distance: f32 = 0,
     initial_angle: f32 = 0,
+    last_angle: f32 = 0,
     long_press_fired: bool = false,
 
     pub fn reset(rec: *Recognizer) void {
@@ -181,6 +189,55 @@ fn addSample(rec: *Recognizer, ev: input.PointerEvent) void {
         rec.samples[rec.sample_len] = .{ .x = ev.x, .y = ev.y, .t = ev.time_ms };
         rec.sample_len += 1;
     }
+}
+
+/// Two-pointer tracking: fill slots on down — when the pair is complete the
+/// gesture (re-)accepts with fresh initial distance/angle (a replacement
+/// finger re-enters the gesture). Third pointers are ignored.
+fn trackDown(rec: *Recognizer, ev: input.PointerEvent) void {
+    if (rec.ptr_a == null) {
+        rec.ptr_a = .{ .id = ev.pointer, .x = ev.x, .y = ev.y };
+    } else if (rec.ptr_b == null and ev.pointer != rec.ptr_a.?.id) {
+        rec.ptr_b = .{ .id = ev.pointer, .x = ev.x, .y = ev.y };
+    }
+    if (rec.ptr_a != null and rec.ptr_b != null) {
+        const a = rec.ptr_a.?;
+        const b = rec.ptr_b.?;
+        rec.initial_distance = dist(a.x, a.y, b.x, b.y);
+        rec.initial_angle = std.math.atan2(b.y - a.y, b.x - a.x);
+        rec.last_angle = rec.initial_angle;
+        rec.state = .accepted;
+    }
+}
+
+/// Two-pointer tracking: clear the slot of a lifting pointer. Returns true
+/// when a tracked pointer lifted (the gesture ends); unrelated fingers are
+/// ignored.
+fn trackUp(rec: *Recognizer, ev: input.PointerEvent) bool {
+    var lifted = false;
+    if (rec.ptr_a) |a| {
+        if (a.id == ev.pointer) {
+            rec.ptr_a = null;
+            lifted = true;
+        }
+    }
+    if (rec.ptr_b) |b| {
+        if (b.id == ev.pointer) {
+            rec.ptr_b = null;
+            lifted = true;
+        }
+    }
+    if (lifted) rec.state = .idle;
+    return lifted;
+}
+
+/// Wrap an angle delta into [-π, π].
+fn wrapAngle(d: f32) f32 {
+    var r = d;
+    const two_pi: f32 = 2 * std.math.pi;
+    while (r > std.math.pi) r -= two_pi;
+    while (r < -std.math.pi) r += two_pi;
+    return r;
 }
 
 /// Update the tracked position of `ev.pointer` (ptr_a/ptr_b). Returns false
@@ -354,7 +411,9 @@ fn feedPan(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
                     rec.last_x = ev.x; // the claiming move is the delta origin
                     rec.last_y = ev.y;
                     addSample(rec, ev);
-                    return .pan_start;
+                    // Report the claiming displacement: the full drag is
+                    // pan_start.dx/dy + Σ pan_update + pan_end.dx/dy.
+                    return .{ .pan_start = .{ .dx = ev.x - rec.start_x, .dy = ev.y - rec.start_y } };
                 }
                 return null;
             }
@@ -378,6 +437,9 @@ fn feedPan(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
             rec.tracking = null;
             addSample(rec, ev);
             const v = velocity(rec, ev.time_ms);
+            // The final displacement (last move → up) rides on pan_end.
+            const dx = ev.x - rec.last_x;
+            const dy = ev.y - rec.last_y;
             if (rec.kind == .swipe and @max(@abs(v.vx), @abs(v.vy)) > SWIPE_VELOCITY) {
                 const dir: SwipeDirection = if (@abs(v.vx) >= @abs(v.vy))
                     (if (v.vx > 0) SwipeDirection.right else SwipeDirection.left)
@@ -385,7 +447,7 @@ fn feedPan(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
                     (if (v.vy > 0) SwipeDirection.down else SwipeDirection.up);
                 return .{ .swipe = .{ .dir = dir, .vx = v.vx, .vy = v.vy } };
             }
-            return .{ .pan_end = .{ .vx = v.vx, .vy = v.vy } };
+            return .{ .pan_end = .{ .vx = v.vx, .vy = v.vy, .dx = dx, .dy = dy } };
         },
         else => {
             rec.reset();
@@ -399,15 +461,7 @@ fn feedPan(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
 fn feedPinch(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
     switch (ev.phase) {
         .down => {
-            if (rec.ptr_a == null) {
-                rec.ptr_a = .{ .id = ev.pointer, .x = ev.x, .y = ev.y };
-            } else if (rec.ptr_b == null and ev.pointer != rec.ptr_a.?.id) {
-                rec.ptr_b = .{ .id = ev.pointer, .x = ev.x, .y = ev.y };
-                const a = rec.ptr_a.?;
-                const b = rec.ptr_b.?;
-                rec.initial_distance = dist(a.x, a.y, b.x, b.y);
-                rec.state = .accepted;
-            }
+            trackDown(rec, ev);
             return null;
         },
         .move => {
@@ -418,14 +472,7 @@ fn feedPinch(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
             return .{ .pinch = .{ .scale = dist(a.x, a.y, b.x, b.y) / rec.initial_distance } };
         },
         .up => {
-            // Pinch ends when a pointer lifts.
-            if (rec.ptr_a) |a| {
-                if (a.id == ev.pointer) rec.ptr_a = null;
-            }
-            if (rec.ptr_b) |b| {
-                if (b.id == ev.pointer) rec.ptr_b = null;
-            }
-            rec.state = .idle;
+            _ = trackUp(rec, ev); // ends when a tracked pointer lifts
             return null;
         },
         else => {
@@ -440,15 +487,7 @@ fn feedPinch(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
 fn feedRotate(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
     switch (ev.phase) {
         .down => {
-            if (rec.ptr_a == null) {
-                rec.ptr_a = .{ .id = ev.pointer, .x = ev.x, .y = ev.y };
-            } else if (rec.ptr_b == null and ev.pointer != rec.ptr_a.?.id) {
-                rec.ptr_b = .{ .id = ev.pointer, .x = ev.x, .y = ev.y };
-                const a = rec.ptr_a.?;
-                const b = rec.ptr_b.?;
-                rec.initial_angle = std.math.atan2(b.y - a.y, b.x - a.x);
-                rec.state = .accepted;
-            }
+            trackDown(rec, ev);
             return null;
         },
         .move => {
@@ -456,16 +495,13 @@ fn feedRotate(rec: *Recognizer, ev: input.PointerEvent) ?Fire {
             const a = rec.ptr_a.?;
             const b = rec.ptr_b.?;
             const angle = std.math.atan2(b.y - a.y, b.x - a.x);
-            return .{ .rotate = .{ .delta = angle - rec.initial_angle } };
+            // Per-move delta wrapped to [-π, π]: no jump when crossing ±π.
+            const delta = wrapAngle(angle - rec.last_angle);
+            rec.last_angle = angle;
+            return .{ .rotate = .{ .delta = delta } };
         },
         .up => {
-            if (rec.ptr_a) |a| {
-                if (a.id == ev.pointer) rec.ptr_a = null;
-            }
-            if (rec.ptr_b) |b| {
-                if (b.id == ev.pointer) rec.ptr_b = null;
-            }
-            rec.state = .idle;
+            _ = trackUp(rec, ev); // ends when a tracked pointer lifts
             return null;
         },
         else => {
@@ -505,32 +541,64 @@ pub const GestureArena = struct {
     }
 
     /// Feed one pointer event: recognizers compete; the first to claim wins.
+    ///
+    /// Arbitration policy:
+    ///   - Two-pointer gestures (pinch/rotate) are fed first and are invoked
+    ///     immediately — they can co-fire (scale + angle on the same move).
+    ///     When one accepts, it claims the interaction: single-pointer
+    ///     recognizers are rejected (a pinch must not also fire a tap) and
+    ///     skipped while it is active.
+    ///   - Ongoing single-pointer gestures (pan start/update) are invoked
+    ///     immediately; terminal gestures (tap, double-tap, long-press,
+    ///     pan-end, swipe) are collected and resolved after the pass:
+    ///     double-tap suppresses the same-event tap.
     pub fn feed(arena: *GestureArena, ev: input.PointerEvent) void {
         if (ev.phase == .enter or ev.phase == .leave or ev.phase == .outside_down) {
             arena.cancel();
             return;
         }
+        const cbs = &arena.callbacks;
+        // Two-pointer gestures first.
+        var two_finger_active = false;
+        for (arena.recognizers[0..arena.count]) |*r| {
+            if (r.kind != .pinch and r.kind != .rotate) continue;
+            if (r.feed(ev)) |f| {
+                switch (f) {
+                    .pinch => |p| if (cbs.on_pinch) |cb| cb.fn_ptr(cb.userdata, p.scale),
+                    .rotate => |p| if (cbs.on_rotate) |cb| cb.fn_ptr(cb.userdata, p.delta),
+                    else => {},
+                }
+            }
+            if (r.state == .accepted) {
+                two_finger_active = true;
+                // The two-finger gesture claims the interaction.
+                for (arena.recognizers[0..arena.count]) |*o| {
+                    if (o.kind == .pinch or o.kind == .rotate) continue;
+                    o.reset();
+                }
+            }
+        }
+        if (two_finger_active) return; // single-pointer recognizers rejected
+        // Single-pointer recognizers.
         var tap_fire = false;
         var double_tap_fire = false;
-        var ongoing: ?Fire = null;
         var terminal: ?Fire = null;
         for (arena.recognizers[0..arena.count]) |*r| {
+            if (r.kind == .pinch or r.kind == .rotate) continue;
             if (r.feed(ev)) |f| {
                 switch (f) {
                     .tap => tap_fire = true,
                     .double_tap => double_tap_fire = true,
-                    .pan_start, .pan_update, .pinch, .rotate => {
-                        if (ongoing == null) ongoing = f;
-                    },
+                    .pan_start => |p| if (cbs.on_pan_start) |cb| cb.fn_ptr(cb.userdata, p.dx, p.dy),
+                    .pan_update => |p| if (cbs.on_pan_update) |cb| cb.fn_ptr(cb.userdata, p.dx, p.dy),
                     .long_press, .pan_end, .swipe => {
                         if (terminal == null) terminal = f;
                     },
+                    else => {},
                 }
             }
         }
-        const cbs = &arena.callbacks;
-        // Resolution: double-tap suppresses the same-event tap; terminal
-        // gestures win over ongoing ones (they are mutually exclusive).
+        // Resolution: double-tap suppresses the same-event tap.
         if (double_tap_fire) {
             if (cbs.on_double_tap) |cb| cb.fn_ptr(cb.userdata);
         } else if (tap_fire) {
@@ -538,16 +606,8 @@ pub const GestureArena = struct {
         } else if (terminal) |f| {
             switch (f) {
                 .long_press => if (cbs.on_long_press) |cb| cb.fn_ptr(cb.userdata),
-                .pan_end => |p| if (cbs.on_pan_end) |cb| cb.fn_ptr(cb.userdata, p.vx, p.vy),
+                .pan_end => |p| if (cbs.on_pan_end) |cb| cb.fn_ptr(cb.userdata, p.vx, p.vy, p.dx, p.dy),
                 .swipe => |p| if (cbs.on_swipe) |cb| cb.fn_ptr(cb.userdata, p.dir, p.vx, p.vy),
-                else => {},
-            }
-        } else if (ongoing) |f| {
-            switch (f) {
-                .pan_start => if (cbs.on_pan_start) |cb| cb.fn_ptr(cb.userdata),
-                .pan_update => |p| if (cbs.on_pan_update) |cb| cb.fn_ptr(cb.userdata, p.dx, p.dy),
-                .pinch => |p| if (cbs.on_pinch) |cb| cb.fn_ptr(cb.userdata, p.scale),
-                .rotate => |p| if (cbs.on_rotate) |cb| cb.fn_ptr(cb.userdata, p.delta),
                 else => {},
             }
         }
@@ -608,18 +668,22 @@ test "long press fires after the hold threshold" {
     try std.testing.expect(r3.feed(pev(.up, 50, 0, 700, 0)) == null);
 }
 
-test "pan: start on slop, update deltas, end with velocity" {
+test "pan: start on slop, update deltas, end with velocity + final delta" {
     var r = Recognizer{ .kind = .pan };
     _ = r.feed(pev(.down, 0, 0, 0, 0));
     try std.testing.expect(r.feed(pev(.move, 5, 0, 10, 0)) == null); // within slop
-    try std.testing.expectEqual(Fire.pan_start, r.feed(pev(.move, 20, 0, 20, 0)).?);
+    // claiming move: reports the down → claim displacement (20, 0)
+    const start = r.feed(pev(.move, 20, 0, 20, 0)).?;
+    try std.testing.expectEqual(@as(f32, 20), start.pan_start.dx);
+    try std.testing.expectEqual(@as(f32, 0), start.pan_start.dy);
     const upd = r.feed(pev(.move, 30, 0, 30, 0)).?;
     try std.testing.expectEqual(@as(f32, 10), upd.pan_update.dx);
     try std.testing.expectEqual(@as(f32, 0), upd.pan_update.dy);
     const end = r.feed(pev(.up, 40, 0, 40, 0)).?;
-    // 40 px in 40 ms → 1000 px/s
+    // 40 px in 40 ms → 1000 px/s; final displacement 30 → 40 = 10
     try std.testing.expectApproxEqAbs(@as(f32, 1000), end.pan_end.vx, 1);
     try std.testing.expectApproxEqAbs(@as(f32, 0), end.pan_end.vy, 0.001);
+    try std.testing.expectEqual(@as(f32, 10), end.pan_end.dx);
 }
 
 test "swipe fires on a fast fling with the dominant direction" {
@@ -650,12 +714,44 @@ test "pinch: two pointers, scale = current / initial distance" {
     try std.testing.expect(r.feed(pev(.move, 200, 0, 30, 2)) == null);
 }
 
-test "rotate: two pointers, angle delta from the initial angle" {
+test "pinch: an unrelated third finger does not stop the gesture" {
+    var r = Recognizer{ .kind = .pinch };
+    _ = r.feed(pev(.down, 0, 0, 0, 1));
+    _ = r.feed(pev(.down, 100, 0, 0, 2)); // accepted
+    _ = r.feed(pev(.down, 500, 500, 5, 3)); // third finger: ignored
+    _ = r.feed(pev(.up, 500, 500, 10, 3)); // third finger lifts: gesture survives
+    const f = r.feed(pev(.move, 150, 0, 20, 2)).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), f.pinch.scale, 0.001);
+}
+
+test "pinch: a replacement finger re-enters the gesture" {
+    var r = Recognizer{ .kind = .pinch };
+    _ = r.feed(pev(.down, 0, 0, 0, 1));
+    _ = r.feed(pev(.down, 100, 0, 0, 2)); // accepted, distance 100
+    _ = r.feed(pev(.up, 0, 0, 10, 1)); // pointer 1 lifts → idle
+    _ = r.feed(pev(.down, 0, 0, 20, 3)); // replacement finger
+    // new pair (3..2): (0,0)-(100,0) → (-100,0)-(100,0) = 100 → 200 = 2x
+    const f = r.feed(pev(.move, -100, 0, 30, 3)).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), f.pinch.scale, 0.001);
+}
+
+test "rotate: two pointers, per-move angle delta" {
     var r = Recognizer{ .kind = .rotate };
     _ = r.feed(pev(.down, 0, 0, 0, 1));
     _ = r.feed(pev(.down, 100, 0, 0, 2)); // initial angle 0
     const f = r.feed(pev(.move, 0, 100, 10, 2)).?; // now angle = π/2
     try std.testing.expectApproxEqAbs(@as(f32, std.math.pi / 2.0), f.rotate.delta, 0.001);
+}
+
+test "rotate: no jump when the angle crosses ±π" {
+    var r = Recognizer{ .kind = .rotate };
+    _ = r.feed(pev(.down, 0, 0, 0, 1));
+    _ = r.feed(pev(.down, -100, 1, 0, 2)); // angle ≈ π - 0.01
+    _ = r.feed(pev(.move, -100, 1, 10, 2)); // accepted at ≈ 3.1316
+    // cross to ≈ -(π - 0.01): raw delta ≈ -6.26, wrapped → +0.02
+    const f = r.feed(pev(.move, -100, -1, 20, 2)).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.02), f.rotate.delta, 0.001);
+    try std.testing.expect(f.rotate.delta > 0);
 }
 
 test "arena: builds one recognizer per callback set and resolves conflicts" {
@@ -687,6 +783,53 @@ test "arena: builds one recognizer per callback set and resolves conflicts" {
 fn countCb(userdata: ?*anyopaque) void {
     const counter: *u32 = @ptrCast(@alignCast(userdata.?));
     counter.* += 1;
+}
+
+const MultiRec = struct { pinches: u32 = 0, rotates: u32 = 0, last_scale: f32 = 0, last_delta: f32 = 0 };
+
+fn recPinchCb(userdata: ?*anyopaque, scale: f32) void {
+    const r: *MultiRec = @ptrCast(@alignCast(userdata.?));
+    r.pinches += 1;
+    r.last_scale = scale;
+}
+
+fn recRotateCb(userdata: ?*anyopaque, delta: f32) void {
+    const r: *MultiRec = @ptrCast(@alignCast(userdata.?));
+    r.rotates += 1;
+    r.last_delta = delta;
+}
+
+test "arena: pinch and rotate co-fire on the same move" {
+    var rec = MultiRec{};
+    var arena = GestureArena.init(.{
+        .on_pinch = .{ .fn_ptr = recPinchCb, .userdata = &rec },
+        .on_rotate = .{ .fn_ptr = recRotateCb, .userdata = &rec },
+    });
+    arena.feed(pev(.down, 0, 0, 0, 1));
+    arena.feed(pev(.down, 100, 0, 0, 2)); // pair complete
+    arena.feed(pev(.move, 150, 50, 10, 2)); // scale + angle change in one move
+    try std.testing.expectEqual(@as(u32, 1), rec.pinches);
+    try std.testing.expectEqual(@as(u32, 1), rec.rotates);
+    try std.testing.expectApproxEqAbs(@sqrt(25000.0) / 100.0, rec.last_scale, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.32175), rec.last_delta, 0.001); // atan2(50, 150)
+}
+
+test "arena: a pinch claims the interaction — no tap fires" {
+    var taps: u32 = 0;
+    var rec = MultiRec{};
+    var arena = GestureArena.init(.{
+        .on_tap = .{ .fn_ptr = countCb, .userdata = &taps },
+        .on_pinch = .{ .fn_ptr = recPinchCb, .userdata = &rec },
+    });
+    arena.feed(pev(.down, 0, 0, 0, 1));
+    arena.feed(pev(.down, 100, 0, 0, 2)); // pinch accepts → claims the interaction
+    arena.feed(pev(.move, 150, 0, 10, 2));
+    // lifting a tracked finger quickly would be a tap if the tap recognizer
+    // were still tracking — the pinch claim reset it.
+    arena.feed(pev(.up, 0, 0, 50, 1));
+    arena.feed(pev(.up, 150, 0, 60, 2));
+    try std.testing.expectEqual(@as(u32, 1), rec.pinches);
+    try std.testing.expectEqual(@as(u32, 0), taps);
 }
 
 test "single-pointer recognizers ignore other pointers' events" {

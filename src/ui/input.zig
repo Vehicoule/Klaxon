@@ -25,7 +25,7 @@ pub const PointerEvent = struct {
     y: f32,
     button: u8 = 1, // 1 = primary (SDL_BUTTON_LEFT)
     pointer: u64 = 0, // 0 = primary (mouse); touch = SDL finger id (multi-touch)
-    time_ms: u64 = 0, // event timestamp (SDL_GetTicks) — gesture timing
+    time_ms: u64 = 0, // event timestamp (SDL event ns / 1e6) — gesture timing
 };
 
 /// Platform-independent keys (the host maps SDL_Keycode → Key).

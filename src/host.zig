@@ -167,8 +167,10 @@ pub const Host = struct {
         }
         // Input routing (Phase 1c/1d): platform events → router → widget tree.
         // Every pointer event carries its pointer id (mouse = which, touch =
-        // finger id) and a timestamp (gesture timing).
-        const time_ms: u64 = sdl.c.SDL_GetTicks();
+        // finger id) and a timestamp (gesture timing). The event's own
+        // timestamp (ns since SDL_Init, same epoch as SDL_GetTicks) is used —
+        // not the handling time — so queued events keep their real clock.
+        const time_ms: u64 = event.common.timestamp / 1_000_000;
         switch (event.type) {
             sdl.c.SDL_EVENT_MOUSE_MOTION => host.input.dispatchPointer(root, .{
                 .phase = .move,

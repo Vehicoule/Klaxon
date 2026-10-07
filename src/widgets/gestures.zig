@@ -104,11 +104,12 @@ test "detector fires on_tap through the router" {
 }
 
 test "detector fires pan callbacks with deltas" {
-    var rec = Rec{};
+    var start = Rec{};
+    var upd = Rec{};
     const root = try gestureDetector(std.testing.allocator, .{
         .callbacks = .{
-            .on_pan_start = .{ .fn_ptr = recCb, .userdata = &rec },
-            .on_pan_update = .{ .fn_ptr = recPanCb, .userdata = &rec },
+            .on_pan_start = .{ .fn_ptr = recPanCb, .userdata = &start },
+            .on_pan_update = .{ .fn_ptr = recPanCb, .userdata = &upd },
         },
     });
     defer root.deinit();
@@ -117,9 +118,12 @@ test "detector fires pan callbacks with deltas" {
     router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 10, .time_ms = 0 });
     router.dispatchPointer(root, .{ .phase = .move, .x = 30, .y = 10, .time_ms = 10 }); // start (> slop)
     router.dispatchPointer(root, .{ .phase = .move, .x = 45, .y = 25, .time_ms = 20 }); // update
-    try std.testing.expectEqual(@as(u32, 2), rec.fired); // start + update
-    try std.testing.expectApproxEqAbs(@as(f32, 15), rec.last_dx, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 15), rec.last_dy, 0.001);
+    try std.testing.expectEqual(@as(u32, 1), start.fired);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), start.last_dx, 0.001); // down → claim
+    try std.testing.expectApproxEqAbs(@as(f32, 0), start.last_dy, 0.001);
+    try std.testing.expectEqual(@as(u32, 1), upd.fired);
+    try std.testing.expectApproxEqAbs(@as(f32, 15), upd.last_dx, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 15), upd.last_dy, 0.001);
 }
 
 test "detector with no callbacks still claims events (and leaks nothing)" {
