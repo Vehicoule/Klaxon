@@ -60,6 +60,17 @@ pub fn layerAlpha(ctx: *kx.Ctx, alpha: f32) void {
     kx.c.kx_layer_alpha(ctx, alpha);
 }
 
+/// Scale a color's alpha channel by `k` (0..1) — fades that preserve the
+/// color's own opacity (scrollbar show/hide, Phase 2d-0.5).
+pub fn withAlphaScaled(c: Color, k: f32) Color {
+    const r: u32 = (c >> 24) & 0xFF;
+    const g: u32 = (c >> 16) & 0xFF;
+    const b: u32 = (c >> 8) & 0xFF;
+    const base: f32 = @floatFromInt(c & 0xFF);
+    const a: u32 = @intFromFloat(std.math.clamp(base * std.math.clamp(k, 0, 1), 0, 255));
+    return (r << 24) | (g << 16) | (b << 8) | a;
+}
+
 pub fn fillRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, color: Color) void {
     kx.c.kx_fill_rect(ctx, x, y, w, h, color);
 }
