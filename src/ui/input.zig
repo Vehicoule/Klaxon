@@ -43,6 +43,7 @@ pub const Key = enum(u32) {
     delete = 0x7F,
     left = 0x100, // synthetic (host-mapped)
     right = 0x101,
+    back = 0x102, // synthetic: hardware back (Android) / Escape (desktop)
     _,
 };
 
@@ -69,6 +70,13 @@ pub const MAX_POINTERS = 8;
 
 pub const Capture = struct { pointer: u64, node: *Node };
 
+/// Back-button handler (Phase 2a): the navigator pops the page stack.
+/// Returns true when the back request was handled.
+pub const BackHandler = struct {
+    fn_ptr: *const fn (userdata: ?*anyopaque) bool,
+    userdata: ?*anyopaque,
+};
+
 fn nullCaptureSlots() [MAX_POINTERS]?Capture {
     var slots: [MAX_POINTERS]?Capture = undefined;
     for (&slots) |*s| s.* = null;
@@ -80,6 +88,7 @@ pub const InputRouter = struct {
     hovered: ?*Node = null,
     focused: ?*Node = null,
     open_popup: ?*Node = null,
+    back_handler: ?BackHandler = null, // navigator pop (Phase 2a)
 
     fn captureSlot(self: *InputRouter, pointer: u64) ?usize {
         for (self.captured, 0..) |slot, i| {
@@ -189,6 +198,22 @@ pub const InputRouter = struct {
 
     pub fn dispatchKey(self: *InputRouter, ev: KeyEvent) void {
         if (self.focused) |f| _ = sendKey(f, ev);
+    }
+
+    pub fn setBackHandler(self: *InputRouter, h: ?BackHandler) void {
+        self.back_handler = h;
+    }
+
+    /// Hardware back (Android) / Escape (desktop), Phase 2a. The focused
+    /// chain gets the key first (a text field may consume it); then the
+    /// registered back handler (the navigator pops). Returns true when the
+    /// back request was handled.
+    pub fn dispatchBack(self: *InputRouter) bool {
+        if (self.focused) |f| {
+            if (sendKey(f, .{ .kind = .key_down, .key = .back })) return true;
+        }
+        if (self.back_handler) |h| return h.fn_ptr(h.userdata);
+        return false;
     }
 
     /// Scroll: hit-test at the pointer position, deliver to the node's
@@ -462,6 +487,40 @@ test "keyboard goes to the focused node" {
     router.focus(null);
     router.dispatchKey(.{ .kind = .key_down, .key = .enter });
     try std.testing.expectEqual(@as(usize, 1), recState(child).keys.items.len);
+}
+
+fn countBack(userdata: ?*anyopaque) bool {
+    const c: *u32 = @ptrCast(@alignCast(userdata.?));
+    c.* += 1;
+    return true;
+}
+
+test "back: focused chain gets the key first, then the back handler" {
+    const root = try recNode(std.testing.allocator, false);
+    defer root.deinit();
+    const field = try recNode(std.testing.allocator, true); // consumes every key
+    root.add(field);
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    field.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    var router = InputRouter{};
+    var handled: u32 = 0;
+    router.setBackHandler(.{ .fn_ptr = countBack, .userdata = &handled });
+    // No focus: straight to the back handler.
+    try std.testing.expect(router.dispatchBack());
+    try std.testing.expectEqual(@as(u32, 1), handled);
+    // Focused node consumes the key: the handler is not called.
+    router.focus(field);
+    try std.testing.expect(router.dispatchBack());
+    try std.testing.expectEqual(@as(u32, 1), handled);
+    try std.testing.expectEqual(@as(usize, 1), recState(field).keys.items.len);
+    // Unhandled focused node: bubbles past it, the handler runs.
+    router.focus(root); // root does not handle keys
+    try std.testing.expect(router.dispatchBack());
+    try std.testing.expectEqual(@as(u32, 2), handled);
+    // No handler, no focus: unhandled.
+    router.setBackHandler(null);
+    router.focus(null);
+    try std.testing.expect(!router.dispatchBack());
 }
 
 test "click outside an open popup closes it and is consumed (barrier)" {

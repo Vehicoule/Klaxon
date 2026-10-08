@@ -12,6 +12,8 @@
 // Animations (3): AnimatedContainer, AnimatedOffset, AnimatedScale.
 // Scroll (4): ListView (virtualized), GridView (virtualized), ScrollView,
 // Scrollbar.
+// Navigation (2): NavigatorView (page stack + transitions), Hero (shared
+// element) — Phase 2a.
 // 50 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -26,3 +28,4 @@ pub const list_view = @import("widgets/list_view.zig");
 pub const grid_view = @import("widgets/grid_view.zig");
 pub const scroll_view = @import("widgets/scroll_view.zig");
 pub const scrollbar = @import("widgets/scrollbar.zig");
+pub const navigator = @import("widgets/navigator.zig");

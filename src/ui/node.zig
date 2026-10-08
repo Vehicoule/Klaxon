@@ -124,6 +124,17 @@ pub const Node = struct {
         node.markDirty();
     }
 
+    /// Insert a child at `index` (clamped to the end). Same ownership contract
+    /// as add(): the child is parented, not owned. Re-insertion at the original
+    /// index restores paint order (hero flight, Phase 2a).
+    pub fn insert(node: *Node, index: usize, child: *Node) void {
+        child.parent = node;
+        const i = @min(index, node.children.items.len);
+        node.children.insert(i, child) catch @panic("klaxon: out of memory");
+        node.markLayoutDirty();
+        node.markDirty();
+    }
+
     /// Remove a child. The child is NOT deinited (the caller owns it) and its
     /// parent pointer is cleared. Returns false if it was not a child.
     /// Dynamic UI (conditional children, theme rebuilds) needs this: the tree
@@ -351,6 +362,26 @@ test "remove detaches a child without deiniting it" {
     try std.testing.expect(!root.remove(a)); // already detached
     a.deinit(); // caller owns the detached child
     // the remaining subtree still deinits cleanly
+}
+
+test "insert places a child at the index and keeps paint order" {
+    const root = try testNode(100, 100);
+    defer root.deinit();
+    const a = try testNode(10, 10);
+    const b = try testNode(10, 10);
+    const c = try testNode(10, 10);
+    root.add(a);
+    root.add(c);
+    root.insert(1, b);
+    try std.testing.expectEqual(@as(usize, 3), root.children.items.len);
+    try std.testing.expectEqual(a, root.children.items[0]);
+    try std.testing.expectEqual(b, root.children.items[1]);
+    try std.testing.expectEqual(c, root.children.items[2]);
+    try std.testing.expectEqual(root, b.parent.?);
+    // clamped past the end
+    const d = try testNode(10, 10);
+    root.insert(99, d);
+    try std.testing.expectEqual(d, root.children.items[3]);
 }
 
 test "markDirty propagates up to the root" {

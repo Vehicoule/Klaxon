@@ -330,10 +330,19 @@ pub const Host = struct {
                 .kind = .text_input,
                 .text = std.mem.span(event.text.text),
             }),
-            sdl.c.SDL_EVENT_KEY_DOWN => host.input.dispatchKey(.{
-                .kind = .key_down,
-                .key = sdlKeyToKey(event.key.key),
-            }),
+            sdl.c.SDL_EVENT_KEY_DOWN => {
+                // Back (Android hardware button / desktop Escape): the
+                // focused chain gets the key first, then the navigator pops
+                // (Phase 2a back handler).
+                if (event.key.key == sdl.c.SDLK_ESCAPE or event.key.key == sdl.c.SDLK_AC_BACK) {
+                    _ = host.input.dispatchBack();
+                } else {
+                    host.input.dispatchKey(.{
+                        .kind = .key_down,
+                        .key = sdlKeyToKey(event.key.key),
+                    });
+                }
+            },
             else => {},
         }
         return false;

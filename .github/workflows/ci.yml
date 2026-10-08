@@ -72,6 +72,9 @@ jobs:
       - name: Gallery headless smoke (raster, 600 frames)
         run: SDL_VIDEODRIVER=dummy ./zig-out/bin/gallery
 
+      - name: Navigator headless smoke (raster, 600 frames, scripted transitions)
+        run: SDL_VIDEODRIVER=dummy ./zig-out/bin/navigator
+
       - name: ReleaseSmall build + size gate (< 7 Mo)
         run: |
           zig build -Doptimize=ReleaseSmall

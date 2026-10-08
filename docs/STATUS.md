@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-07 (Phase 1 — Widgets + Core Systems, COMPLETE: 1a–1g)
+**Last updated**: 2026-10-08 (Phase 2a — navigation, DONE; Phase 1 COMPLETE: 1a–1g)
 
 ## Current phase
 
@@ -32,7 +32,9 @@
 
 **Exit criteria Phase 1: MET.** Gallery runs headless on Linux (CI smoke: 600 frames) and on the dev Mac (`zig build gallery`). 31 widgets functional. State, gestures, animations, scroll 10k work. `zig build test` + `zig build test-golden` green.
 
-**Next: Phase 2a — navigation (page stack, transitions, deep links).**
+- **2a done** — Navigation: `ui/navigator.zig` (page stack: route patterns `anime/{id}` + params, imperative push/pop/replace/popToRoot, deep links `klaxon://anime/42?tab=2`, cold start, change notifications, monotonic page ids) + `widgets/navigator.zig` (`NavigatorView`: transform wrappers (translate + scale + alpha layer), transitions slide/slide_up/fade/scale/none (300 ms M3 standard tween, parallax 0.3, interrupted-transition snap, top-only hit-testing, dirty-rect swept damage) + `Hero` shared-element flight (placeholder keeps the destination size, source hero hidden, child reparented via remove+add)). Back: `input.dispatchBack` (focused chain first, then the navigator's back handler) + `Key.back` + host maps Escape/AC_BACK + `Node.insert` (hero re-attach at the original index). kx_skia ABI **0.4.0** (additive): `kx_layer_alpha` (saveLayerAlphaf — fade transitions). Demo: `src/navigator_main.zig` (5 routes, all transition kinds, hero, CLI deep link `klaxon://detail/42`) + `zig build navigator` + CI headless smoke (600 frames, scripted push/push/pop/push/popToRoot/push). Widgets 33/50. `docs/NAVIGATION.md`. Métriques (Mac dev, raster headless, smoke 600 frames): hello TTFF 0,1 ms / frame 0,63 ms / RSS 26 Mo / ReleaseSmall 6,30 Mo; gallery TTFF 4,2 ms / 3,35 ms / 43 Mo / 6,36 Mo; navigator TTFF 0,1 ms / 1,03 ms / 31 Mo / 6,32 Mo. Cibles resserrées atteintes: frame p99 ≤ 4 ms ✓, TTFF < 50 ms ✓, binaire < 7 Mo (gate CI) ✓, RSS hello < 40 Mo ✓, nav transition ≤ 350 ms ✓ (300 ms). fps p99 ≥ 120 = device gate (Phase 4, inchangé).
+
+**Next: Phase 2b — i18n (tr, ARB, RTL, pluralization, ICU).**
 
 ## What exists (code, this repo)
 
@@ -58,6 +60,12 @@
 - ✅ `src/widgets/grid_view.zig` — GridView (virtualized, row-aligned window) (Phase 1f)
 - ✅ `src/widgets/scroll_view.zig` — ScrollView (single-child scroll) (Phase 1f)
 - ✅ `src/widgets/scrollbar.zig` — Scrollbar (drives any scrollable via vtable hooks) (Phase 1f)
+- ✅ `src/ui/navigator.zig` — Navigator: page stack, route patterns + params, deep links, back (Phase 2a) + `docs/NAVIGATION.md`
+- ✅ `src/widgets/navigator.zig` — NavigatorView (page stack + transitions) + Hero (shared element flight) (Phase 2a)
+- ✅ `src/navigator_main.zig` — navigator demo app (5 routes, all transitions, hero, deep link) (Phase 2a)
+- ✅ `src/ui/input.zig` — back handler (`dispatchBack`: focused chain first, then the navigator pops) + `Key.back` (Phase 2a)
+- ✅ `src/ui/node.zig` — `Node.insert` (re-insert at the original index — hero re-attach) (Phase 2a)
+- ✅ `kx_skia/` — ABI 0.4.0: `kx_layer_alpha` (saveLayerAlphaf — fade transitions) (Phase 2a)
 - ✅ `src/golden.zig` — offscreen render + pixel assertions + interactive `Renderer` (golden tests; gallery/conformance reuse)
 - ✅ `kx_skia/` — C++ shim: `include/kx_skia.h` (C ABI 0.3.0: raster, text+metrics, images, readback, canvas state/transforms/clip), `src/kx_skia_common.cpp` (raster + image registry + canvas state), `src/kx_skia_platform.h`, `src/kx_skia_macos.mm` (Graphite-Metal + CoreText), `src/kx_skia_linux.cpp` (raster stub)
 - ✅ `scripts/fetch-deps.sh` — Skia / SDL3 / WAMR at pinned refs
@@ -83,7 +91,6 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 ## What does NOT exist (greenfield)
 
-- ❌ Navigation
 - ❌ i18n
 - ❌ All 50 widgets
 - ❌ A11y bridges (6)
@@ -127,11 +134,11 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 | Metric | Target |
 |---|---|
-| fps p99 (real scenes, incl. video_playback) | ≥ 120 |
-| frame p99 | ≤ 4 ms (tightened 2026-10-08 from 8.3 ms) |
-| RSS hello | < 40 Mo (measured 24.0 Mo — continuous improvement target) |
-| TTFF | < 50 ms (tightened 2026-10-08 from 100 ms; measured 42–45 ms) |
-| Binary size hello | < 5 Mo (CI gate < 7 Mo — tightened from 10 Mo; current 6.0 Mo) |
+| fps p99 (real scenes, incl. video_playback) | ≥ 120 (device gate, Phase 4 — unchanged) |
+| frame p99 | ≤ 4 ms (tightened from 8.3 ms; measured 0.63 hello / 3.35 gallery / 1.03 navigator, raster headless) |
+| RSS hello | < 40 Mo (measured 26 Mo — continuous improvement target) |
+| TTFF | < 50 ms (tightened from 100 ms; measured 0.1 hello / 4.2 gallery / 0.1 navigator, run-start → first frame) |
+| Binary size hello | < 5 Mo (CI gate < 7 Mo — tightened from 10 Mo; current 6.30 Mo) |
 | Input latency (key/tap → repaint) | ≤ 1 frame |
 | Nav transition duration | ≤ 350 ms (target 300 ms) |
 | WASM size hello | < 5 Mo |
@@ -155,4 +162,5 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 12. ~~Phase 1e: animations (Spring M3E closed-form, Tween, SIMD, timeline, dirty-rect, frame budget) + AnimatedContainer/Offset/Scale~~ done (PR #7)
 13. ~~Phase 1f: scroll (ListView/GridView virtualized, ScrollView, Scrollbar)~~ done (PR #8)
 14. ~~Phase 1g: gallery (full showcase: all widgets, themes, animations, gestures, scroll 10k)~~ done (PR #9)
-15. **Phase 2a: navigation (`ui/navigator.zig` — page stack, transitions, deep links, back stack)**
+15. ~~Phase 2a: navigation (`ui/navigator.zig` — page stack, transitions, deep links, back stack)~~ done (PR #11)
+16. **Phase 2b: i18n (`ui/i18n.zig` — tr, ARB, RTL, pluralization, ICU)**

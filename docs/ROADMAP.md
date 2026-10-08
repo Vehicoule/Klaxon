@@ -96,15 +96,17 @@ Full showcase: all 31 widgets, themes (dark/light, live toggle), animations, ges
 
 ## Phase 2 — Navigation + i18n + A11y (2 weeks)
 
-### 2a. Navigation (week 1)
+### 2a. Navigation (week 1) — DONE (PR #11)
 
-| # | Task | Deliverable |
-|---|---|---|
-| 2a.1 | `ui/navigator.zig` — page stack (declarative + imperative) | push/pop/replace |
-| 2a.2 | Transitions: slide, fade, scale | Per-route transition |
-| 2a.3 | Hero transitions (shared element) | Cross-route animation |
-| 2a.4 | Deep links (URL → route) | `vehicoule://anime/42` |
-| 2a.5 | Back stack management | Android back button |
+Page stack (declarative routes `anime/{id}` + params, imperative
+push/pop/replace/popToRoot), transitions (slide, slide_up, fade, scale,
+none — 300 ms M3 standard tween, parallax, interrupted-transition snap),
+hero shared-element flights, deep links (`klaxon://anime/42?tab=2`, cold
+start), back (Android hardware button / desktop Escape via the router's back
+handler). `ui/navigator.zig` + `widgets/navigator.zig` (NavigatorView +
+Hero) + `docs/NAVIGATION.md` + kx ABI 0.4.0 (`kx_layer_alpha` for fades).
+Demo: `zig build navigator` (CI headless smoke, 600 scripted frames).
+Widgets 33/50.
 
 ### 2b. i18n (week 1)
 
@@ -141,7 +143,7 @@ Full showcase: all 31 widgets, themes (dark/light, live toggle), animations, ges
 | Tooltip | `widgets/tooltip.zig` |
 | SnackBar | `widgets/snackbar.zig` |
 
-**Exit criteria Phase 2**: Navigation works (push/pop/transitions/deep links). i18n works (FR/EN/JA/AR). A11y on Linux (AT-SPI). 40 widgets total.
+**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR). A11y on Linux (AT-SPI). 40 widgets total (33 today).
 
 ---
 
@@ -337,7 +339,7 @@ API reference: generated from Zig doc comments (English).
 - [x] Gestures (tap, double-tap, long-press, pan, swipe, pinch, rotate) — Phase 1d
 - [x] Animations (Spring M3E closed-form, Tween, staggered, SIMD, dirty-rect) — Phase 1e; hero/opacity land with the layer ABI
 - [x] Scroll (ListView/GridView virtualized, ScrollView, Scrollbar, wheel + drag) — Phase 1f
-- [ ] Navigation (declarative + imperative, transitions, deep links)
+- [x] Navigation (page stack, transitions, hero, deep links, back) — Phase 2a
 - [ ] i18n (tr, ARB, RTL, pluralization, ICU)
 - [ ] A11y (6 bridges: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA)
 - [ ] DevTools (overlay, inspector, memory ledger, frame timeline)
