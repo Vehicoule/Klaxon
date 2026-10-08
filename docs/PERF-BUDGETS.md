@@ -7,10 +7,12 @@
 | Metric | Target | Measured (retail, Adreno 750) | Status |
 |---|---|---|---|
 | **fps p99** (scroll_10k, real scenes) | ≥ 120 | ~135 avg on empty app — **too easy, target real scenes** | 🎯 Target real scenes (gallery, scroll, anim) |
-| **frame p99** | ≤ 8.3 ms (120 Hz budget) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
-| **RSS hello** | < 40 Mo | ~45 Mo estimated (Skia floor ~14 + app ~5 + overhead) | 🎯 Ambitious. Gate v1 = < 40 Mo. May take time. |
-| **TTFF** (time to first frame) | < 100 ms | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
-| **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip + ICU-trim |
+| **frame p99** | ≤ 4 ms (tightened 2026-10-08 from 8.3 ms; measured 0.43 ms hello / 1.71 ms gallery, raster headless) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
+| **RSS hello** | < 40 Mo (measured 24.0 Mo — continuous improvement target) | ~45 Mo estimated (Skia floor ~14 + app ~5 + overhead) | 🎯 Ambitious. Gate v1 = < 40 Mo. May take time. |
+| **TTFF** (time to first frame) | < 50 ms (tightened 2026-10-08 from 100 ms; measured 42–45 ms) | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
+| **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo (CI gate < 7 Mo — tightened 2026-10-08 from 10 Mo; current 6.0 Mo) | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip done; Skia trim (args.gn) to get under 5 Mo |
+| **Input latency** (key/tap → repaint) | ≤ 1 frame (≤ 8.3 ms) | synchronous dispatch in the loop | ✅ Router + dirty-flag (Phase 1c/1d) |
+| **Nav transition duration** | ≤ 350 ms (target 300 ms, M3 standard curve) | — (target; lands with Phase 2a) | 🎯 Phase 2a |
 | **WASM size hello** | < 5 Mo | 6.9 Mo | 🔧 Skia wasm trim |
 | **Build time e2e** (gradle included) | Always shorter than Flutter/Qt | 4.7s vs Flutter ~60s, Qt ~120s | ✅ Already winning |
 | **allocs_per_frame** (steady-state) | 0 | 0 (target met by design) | ✅ Arena allocator |
@@ -32,9 +34,10 @@ Gates migrate toward the North Star at each major version.
 
 | Metric | Gate CI v1 | North Star |
 |---|---|---|
-| TTFF | < 200 ms (proxy llvmpipe) → < 100 ms (device) | < 50 ms |
+| TTFF | < 100 ms (proxy llvmpipe) → < 50 ms (device) | < 40 ms |
 | RSS | < 60 Mo (llvmpipe proxy) → **< 40 Mo (device)** | < 20 Mo |
-| Binary size | < 10 Mo | < 5 Mo |
+| Binary size | < 7 Mo | < 5 Mo |
+| frame p99 | ≤ 4 ms | ≤ 2 ms |
 | WASM size | < 8 Mo | < 5 Mo |
 | Idle | 0 frames, 0% CPU | 0 wakeups/min |
 
@@ -43,8 +46,8 @@ Gates migrate toward the North Star at each major version.
 | Metric | Gate CI v1 | North Star |
 |---|---|---|
 | fps p99 | ≥ 120 (device) / ≥ 60 (llvmpipe proxy) | 120 everywhere |
-| frame p99 | ≤ 8.3 ms (device) / ≤ 16.7 ms (proxy) | ≤ 8.3 ms everywhere |
-| frame avg | ≤ 6 ms | ≤ 4 ms |
+| frame p99 | ≤ 4 ms (device) / ≤ 16.7 ms (proxy) | ≤ 4 ms everywhere |
+| frame avg | ≤ 4 ms | ≤ 2 ms |
 | RSS peak | < 80 Mo | < 50 Mo |
 | allocs_per_frame | 0 | 0 |
 | draw_calls | < 100 | < 50 (aggressive batching) |
@@ -104,7 +107,7 @@ The Vehicoule app is a media hub (music, video, books, manga) — **120 fps must
 
 | Metric | Gate CI v1 | North Star |
 |---|---|---|
-| input latency | < 16.7 ms (key → render) | < 8.3 ms |
+| input latency | < 16.7 ms (key → render) | < 4 ms |
 | fps during composition | ≥ 60 | 120 |
 
 ## Gates by platform × backend
@@ -159,13 +162,13 @@ CI-tier gates run on GitHub Actions runners (Linux/Windows/macOS + Android emula
 ```json
 {
   "gates": [
-    { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 200, "tier": "ci", "platform": "linux-llvmpipe" },
-    { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 100, "tier": "device", "platform": "android-arm64" },
+    { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 100, "tier": "ci", "platform": "linux-llvmpipe" },
+    { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 50, "tier": "device", "platform": "android-arm64" },
     { "scene": "hello", "metric": "peak_rss_mb", "op": "<", "value": 40, "tier": "device", "platform": "android-arm64" },
     { "scene": "scroll_10k", "metric": "fps_p99", "op": ">=", "value": 120, "tier": "device", "platform": "android-arm64" },
     { "scene": "scroll_10k", "metric": "fps_p99", "op": ">=", "value": 60, "tier": "ci", "platform": "linux-llvmpipe" },
     { "scene": "scroll_10k", "metric": "allocs_per_frame", "op": "==", "value": 0, "tier": "ci", "platform": "all" },
-    { "scene": "hello", "metric": "binary_size_mb", "op": "<", "value": 10, "tier": "ci", "platform": "linux-x64" },
+    { "scene": "hello", "metric": "binary_size_mb", "op": "<", "value": 7, "tier": "ci", "platform": "linux-x64" },
     { "scene": "hello", "metric": "binary_size_mb", "op": "<", "value": 5, "tier": "north_star", "platform": "all" }
   ]
 }
