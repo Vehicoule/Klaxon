@@ -929,36 +929,41 @@ test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
     var g = try Gallery.init(std.testing.allocator);
     defer g.deinit();
     g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
-    // NavBar: click the 3rd destination
+    // The ScrollView maps window coords through the scroll offset at hit-test
+    // (window = content - scroll_y) and only its viewport is on screen. Font
+    // metrics are platform-dependent, so the section's position is not —
+    // scroll the nav bar to the top of the viewport before clicking.
+    const sv = g.refs.scroll_view;
+    const sv_b = sv.bounds;
     const nb = g.refs.nav_bar.bounds;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, nb.y - sv_b.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // NavBar: click the 3rd destination
     const x3 = nb.x + nb.w * 2.5 / 4;
-    router.dispatchPointer(g.root, .{ .phase = .down, .x = x3, .y = nb.y + nb.h / 2 });
-    router.dispatchPointer(g.root, .{ .phase = .up, .x = x3, .y = nb.y + nb.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x3, .y = nb.y + nb.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x3, .y = nb.y + nb.h / 2 - sy });
     try std.testing.expectEqual(@as(usize, 2), g.nav_selected.peek());
     // Tabs: click the 2nd tab
     const tb = g.refs.tabs.bounds;
     const x2 = tb.x + tb.w * 1.5 / 3;
-    router.dispatchPointer(g.root, .{ .phase = .down, .x = x2, .y = tb.y + tb.h / 2 });
-    router.dispatchPointer(g.root, .{ .phase = .up, .x = x2, .y = tb.y + tb.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x2, .y = tb.y + tb.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x2, .y = tb.y + tb.h / 2 - sy });
     try std.testing.expectEqual(@as(usize, 1), g.tabs_selected.peek());
-    // Drawer: the open button opens it; a scrim click closes it. The drawer
-    // row sits below the fold at offset 0 — scroll the content first (the
-    // ScrollView maps window coords through the scroll offset at hit-test).
-    _ = widgets.scroll_view.setScrollOffset(g.refs.scroll_view, 200);
-    const scroll_y = widgets.scroll_view.scrollOffset(g.refs.scroll_view);
+    // Drawer: the open button opens it; a scrim click closes it. Bottom-align
+    // the drawer box in the viewport so the button and the scrim are on screen.
+    const dr = g.refs.drawer.bounds;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, dr.y + dr.h - (sv_b.y + sv_b.h)));
+    const sy2 = widgets.scroll_view.scrollOffset(sv);
     try std.testing.expect(!g.drawer_open.peek());
     const b = g.refs.drawer_btn.bounds;
-    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - scroll_y });
-    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - scroll_y });
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy2 });
     try std.testing.expect(g.drawer_open.peek());
-    const dr = g.refs.drawer.bounds;
-    // the panel is 360 wide on the start side: click the scrim right of it.
-    // The drawer is 240 high in the bounded box; aim at a point inside the
-    // visible part of the window (the row sits below the fold).
+    // the panel is 360 wide on the start side: click the scrim right of it
     const sx = dr.x + dr.w - 20;
-    const sy = dr.y + 60 - scroll_y;
-    router.dispatchPointer(g.root, .{ .phase = .down, .x = sx, .y = sy });
-    router.dispatchPointer(g.root, .{ .phase = .up, .x = sx, .y = sy });
+    const scrim_y = dr.y + 60 - sy2;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = sx, .y = scrim_y });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = sx, .y = scrim_y });
     try std.testing.expect(!g.drawer_open.peek());
 }
 
