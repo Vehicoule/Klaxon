@@ -1,0 +1,15 @@
+{
+  "@@locale": "ja",
+  "app_title": "Klaxon i18n デモ",
+  "@app_title": { "description": "ウィンドウのタイトル" },
+  "greeting": "こんにちは、{name}さん！",
+  "@greeting": { "description": "名前プレースホルダー付きの挨拶" },
+  "items": "{count, plural, other {# 個のアイテム}}",
+  "@items": { "description": "アイテム数（複数形）" },
+  "direction_label": "テキストの方向",
+  "direction_value": "左 → 右",
+  "locale_label": "言語",
+  "number_label": "数値",
+  "date_label": "日付",
+  "rtl_hint": "AR に切り替えるとレイアウトが反転します（RTL）"
+}

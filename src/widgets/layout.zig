@@ -20,6 +20,7 @@ const Constraints = ui.layout.Constraints;
 const Size = ui.layout.Size;
 const Axis = ui.layout.Axis;
 const EdgeInsets = ui.layout.EdgeInsets;
+const EdgeInsetsDirectional = ui.layout.EdgeInsetsDirectional;
 const MainAlign = ui.layout.MainAlign;
 const CrossAlign = ui.layout.CrossAlign;
 const Alignment = ui.layout.Alignment;
@@ -108,7 +109,8 @@ fn stackLayout(n: *Node, bounds: Rect) void {
         .{ .max_w = bounds.w, .max_h = bounds.h };
     for (n.children.items) |child| {
         const cs = child.measure(child_c);
-        child.layout(s.opts.alignment.position(bounds, cs));
+        // RTL mirrors the horizontal alignment (Phase 2b.2).
+        child.layout(s.opts.alignment.mirrored(ui.i18n.direction()).position(bounds, cs));
     }
 }
 fn stackDeinit(n: *Node) void {
@@ -286,6 +288,51 @@ pub fn padding(allocator: std.mem.Allocator, insets: EdgeInsets) !*Node {
     return node;
 }
 
+// --- PaddingDirectional (start/end insets resolve against the text direction) ---
+
+const PaddingDirState = struct { insets: EdgeInsetsDirectional };
+
+fn paddingDirMeasure(n: *Node, c: Constraints) Size {
+    const s = stateOf(PaddingDirState, n);
+    const insets = s.insets.resolve(ui.i18n.direction());
+    const inner = c.deflateEdge(insets);
+    var size = Size{};
+    if (n.children.items.len > 0) {
+        const cs = n.children.items[0].measure(inner);
+        size = .{ .w = cs.w + insets.hSum(), .h = cs.h + insets.vSum() };
+    }
+    return c.constrain(size);
+}
+fn paddingDirLayout(n: *Node, bounds: Rect) void {
+    const s = stateOf(PaddingDirState, n);
+    if (n.children.items.len == 0) return;
+    const insets = s.insets.resolve(ui.i18n.direction());
+    // Fill semantics: the child's bounds are the inner rect.
+    n.children.items[0].layout(.{
+        .x = bounds.x + insets.left,
+        .y = bounds.y + insets.top,
+        .w = @max(0, bounds.w - insets.hSum()),
+        .h = @max(0, bounds.h - insets.vSum()),
+    });
+}
+fn paddingDirDeinit(n: *Node) void {
+    n.allocator.destroy(stateOf(PaddingDirState, n));
+}
+const padding_dir_vtable = ui.node.VTable{ .measure = paddingDirMeasure, .layout = paddingDirLayout, .paint = noopPaint, .deinit = paddingDirDeinit };
+
+/// Padding with directional insets: start/end resolve against the current
+/// text direction (start = left in LTR, right in RTL). Resolved at every
+/// measure/layout, so a runtime locale switch re-mirrors the padding.
+pub fn paddingDir(allocator: std.mem.Allocator, insets: EdgeInsetsDirectional) !*Node {
+    const node = try Node.create(allocator, &padding_dir_vtable);
+    errdefer node.allocator.destroy(node); // no state yet; children list is empty
+    const s = try allocator.create(PaddingDirState);
+    errdefer allocator.destroy(s);
+    s.* = .{ .insets = insets };
+    node.state = s;
+    return node;
+}
+
 // --- Align / Center (positioning container) ---
 
 pub const AlignOptions = struct { alignment: Alignment = .center };
@@ -308,7 +355,8 @@ fn alignLayout(n: *Node, bounds: Rect) void {
     if (n.children.items.len == 0) return;
     const child = n.children.items[0];
     const cs = child.measure(.{ .max_w = bounds.w, .max_h = bounds.h });
-    child.layout(s.opts.alignment.position(bounds, cs));
+    // RTL mirrors the horizontal alignment (Phase 2b.2).
+    child.layout(s.opts.alignment.mirrored(ui.i18n.direction()).position(bounds, cs));
 }
 fn alignDeinit(n: *Node) void {
     n.allocator.destroy(stateOf(AlignState, n));
@@ -402,6 +450,54 @@ pub fn expanded(allocator: std.mem.Allocator, weight: u32) !*Node {
 }
 
 // --- tests ---
+
+test "row mirrors the main axis in RTL and un-mirrors in LTR (runtime switch)" {
+    const i18n = try ui.i18n.I18n.init(std.testing.allocator, "en");
+    defer i18n.deinit();
+    try i18n.addArb("en", "{\"x\": \"y\"}", .ltr);
+    try i18n.addArb("ar", "{\"x\": \"y\"}", .rtl);
+    try i18n.setLocale("ar");
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    const root = try row(std.testing.allocator, .{ .gap = 8 });
+    defer root.deinit();
+    const red_box = try golden.solidBox(std.testing.allocator, 40, 20, 0xFF0000FF);
+    const blue_box = try golden.solidBox(std.testing.allocator, 40, 20, 0x0000FFFF);
+    root.add(red_box);
+    root.add(blue_box);
+    root.layout(.{ .x = 0, .y = 0, .w = 128, .h = 64 });
+    // RTL: the logical order [red, blue] runs right → left (gap preserved)
+    try std.testing.expectEqual(@as(f32, 88), red_box.bounds.x); // 128 - 0 - 40
+    try std.testing.expectEqual(@as(f32, 40), blue_box.bounds.x); // 128 - 48 - 40
+    // LTR: left → right
+    try i18n.setLocale("en");
+    root.layout(.{ .x = 0, .y = 0, .w = 128, .h = 64 });
+    try std.testing.expectEqual(@as(f32, 0), red_box.bounds.x);
+    try std.testing.expectEqual(@as(f32, 48), blue_box.bounds.x); // 40 + gap 8
+}
+
+test "paddingDir resolves start/end against the direction" {
+    const i18n = try ui.i18n.I18n.init(std.testing.allocator, "en");
+    defer i18n.deinit();
+    try i18n.addArb("en", "{\"x\": \"y\"}", .ltr);
+    try i18n.addArb("ar", "{\"x\": \"y\"}", .rtl);
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    const root = try paddingDir(std.testing.allocator, .{ .start = 10, .top = 4 });
+    defer root.deinit();
+    const child = try golden.solidBox(std.testing.allocator, 20, 20, 0xFF000000);
+    root.add(child);
+    // LTR: start = left
+    try i18n.setLocale("en");
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    try std.testing.expectEqual(@as(f32, 10), child.bounds.x);
+    try std.testing.expectEqual(@as(f32, 90), child.bounds.w); // 100 - 10 (start) - 0 (end)
+    // RTL: start = right → the child hugs the LEFT edge
+    try i18n.setLocale("ar");
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    try std.testing.expectEqual(@as(f32, 0), child.bounds.x);
+    try std.testing.expectEqual(@as(f32, 90), child.bounds.w);
+}
 
 test "expanded: column gives the flex child the remaining height" {
     const root = try column(std.testing.allocator, .{ .gap = 10 });

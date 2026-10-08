@@ -100,6 +100,15 @@ pub fn build(b: *std.Build) void {
     const nav_step = b.step("navigator", "Build and run the navigator demo app");
     nav_step.dependOn(&run_nav.step);
 
+    // --- i18n demo app (Phase 2b) ---
+    const i18n_exe = addApp(b, target, optimize, "i18n", "src/i18n_main.zig", translate_sdl, translate_kx, kx_skia, is_macos, tag);
+    b.installArtifact(i18n_exe);
+
+    const run_i18n = b.addRunArtifact(i18n_exe);
+    run_i18n.step.dependOn(b.getInstallStep());
+    const i18n_step = b.step("i18n", "Build and run the i18n demo app");
+    i18n_step.dependOn(&run_i18n.step);
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),

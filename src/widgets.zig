@@ -14,6 +14,8 @@
 // Scrollbar.
 // Navigation (2): NavigatorView (page stack + transitions), Hero (shared
 // element) — Phase 2a.
+// i18n (1): L10nText (localized text: plain, with args, plural, plural+signal)
+// — Phase 2b.
 // 50 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -29,3 +31,4 @@ pub const grid_view = @import("widgets/grid_view.zig");
 pub const scroll_view = @import("widgets/scroll_view.zig");
 pub const scrollbar = @import("widgets/scrollbar.zig");
 pub const navigator = @import("widgets/navigator.zig");
+pub const i18n = @import("widgets/i18n.zig");

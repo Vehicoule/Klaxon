@@ -123,6 +123,12 @@ pub fn Signal(comptime T: type) type {
             self.base.notify();
         }
 
+        /// Force-notify subscribers even when the value is unchanged (hot
+        /// reload: the underlying data changed, not the tag).
+        pub fn notify(self: *Self) void {
+            self.base.notify();
+        }
+
         pub fn subscribe(self: *Self, sub: Subscriber) void {
             self.base.subscribe(sub);
         }

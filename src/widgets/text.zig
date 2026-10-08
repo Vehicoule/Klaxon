@@ -34,14 +34,22 @@ fn textLayout(n: *Node, bounds: Rect) void {
     _ = n;
     _ = bounds; // leaf: bounds come from the parent
 }
-fn textPaint(n: *Node, ctx: *kx.Ctx) void {
-    const s: *TextState = @ptrCast(@alignCast(n.state.?));
-    const m = ui.paint.measureText(s.text, s.opts.size, s.opts.bold);
-    const x = switch (s.opts.text_align) {
+/// The text's x for an alignment (start/end resolve against the current
+/// text direction — Phase 2b).
+fn textX(n: *Node, m: ui.paint.TextMetrics, text_align: ui.layout.TextAlign) f32 {
+    const resolved = ui.layout.resolveAlign(text_align, ui.i18n.direction());
+    return switch (resolved) {
         .left => n.bounds.x,
         .center => n.bounds.x + (n.bounds.w - m.width) / 2,
         .right => n.bounds.x + n.bounds.w - m.width,
+        .start, .end => unreachable, // resolved above
     };
+}
+
+fn textPaint(n: *Node, ctx: *kx.Ctx) void {
+    const s: *TextState = @ptrCast(@alignCast(n.state.?));
+    const m = ui.paint.measureText(s.text, s.opts.size, s.opts.bold);
+    const x = textX(n, m, s.opts.text_align);
     // Skia draws from the baseline: one ascent below the top.
     ui.paint.text(ctx, s.text, x, n.bounds.y + m.ascent, s.opts.size, s.opts.bold, s.opts.color);
 }
@@ -102,11 +110,7 @@ pub fn BoundText(comptime T: type) type {
             const s: *State = @ptrCast(@alignCast(n.state.?));
             const str = bound(n);
             const m = ui.paint.measureText(str, s.opts.size, s.opts.bold);
-            const x = switch (s.opts.text_align) {
-                .left => n.bounds.x,
-                .center => n.bounds.x + (n.bounds.w - m.width) / 2,
-                .right => n.bounds.x + n.bounds.w - m.width,
-            };
+            const x = textX(n, m, s.opts.text_align);
             ui.paint.text(ctx, str, x, n.bounds.y + m.ascent, s.opts.size, s.opts.bold, s.opts.color);
         }
         fn dirtyCb(userdata: ?*anyopaque) void {
