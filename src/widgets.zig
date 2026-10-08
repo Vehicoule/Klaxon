@@ -16,7 +16,9 @@
 // element) — Phase 2a.
 // i18n (1): L10nText (localized text: plain, with args, plural, plural+signal)
 // — Phase 2b.
-// 50 widgets at v1 (see docs/ROADMAP.md).
+// Navigation chrome (4): AppBar, NavBar, Drawer, Tabs — Phase 2d.1 batch 1
+// (M3E).
+// ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
 pub const icon = @import("widgets/icon.zig");
@@ -32,3 +34,7 @@ pub const scroll_view = @import("widgets/scroll_view.zig");
 pub const scrollbar = @import("widgets/scrollbar.zig");
 pub const navigator = @import("widgets/navigator.zig");
 pub const i18n = @import("widgets/i18n.zig");
+pub const app_bar = @import("widgets/app_bar.zig");
+pub const nav_bar = @import("widgets/nav_bar.zig");
+pub const drawer = @import("widgets/drawer.zig");
+pub const tabs = @import("widgets/tabs.zig");

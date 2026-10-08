@@ -318,24 +318,31 @@ pub const DescribeNodeFn = *const fn (userdata: ?*anyopaque, n: *Node) anyerror!
 
 /// Typed options from a Value object. Missing fields keep their defaults;
 /// null fields mean "default"; unknown fields are ignored. Strings are
-/// BORROWED from `v` (see the file header).
+/// BORROWED from `v` (see the file header). Nested structs start from the
+/// FIELD's default (not from scratch): a partial `{"theme":{"colors":{…}}}`
+/// overrides single tokens on top of the field default (e.g. theme.light).
 pub fn optionsFromValue(comptime T: type, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !T {
     if (v != .object) return error.ExpectedObject;
     var opts: T = .{};
+    try applyFields(T, &opts, v, slot_builder, slot_userdata);
+    return opts;
+}
+
+fn applyFields(comptime T: type, opts: *T, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !void {
+    if (v != .object) return error.ExpectedObject;
     const info = @typeInfo(T).@"struct";
     inline for (info.field_names, info.field_types) |name, FT| {
         if (v.get(name)) |fv| {
             // no `continue` here: it is comptime control flow inside a
             // runtime block (the if) — invert the condition instead
             if (fv != .null) {
-                @field(opts, name) = try fieldFromValue(FT, fv, slot_builder, slot_userdata);
+                @field(opts, name) = try fieldFromValue(FT, @field(opts.*, name), fv, slot_builder, slot_userdata);
             }
         }
     }
-    return opts;
 }
 
-fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !FT {
+fn fieldFromValue(comptime FT: type, def: FT, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !FT {
     switch (@typeInfo(FT)) {
         .bool => return switch (v) {
             .bool => |b| b,
@@ -364,8 +371,16 @@ fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_
         },
         .optional => |o| {
             if (v == .null) return null;
-            // slots (*Node) are handled by the .pointer arm below
-            return try fieldFromValue(o.child, v, slot_builder, slot_userdata);
+            // slots (*Node) are handled by the .pointer arm below; nested
+            // structs start from the field default when there is one
+            if (def) |d| return try fieldFromValue(o.child, d, v, slot_builder, slot_userdata);
+            if (comptime @typeInfo(o.child) == .@"struct") {
+                var fresh: o.child = .{};
+                try applyFields(o.child, &fresh, v, slot_builder, slot_userdata);
+                return fresh;
+            }
+            // scalars/pointers never read the default
+            return try fieldFromValue(o.child, undefined, v, slot_builder, slot_userdata);
         },
         .pointer => {
             // comptime ifs: the dead branches must not type-check against FT
@@ -378,7 +393,12 @@ fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_
             if (comptime isNodePtr(FT)) return try buildSlot(v, slot_builder, slot_userdata);
             return error.UnsupportedFieldType;
         },
-        .@"struct" => return try optionsFromValue(FT, v, slot_builder, slot_userdata),
+        .@"struct" => {
+            // partial override on top of the field default
+            var copy = def;
+            try applyFields(FT, &copy, v, slot_builder, slot_userdata);
+            return copy;
+        },
         else => return error.UnsupportedFieldType,
     }
 }

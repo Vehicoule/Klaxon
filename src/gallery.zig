@@ -31,6 +31,10 @@ const divider_w = widgets.divider;
 const input_w = widgets.input;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
+const app_bar_w = widgets.app_bar;
+const nav_bar_w = widgets.nav_bar;
+const drawer_w = widgets.drawer;
+const tabs_w = widgets.tabs;
 
 pub const WINDOW_W: i32 = 960;
 pub const WINDOW_H: i32 = 640;
@@ -52,6 +56,10 @@ const Refs = struct {
     text_field: *Node,
     dropdown: *Node,
     chip: *Node,
+    nav_bar: *Node,
+    tabs: *Node,
+    drawer: *Node,
+    drawer_btn: *Node,
 };
 
 /// ItemFactory context for the virtualized lists (theme read at build time).
@@ -80,6 +88,9 @@ pub const Gallery = struct {
     status_sig: *state.Signal(StatusBuf),
     echo_sig: *state.Signal(StatusBuf),
     pick_sig: *state.Signal(StatusBuf),
+    nav_selected: *state.Signal(usize),
+    tabs_selected: *state.Signal(usize),
+    drawer_open: *state.Signal(bool),
     list_ctx: ListItemCtx,
     refs: Refs,
     // Transient widget state captured before a theme rebuild and restored
@@ -136,6 +147,12 @@ pub const Gallery = struct {
         errdefer g.echo_sig.deinit();
         g.pick_sig = try state.Signal(StatusBuf).init(allocator, std.mem.zeroes(StatusBuf));
         errdefer g.pick_sig.deinit();
+        g.nav_selected = try state.Signal(usize).init(allocator, 0);
+        errdefer g.nav_selected.deinit();
+        g.tabs_selected = try state.Signal(usize).init(allocator, 0);
+        errdefer g.tabs_selected.deinit();
+        g.drawer_open = try state.Signal(bool).init(allocator, false);
+        errdefer g.drawer_open.deinit();
         g.list_ctx = .{ .allocator = allocator, .theme = theme_mod.dark };
         g.root = try anim_w.animatedContainer(allocator, .{ .color = g.bg_sig });
         errdefer g.root.deinit();
@@ -204,6 +221,9 @@ pub const Gallery = struct {
         g.status_sig.deinit();
         g.echo_sig.deinit();
         g.pick_sig.deinit();
+        g.nav_selected.deinit();
+        g.tabs_selected.deinit();
+        g.drawer_open.deinit();
         g.allocator.destroy(g);
     }
 };
@@ -218,6 +238,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     g.refs.scroll_view = sv;
     const content = try layout.column(a, .{ .gap = 16 });
     content.add(try section(a, theme, "Input", try buildInputSection(g, theme)));
+    content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
     content.add(try section(a, theme, "Animations", try buildAnimSection(g, theme)));
     content.add(try section(a, theme, "Layout", try buildLayoutSection(a, theme)));
@@ -341,6 +362,104 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
     r6.add(dd);
     r6.add(try text_w.BoundText(StatusBuf).text(a, g.pick_sig, fmtStatus, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(r6);
+    return col;
+}
+
+/// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.
+fn buildNavSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    // AppBar (small): leading menu button, title (title_large), trailing actions.
+    const icon_btn = struct {
+        fn make(alloc: std.mem.Allocator, ic: icon_w.IconName, t: Theme) !*Node {
+            const b = try input_w.button(alloc, null, .{
+                .bg = t.colors.surface,
+                .bg_hover = theme_mod.stateLayer(t.colors.surface, t.colors.on_surface, t.state.hover),
+                .bg_pressed = theme_mod.stateLayer(t.colors.surface, t.colors.on_surface, t.state.pressed),
+                .padding = EdgeInsets.all(12),
+            });
+            b.add(try icon_w.icon(alloc, ic, .{ .size = 24, .color = t.colors.on_surface }));
+            return b;
+        }
+    }.make;
+    const actions = try layout.row(a, .{});
+    actions.add(try icon_btn(a, .search, theme));
+    actions.add(try icon_btn(a, .star, theme));
+    col.add(try app_bar_w.appBar(a, .{
+        .theme = theme,
+        .leading = try icon_btn(a, .menu, theme),
+        .title = try text_w.text(a, "Klaxon", .{ .size = theme.type_scale.title_large.size, .color = theme.colors.on_surface }),
+        .actions = actions,
+    }));
+    // NavBar: 4 destinations (icon + label content; the bar owns selection).
+    const destinations = [_]struct { icon: icon_w.IconName, label: []const u8 }{
+        .{ .icon = .home, .label = "Home" },
+        .{ .icon = .play, .label = "Music" },
+        .{ .icon = .square, .label = "Video" },
+        .{ .icon = .star, .label = "Books" },
+    };
+    const nav = try nav_bar_w.navBar(a, g.nav_selected, .{ .theme = theme });
+    g.refs.nav_bar = nav;
+    for (destinations) |d| {
+        const item = try layout.column(a, .{ .gap = 4, .cross_align = .center });
+        item.add(try icon_w.icon(a, d.icon, .{ .size = 24, .color = theme.colors.on_surface_variant }));
+        item.add(try text_w.text(a, d.label, .{ .size = theme.type_scale.label_medium.size, .color = theme.colors.on_surface_variant }));
+        nav.add(item);
+    }
+    col.add(nav);
+    col.add(try text_w.BoundText(usize).text(a, g.nav_selected, fmtNavSel, .{ .size = 12, .color = theme.colors.on_surface_variant }));
+    // Tabs: 3 tabs (icon + label), gliding indicator.
+    const tabs = try tabs_w.tabs(a, g.tabs_selected, .{ .theme = theme });
+    g.refs.tabs = tabs;
+    const tab_items = [_]struct { icon: icon_w.IconName, label: []const u8 }{
+        .{ .icon = .play, .label = "Music" },
+        .{ .icon = .square, .label = "Video" },
+        .{ .icon = .heart, .label = "Favorites" },
+    };
+    for (tab_items) |d| {
+        const item = try layout.column(a, .{ .gap = 4, .cross_align = .center });
+        item.add(try icon_w.icon(a, d.icon, .{ .size = 24, .color = theme.colors.on_surface_variant }));
+        item.add(try text_w.text(a, d.label, .{ .size = theme.type_scale.label_medium.size, .color = theme.colors.on_surface_variant }));
+        tabs.add(item);
+    }
+    col.add(tabs);
+    col.add(try text_w.BoundText(usize).text(a, g.tabs_selected, fmtTabsSel, .{ .size = 12, .color = theme.colors.on_surface_variant }));
+    // Drawer (modal): an open button + the drawer itself (body + panel).
+    const open_btn = try input_w.button(a, .{ .fn_ptr = drawerOpenCb, .userdata = g }, .{
+        .bg = theme.colors.primary,
+        .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.pressed),
+    });
+    open_btn.add(try text_w.text(a, "Open drawer", .{ .size = 14, .color = theme.colors.on_primary }));
+    g.refs.drawer_btn = open_btn;
+    const drawer_row = try layout.row(a, .{ .gap = 12, .cross_align = .center });
+    drawer_row.add(open_btn);
+    drawer_row.add(try text_w.BoundText(bool).text(a, g.drawer_open, fmtDrawerOpen, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(drawer_row);
+    // The drawer: body = the page content (behind), content = the panel.
+    const body = try container_w.container(a, .{ .color = theme.colors.surface_container_high, .radius = 8, .padding = EdgeInsets.all(16) });
+    const body_col = try layout.column(a, .{ .gap = 8 });
+    body_col.add(try text_w.text(a, "Body — open the drawer, then click the scrim (or press Escape) to close", .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    body_col.add(try layout.constrainedBox(a, .{ .min_h = 140 }));
+    body.add(body_col);
+    const panel_col = try layout.column(a, .{ .gap = 10 });
+    panel_col.add(try text_w.text(a, "Navigation drawer", .{ .size = theme.type_scale.title_large.size, .color = theme.colors.on_surface }));
+    panel_col.add(try divider_w.divider(a, .{ .color = theme.colors.outline_variant }));
+    for (destinations[0..3]) |d| {
+        const row = try layout.row(a, .{ .gap = 12, .cross_align = .center });
+        row.add(try icon_w.icon(a, d.icon, .{ .size = 24, .color = theme.colors.on_surface }));
+        row.add(try text_w.text(a, d.label, .{ .size = 14, .color = theme.colors.on_surface }));
+        panel_col.add(row);
+    }
+    const panel_content = try layout.padding(a, EdgeInsets.all(16));
+    panel_content.add(panel_col);
+    const dr = try drawer_w.drawer(a, g.drawer_open, null, .{ .theme = theme, .body = body, .content = panel_content });
+    g.refs.drawer = dr;
+    // The drawer fills finite constraints (a modal is screen-height); in this
+    // unbounded scroll column, wrap it in a bounded box.
+    const drawer_box = try layout.constrainedBox(a, .{ .min_h = 240, .max_h = 240 });
+    drawer_box.add(dr);
+    col.add(drawer_box);
     return col;
 }
 
@@ -635,6 +754,10 @@ fn slideCb(userdata: ?*anyopaque) void {
     g.offset_sig.set(if (std.meta.eql(cur, anim_w.Offset{})) .{ .x = 48, .y = -16 } else .{});
 }
 
+fn drawerOpenCb(userdata: ?*anyopaque) void {
+    galleryOf(userdata).drawer_open.set(true);
+}
+
 fn bigToggleCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.scale_sig.set(if (g.scale_toggle.peek()) 1.5 else 1.0);
@@ -698,6 +821,15 @@ fn fmtSlider(v: f32, buf: []u8) []const u8 {
 }
 fn fmtMode(v: bool, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s} mode", .{if (v) "Dark" else "Light"}) catch "mode";
+}
+fn fmtNavSel(v: usize, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "NavBar selected: {d}", .{v}) catch "NavBar";
+}
+fn fmtTabsSel(v: usize, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Tabs selected: {d}", .{v}) catch "Tabs";
+}
+fn fmtDrawerOpen(v: bool, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Drawer {s}", .{if (v) "open" else "closed"}) catch "Drawer";
 }
 fn fmtStatus(v: StatusBuf, buf: []u8) []const u8 {
     const s = std.mem.sliceTo(&v, 0);
@@ -788,6 +920,46 @@ test "gallery: pressing the demo button updates the bound text" {
     try std.testing.expectEqual(@as(u32, 2), g.press_count.peek());
     // the bound text was marked for re-layout (its size changed)
     try std.testing.expect(g.refs.press_text.layout_dirty);
+}
+
+test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // NavBar: click the 3rd destination
+    const nb = g.refs.nav_bar.bounds;
+    const x3 = nb.x + nb.w * 2.5 / 4;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x3, .y = nb.y + nb.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x3, .y = nb.y + nb.h / 2 });
+    try std.testing.expectEqual(@as(usize, 2), g.nav_selected.peek());
+    // Tabs: click the 2nd tab
+    const tb = g.refs.tabs.bounds;
+    const x2 = tb.x + tb.w * 1.5 / 3;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x2, .y = tb.y + tb.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x2, .y = tb.y + tb.h / 2 });
+    try std.testing.expectEqual(@as(usize, 1), g.tabs_selected.peek());
+    // Drawer: the open button opens it; a scrim click closes it. The drawer
+    // row sits below the fold at offset 0 — scroll the content first (the
+    // ScrollView maps window coords through the scroll offset at hit-test).
+    _ = widgets.scroll_view.setScrollOffset(g.refs.scroll_view, 200);
+    const scroll_y = widgets.scroll_view.scrollOffset(g.refs.scroll_view);
+    try std.testing.expect(!g.drawer_open.peek());
+    const b = g.refs.drawer_btn.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - scroll_y });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - scroll_y });
+    try std.testing.expect(g.drawer_open.peek());
+    const dr = g.refs.drawer.bounds;
+    // the panel is 360 wide on the start side: click the scrim right of it.
+    // The drawer is 240 high in the bounded box; aim at a point inside the
+    // visible part of the window (the row sits below the fold).
+    const sx = dr.x + dr.w - 20;
+    const sy = dr.y + 60 - scroll_y;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = sx, .y = sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = sx, .y = sy });
+    try std.testing.expect(!g.drawer_open.peek());
 }
 
 test "gallery: the 10k list stays virtualized after a big scroll" {

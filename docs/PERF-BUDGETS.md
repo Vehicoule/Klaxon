@@ -16,7 +16,7 @@
 | **WASM size hello** | < 5 Mo | 6.9 Mo | 🔧 Skia wasm trim |
 | **Build time e2e** (gradle included) | Always shorter than Flutter/Qt | 4.7s vs Flutter ~60s, Qt ~120s | ✅ Already winning |
 | **allocs_per_frame** (steady-state) | 0 | 0 (target met by design) | ✅ Arena allocator |
-| **Widget count v1** | Full M3E catalog (~65) | 34 today; batch 2d.1 adds 10 (44), batches 2d.2-2d.4 complete the catalog | 🎯 Phase 2d batches |
+| **Widget count v1** | Full M3E catalog (~65) | 38 today (2d.1 PR A: +4); PR B adds 6 (44), batches 2d.2-2d.4 complete the catalog | 🎯 Phase 2d batches |
 | **Idle CPU** | 0% (0 frames, 0 wakeups) | 0 frames at idle proven | ✅ Dirty-flag loop |
 
 ## Two tiers: Gate CI vs North Star
