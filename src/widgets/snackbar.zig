@@ -76,6 +76,7 @@ const SnackBarState = struct {
     ticker: anim.Timeline.Ticker = .{ .fn_ptr = struct {
         fn noop(_: ?*anyopaque, _: u64) void {}
     }.noop, .userdata = null },
+    ticker_registered: bool = false, // the ticker is on the timeline
     timeout_armed: bool = false, // a deadline is being counted (ticker)
     timeout_deadline: ?u64 = null,
 };
@@ -127,14 +128,16 @@ fn snackLayout(n: *Node, bounds: Rect) void {
     const mid_y = b.y + b.h / 2;
     const end_pad: f32 = if (s.opts.dismiss) 0 else end_padding;
     var end_x = b.x + b.w - end_pad;
-    // walk the content children from the end: dismiss, then action
+    // walk the content children from the end: dismiss, then action. The
+    // text-action gap is reserved by the measure (it widens the content
+    // rect), so walking back from the right edge keeps it — no extra
+    // subtraction here.
     var i = n.children.items.len;
     while (i > 1) {
         i -= 1;
         const child = n.children.items[i];
         const cs = child.measure(.{ .max_w = b.w, .max_h = b.h });
         end_x -= cs.w;
-        if (i == 2 and s.opts.action_label != null) end_x -= action_gap; // gap between action and dismiss
         child.layout(.{ .x = end_x, .y = mid_y - cs.h / 2, .w = cs.w, .h = cs.h });
     }
     // the text (index 1) at the start
@@ -156,9 +159,10 @@ fn snackPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = ctx; // transparent chrome: the background child paints (transformed)
 }
 
-/// The slide + fade transform wraps the children (bg + content): own save so
-/// the restore never pops a caller's canvas state. The slide offset is the
-/// CONTENT height (the node's bounds may be the whole window).
+/// The slide + fade transform wraps the children (bg + content): own save +
+/// the layer's save (saveLayerAlphaf pushes one) — both are restored in
+/// post_children_paint so a caller's canvas state survives. The slide offset
+/// is the CONTENT height (the node's bounds may be the whole window).
 fn snackPreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
     ui.paint.save(ctx);
     const s = stateOf(n);
@@ -168,7 +172,8 @@ fn snackPreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
 
 fn snackPostChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = n;
-    ui.paint.restore(ctx);
+    ui.paint.restore(ctx); // pops the layer
+    ui.paint.restore(ctx); // pops the own save
 }
 
 fn snackMapPaintRect(n: *Node, r: Rect) Rect {
@@ -196,7 +201,7 @@ fn snackDeinit(n: *Node) void {
     const s = stateOf(n);
     if (anim.timeline()) |tl| {
         tl.cancelChannel(@ptrCast(&s.anim_channel));
-        if (s.opts.timeout_ms > 0) tl.removeTicker(s.ticker);
+        if (s.ticker_registered) tl.removeTicker(s.ticker);
     }
     s.sig.unsubscribe(.{ .callback = .{ .fn_ptr = snackSyncCb, .userdata = n } });
     input.releaseNode(n);
@@ -279,6 +284,7 @@ fn snackSyncCb(userdata: ?*anyopaque) void {
     const s = stateOf(n);
     if (s.sig.peek()) {
         s.timeout_armed = s.opts.timeout_ms > 0; // the ticker counts the deadline
+        registerTicker(n, s); // lazy: the timeline may appear after construction
     } else {
         s.timeout_armed = false;
         s.timeout_deadline = null;
@@ -287,6 +293,18 @@ fn snackSyncCb(userdata: ?*anyopaque) void {
     if (!s.laid_out) return;
     const target: f32 = if (s.sig.peek()) 1 else 0;
     if (target != s.anim_to) animateProgress(n, s, target);
+}
+
+/// Register the auto-dismiss ticker on the current timeline (once). Lazy: a
+/// snackbar built before the host installs its timeline still auto-dismisses
+/// (the first show registers it).
+fn registerTicker(n: *Node, s: *SnackBarState) void {
+    if (s.ticker_registered) return;
+    if (s.opts.timeout_ms <= 0) return;
+    const tl = anim.timeline() orelse return;
+    s.ticker = .{ .fn_ptr = snackTickerCb, .userdata = n, .has_pending = snackTickerPendingCb };
+    tl.addTicker(s.ticker);
+    s.ticker_registered = true;
 }
 
 /// The auto-dismiss ticker: arms the deadline on the first tick after show,
@@ -383,15 +401,20 @@ pub fn snackBar(allocator: std.mem.Allocator, visible: *ui.state.Signal(bool), o
         btn.add(try icon_w.icon(allocator, .close, .{ .size = 24, .color = t.colors.inverse_on_surface }));
         node.add(btn);
     }
-    s.* = .{ .sig = visible, .opts = opts, .on_action = on_action, .on_dismiss = on_dismiss, .bg = bg };
+    s.* = .{
+        .sig = visible,
+        .opts = opts,
+        .on_action = on_action,
+        .on_dismiss = on_dismiss,
+        .bg = bg,
+        // arm the auto-dismiss at construction too: subscribing does not
+        // replay the signal's initial value (a visible=true document would
+        // otherwise never time out)
+        .timeout_armed = opts.timeout_ms > 0 and visible.peek(),
+    };
     node.state = s;
-    // Auto-dismiss ticker (registered once; no-ops while disarmed).
-    if (anim.timeline()) |tl| {
-        if (opts.timeout_ms > 0) {
-            s.ticker = .{ .fn_ptr = snackTickerCb, .userdata = node, .has_pending = snackTickerPendingCb };
-            tl.addTicker(s.ticker);
-        }
-    }
+    // Auto-dismiss ticker (registered once, lazily — no-ops while disarmed).
+    registerTicker(node, s);
     ui.semantics.attach(node, .{ .role = .alert, .label = opts.text }); // Phase 2c
     visible.subscribe(.{ .callback = .{ .fn_ptr = snackSyncCb, .userdata = node } });
     return node;
@@ -482,6 +505,118 @@ test "snackbar: the action press fires on_action and dismisses" {
     try std.testing.expectEqual(@as(u32, 1), acted);
     try std.testing.expect(!visible.peek());
     try std.testing.expectEqual(@as(u32, 1), dismissed);
+}
+
+test "snackbar: the action keeps its 8dp gap after the text (reserved by the measure)" {
+    const visible = try ui.state.Signal(bool).init(std.testing.allocator, true);
+    defer visible.deinit();
+    // no dismiss: the action is the last child (flush right, end padding)
+    const sb = try snackBar(std.testing.allocator, visible, null, null, .{
+        .text = "Saved",
+        .action_label = "Undo",
+        .dismiss = false,
+        .timeout_ms = 0,
+    });
+    defer sb.deinit();
+    sb.layout(.{ .x = 0, .y = 0, .w = 400, .h = 48 });
+    // children: [bg, text, action]
+    const tb = sb.children.items[1].bounds;
+    const ab = sb.children.items[2].bounds;
+    try std.testing.expectApproxEqAbs(tb.x + tb.w + action_gap, ab.x, 1.0);
+    // with a dismiss icon: same gap before the action, the icon flush right
+    const sb2 = try snackBar(std.testing.allocator, visible, null, null, .{
+        .text = "Saved",
+        .action_label = "Undo",
+        .dismiss = true,
+        .timeout_ms = 0,
+    });
+    defer sb2.deinit();
+    sb2.layout(.{ .x = 0, .y = 0, .w = 400, .h = 48 });
+    // children: [bg, text, action, dismiss]
+    const t2 = sb2.children.items[1].bounds;
+    const a2 = sb2.children.items[2].bounds;
+    const d2 = sb2.children.items[3].bounds;
+    try std.testing.expectApproxEqAbs(t2.x + t2.w + action_gap, a2.x, 1.0);
+    const c2 = stateOf(sb2).content;
+    try std.testing.expectApproxEqAbs(c2.x + c2.w, d2.x + d2.w, 1.0);
+}
+
+test "snackbar: auto-dismisses after timeout_ms (timeline ticker)" {
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    const visible = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer visible.deinit();
+    var dismissed: u32 = 0;
+    const on_dismiss: Callback = .{ .fn_ptr = struct {
+        fn cb(ud: ?*anyopaque) void {
+            const c: *u32 = @ptrCast(@alignCast(ud.?));
+            c.* += 1;
+        }
+    }.cb, .userdata = &dismissed };
+    const sb = try snackBar(std.testing.allocator, visible, null, on_dismiss, .{
+        .text = "Saved",
+        .timeout_ms = 1000,
+    });
+    defer sb.deinit();
+    sb.layout(.{ .x = 0, .y = 0, .w = 200, .h = 48 });
+    visible.set(true); // syncCb arms the timeout + launches the show tween
+    try std.testing.expect(stateOf(sb).timeout_armed);
+    tl.tick(0); // tween start; the ticker arms the deadline (0 + 1000)
+    tl.tick(250); // the slide tween (200ms) settled: shown
+    try std.testing.expect(sb.visible);
+    tl.tick(1001); // deadline passed: the snackbar hides itself
+    try std.testing.expect(!visible.peek());
+    tl.tick(1300); // the hide tween settled
+    try std.testing.expect(!sb.visible);
+    try std.testing.expectEqual(@as(u32, 1), dismissed);
+}
+
+test "snackbar: initially visible also auto-dismisses (the factory arms the timeout)" {
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    const visible = try ui.state.Signal(bool).init(std.testing.allocator, true);
+    defer visible.deinit();
+    const sb = try snackBar(std.testing.allocator, visible, null, null, .{
+        .text = "Saved",
+        .timeout_ms = 500,
+    });
+    defer sb.deinit();
+    sb.layout(.{ .x = 0, .y = 0, .w = 200, .h = 48 });
+    // armed at construction (subscribing never replays the initial value)
+    try std.testing.expect(stateOf(sb).timeout_armed);
+    tl.tick(0); // deadline = 500
+    try std.testing.expect(visible.peek());
+    tl.tick(600); // deadline passed: hidden (the hide tween starts)
+    try std.testing.expect(!visible.peek());
+    tl.tick(900); // the hide tween settled
+    try std.testing.expect(!sb.visible);
+}
+
+test "snackbar: the ticker registers lazily when the timeline appears after construction" {
+    const visible = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer visible.deinit();
+    // built WITHOUT a timeline: no ticker yet
+    const sb = try snackBar(std.testing.allocator, visible, null, null, .{
+        .text = "Saved",
+        .timeout_ms = 500,
+    });
+    defer sb.deinit();
+    try std.testing.expect(!stateOf(sb).ticker_registered);
+    sb.layout(.{ .x = 0, .y = 0, .w = 200, .h = 48 });
+    // the host installs its timeline later; the first show registers it
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    visible.set(true);
+    try std.testing.expect(stateOf(sb).ticker_registered);
+    tl.tick(0); // deadline = 500
+    tl.tick(600); // deadline passed: hidden
+    try std.testing.expect(!visible.peek());
 }
 
 test "golden: snackbar paints the inverse_surface container with the text" {

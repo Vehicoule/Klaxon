@@ -85,7 +85,7 @@ fn stateOf(n: *Node) *SheetState {
 
 const ScrimState = struct {
     sheet: *Node,
-    alpha: f32 = 0,
+    alpha: f32 = 0, // final opacity, 0..scrim_max_alpha (animated)
 };
 
 fn scrimStateOf(n: *Node) *ScrimState {
@@ -97,7 +97,9 @@ fn scrimPaint(n: *Node, ctx: *kx.Ctx) void {
     const b = n.bounds;
     if (s.alpha <= 0) return;
     const t = stateOf(s.sheet).opts.theme;
-    ui.paint.fillRect(ctx, b.x, b.y, b.w, b.h, withAlpha(t.colors.scrim, s.alpha * scrim_max_alpha));
+    // s.alpha is the final opacity (0..scrim_max_alpha, applied once — at
+    // storage; multiplying again here would square the scrim alpha)
+    ui.paint.fillRect(ctx, b.x, b.y, b.w, b.h, withAlpha(t.colors.scrim, s.alpha));
 }
 
 fn withAlpha(c: Color, a: f32) Color {
@@ -301,18 +303,21 @@ fn sheetLayout(n: *Node, bounds: Rect) void {
     const py = bounds.y + bounds.h - ph;
     s.panel_h = ph;
     s.panel.layout(.{ .x = px, .y = py, .w = pw, .h = ph });
-    // Panel children, in factory order: background (fills the panel), then the
-    // optional drag handle (centered, 22dp top padding), then the content slot
-    // (fills what the handle leaves).
+    // Panel children in factory order: background (fills the panel), the
+    // optional drag handle (centered in its block), the content slot (fills
+    // what the handle block leaves). Laid out by role, not by index.
     const panel = s.panel;
-    for (panel.children.items, 0..) |child, idx| {
-        if (idx == 0) {
-            child.layout(.{ .x = px, .y = py, .w = pw, .h = ph }); // background
-        } else if (idx == 1 and s.opts.drag_handle and panel.children.items.len > 2) {
-            child.layout(.{ .x = px + (pw - handle_w) / 2, .y = py + handle_v_padding, .w = handle_w, .h = handle_h });
-        } else if (s.opts.content != null) {
-            child.layout(.{ .x = px, .y = py + handle_h, .w = pw, .h = @max(0, ph - handle_h) });
-        }
+    var next: usize = 0;
+    if (panel.children.items.len > 0) {
+        panel.children.items[0].layout(.{ .x = px, .y = py, .w = pw, .h = ph }); // background
+        next = 1;
+    }
+    if (s.opts.drag_handle and panel.children.items.len > next) {
+        panel.children.items[next].layout(.{ .x = px + (pw - handle_w) / 2, .y = py + handle_v_padding, .w = handle_w, .h = handle_h });
+        next += 1;
+    }
+    if (s.opts.content != null and panel.children.items.len > next) {
+        panel.children.items[next].layout(.{ .x = px, .y = py + handle_block_h, .w = pw, .h = @max(0, ph - handle_block_h) });
     }
     const target: f32 = if (s.sig.peek()) 1 else 0;
     if (!s.laid_out) {
@@ -555,6 +560,55 @@ test "bottom_sheet: without a timeline the panel snaps open/closed on the signal
     d.layout(.{ .x = 0, .y = 0, .w = 320, .h = 200 });
     try std.testing.expectEqual(@as(f32, 0), s.progress);
     try std.testing.expectEqual(s.panel_h, panelStateOf(s.panel).offset_y);
+}
+
+test "bottom_sheet: the content fills what the handle block leaves (no overlap, no phantom offset)" {
+    const open = try ui.state.Signal(bool).init(std.testing.allocator, true);
+    defer open.deinit();
+    const handle_block: f32 = handle_h + handle_v_padding * 2;
+    // with a handle: [bg, handle, content]
+    const d = try bottomSheet(std.testing.allocator, open, null, .{
+        .body = try golden.solidBox(std.testing.allocator, 320, 200, 0x112233FF),
+        .content = try golden.solidBox(std.testing.allocator, 100, 40, 0xFF),
+    });
+    defer d.deinit();
+    d.layout(.{ .x = 0, .y = 0, .w = 320, .h = 200 });
+    const s = stateOf(d);
+    const panel = s.panel;
+    try std.testing.expectEqual(@as(usize, 3), panel.children.items.len);
+    const hb = panel.children.items[1].bounds;
+    const cb = panel.children.items[2].bounds;
+    // the handle is centered in its block (22dp top padding)
+    try std.testing.expectEqual(panel.bounds.y + handle_v_padding, hb.y);
+    try std.testing.expectEqual(handle_h, hb.h);
+    // the content starts below the FULL handle block and fills the rest
+    try std.testing.expectEqual(panel.bounds.y + handle_block, cb.y);
+    try std.testing.expectEqual(@max(0, panel.bounds.h - handle_block), cb.h);
+    try std.testing.expect(cb.y >= hb.y + hb.h); // no overlap
+    // without a handle: [bg, content] — the content fills the panel from its top
+    const d2 = try bottomSheet(std.testing.allocator, open, null, .{
+        .body = try golden.solidBox(std.testing.allocator, 320, 200, 0x112233FF),
+        .content = try golden.solidBox(std.testing.allocator, 100, 40, 0xFF),
+        .drag_handle = false,
+    });
+    defer d2.deinit();
+    d2.layout(.{ .x = 0, .y = 0, .w = 320, .h = 200 });
+    const s2 = stateOf(d2);
+    try std.testing.expectEqual(@as(usize, 2), s2.panel.children.items.len);
+    const c2 = s2.panel.children.items[1].bounds;
+    try std.testing.expectEqual(s2.panel.bounds.y, c2.y);
+    try std.testing.expectEqual(s2.panel.bounds.h, c2.h);
+    // a handle without content is still laid out: [bg, handle]
+    const d3 = try bottomSheet(std.testing.allocator, open, null, .{
+        .body = try golden.solidBox(std.testing.allocator, 320, 200, 0x112233FF),
+    });
+    defer d3.deinit();
+    d3.layout(.{ .x = 0, .y = 0, .w = 320, .h = 200 });
+    const s3 = stateOf(d3);
+    try std.testing.expectEqual(@as(usize, 2), s3.panel.children.items.len);
+    const h3 = s3.panel.children.items[1].bounds;
+    try std.testing.expectEqual(handle_w, h3.w);
+    try std.testing.expectEqual(handle_h, h3.h);
 }
 
 test "bottom_sheet: a scrim click closes it; the global back path too" {

@@ -10,9 +10,10 @@
 //   - motion: fade in/out (~150ms); v1 shows on hover enter without the
 //     M3 hover delay and hides on leave (delay lands with touch long-press)
 //
-// Structure: the wrapper holds the anchor (child 0, document data) and an
-// internal bubble (child 1, `internal` — skipped by registry serialization,
-// rebuilt by the factory). The bubble paints OUTSIDE the wrapper's bounds
+// Structure: the wrapper holds an internal bubble (child 0, `internal` —
+// skipped by registry serialization, rebuilt by the factory) and the anchor
+// (document data — the wrapper finds it as its first non-internal child, so
+// child order does not matter). The bubble paints OUTSIDE the wrapper's bounds
 // (above the anchor) and is not hit-testable (hit_bounds = empty rect), so
 // moving the pointer onto it reads as leaving the anchor. The fade is a
 // layer-alpha around the bubble's children (ABI 0.4.0, save-balanced).
@@ -168,8 +169,8 @@ fn tooltipAlphaDoneCb(userdata: ?*anyopaque) void {
 // --- bubble (internal): container + text, faded via a layer alpha ---
 
 fn bubblePreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
-    // own save: the restore in post_children_paint must not pop a caller's
-    // canvas state (enclosing clips survive)
+    // own save + the layer's save (saveLayerAlphaf pushes one): both are
+    // restored in post_children_paint so a caller's canvas state survives
     ui.paint.save(ctx);
     const s = stateOf(n.parent.?);
     ui.paint.layerAlpha(ctx, s.alpha);
@@ -177,7 +178,8 @@ fn bubblePreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
 
 fn bubblePostChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = n;
-    ui.paint.restore(ctx);
+    ui.paint.restore(ctx); // pops the layer
+    ui.paint.restore(ctx); // pops the own save
 }
 
 fn bubbleHitBounds(n: *Node) Rect {

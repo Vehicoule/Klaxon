@@ -85,7 +85,7 @@ fn stateOf(n: *Node) *DialogState {
 
 const ScrimState = struct {
     dialog: *Node,
-    alpha: f32 = 0,
+    alpha: f32 = 0, // final opacity, 0..scrim_max_alpha (animated)
 };
 
 fn scrimStateOf(n: *Node) *ScrimState {
@@ -105,7 +105,9 @@ fn scrimPaint(n: *Node, ctx: *kx.Ctx) void {
     const b = n.bounds;
     if (s.alpha <= 0) return;
     const t = stateOf(s.dialog).opts.theme;
-    ui.paint.fillRect(ctx, b.x, b.y, b.w, b.h, withAlpha(t.colors.scrim, s.alpha * scrim_max_alpha));
+    // s.alpha is the final opacity (0..scrim_max_alpha, applied once — at
+    // storage; multiplying again here would square the scrim alpha)
+    ui.paint.fillRect(ctx, b.x, b.y, b.w, b.h, withAlpha(t.colors.scrim, s.alpha));
 }
 
 fn scrimOnPointer(n: *Node, ev: input.PointerEvent) bool {
@@ -189,15 +191,16 @@ const panel_bg_vtable = ui.node.VTable{
 };
 
 fn panelPreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
-    // own save: the restore in post_children_paint must not pop a caller's
-    // canvas state (enclosing clips survive)
+    // own save + the layer's save (saveLayerAlphaf pushes one): both are
+    // restored in post_children_paint so a caller's canvas state survives
     ui.paint.save(ctx);
     ui.paint.layerAlpha(ctx, stateOf(panelStateOf(n).dialog).alpha);
 }
 
 fn panelPostChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = n;
-    ui.paint.restore(ctx);
+    ui.paint.restore(ctx); // pops the layer
+    ui.paint.restore(ctx); // pops the own save
 }
 
 fn panelDeinit(n: *Node) void {

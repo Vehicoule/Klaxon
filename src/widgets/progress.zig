@@ -102,10 +102,19 @@ fn arcPolyline(xs: []f32, ys: []f32, cx: f32, cy: f32, r: f32, start_deg: f32, s
 /// `phase` scrolls the wave (indeterminate). Returns the point count.
 fn wavePolyline(xs: []f32, ys: []f32, x0: f32, x1: f32, yc: f32, amp: f32, wavelength: f32, phase: f32) usize {
     const width = @max(0, x1 - x0);
-    const step = @max(4, width / wave_points);
-    const count = @min(@as(usize, @intFromFloat(@ceil(width / step))) + 1, xs.len);
+    if (width <= 0) {
+        xs[0] = x0;
+        ys[0] = yc + amp * @sin(2 * std.math.pi * (x0 - phase * wavelength) / wavelength);
+        return 1;
+    }
+    // At least a 4px step, capped by the buffer. The step derives from the
+    // FINAL segment count so the last sample lands exactly on x1 (a step
+    // computed before the cap would end one step short on wide tracks).
+    const want: usize = @as(usize, @intFromFloat(@ceil(width / 4))) + 1;
+    const count = @min(want, xs.len);
+    const step = width / @as(f32, @floatFromInt(count - 1));
     for (0..count) |i| {
-        const x = x0 + @min(@as(f32, @floatFromInt(i)) * step, width);
+        const x = x0 + @as(f32, @floatFromInt(i)) * step;
         xs[i] = x;
         ys[i] = yc + amp * @sin(2 * std.math.pi * (x - phase * wavelength) / wavelength);
     }
@@ -265,6 +274,19 @@ test "progress: arc and wave polylines stay in bounds" {
     try std.testing.expectEqual(@as(f32, 0), wxs[0]);
     try std.testing.expect(std.math.approxEqAbs(f32, 400, wxs[wn - 1], 0.01));
     for (0..wn) |i| try std.testing.expect(@abs(wys[i] - 5) <= wave_amplitude + 0.01);
+}
+
+test "progress: a capped wave polyline still ends exactly on x1 (wide tracks)" {
+    var xs: [wave_points]f32 = undefined;
+    var ys: [wave_points]f32 = undefined;
+    // 960 wide: the buffer caps the samples at wave_points — the step must
+    // derive from the final segment count or the track ends one step short
+    const n = wavePolyline(&xs, &ys, 0, 960, 5, wave_amplitude, wave_wavelength, 0);
+    try std.testing.expectEqual(wave_points, n);
+    try std.testing.expect(std.math.approxEqAbs(f32, 960, xs[n - 1], 0.01));
+    // degenerate: zero width = a single point
+    try std.testing.expectEqual(@as(usize, 1), wavePolyline(&xs, &ys, 5, 5, 5, wave_amplitude, wave_wavelength, 0));
+    try std.testing.expectEqual(@as(f32, 5), xs[0]);
 }
 
 test "golden: linear progress paints the track and the active segment" {

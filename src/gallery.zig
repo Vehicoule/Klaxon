@@ -1192,6 +1192,22 @@ test "gallery: feedback — tooltip, bottom sheet, dialog and snackbar are wired
     router.dispatchPointer(g.root, .{ .phase = .down, .x = db.x + db.w / 2, .y = db.y + db.h / 2 });
     router.dispatchPointer(g.root, .{ .phase = .up, .x = db.x + db.w / 2, .y = db.y + db.h / 2 });
     try std.testing.expect(!g.snack_visible.peek());
+    // auto-dismiss: with a timeline the ticker hides it after timeout_ms
+    // (the gallery snackbar uses the 4000ms M3 default)
+    var tl = ui.anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    ui.anim.setCurrent(&tl);
+    defer ui.anim.setCurrent(null);
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = snb.x + snb.w / 2, .y = snb.y + snb.h / 2 - sy4 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = snb.x + snb.w / 2, .y = snb.y + snb.h / 2 - sy4 });
+    try std.testing.expect(g.snack_visible.peek());
+    tl.tick(0); // show tween start; the ticker arms the deadline (0 + 4000)
+    tl.tick(250); // the slide tween (200ms) settled: shown
+    try std.testing.expect(snack.visible);
+    tl.tick(4001); // deadline passed: the snackbar hides itself
+    try std.testing.expect(!g.snack_visible.peek());
+    tl.tick(4300); // the hide tween settled
+    try std.testing.expect(!snack.visible);
 }
 
 test "gallery: the 10k list stays virtualized after a big scroll" {
