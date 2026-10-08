@@ -247,7 +247,7 @@ pub const PlatformTokens = struct {
     scrollbar_width: f32 = 8,
     /// Host-painted focus ring (Phase 2c): width + offset from the control.
     focus_ring_width: f32 = 2,
-    focus_ring_offset: f32 = 2,
+    focus_ring_offset: f32 = 3,
     /// Pointer cursors (hand/ibeam/...) mapped by the host on desktop.
     cursors: bool = false,
 };
@@ -322,6 +322,8 @@ const platform_desktop: PlatformTokens = .{
     .hit_target_min = 24,
     .spacing_scale = 0.9,
     .scrollbar_style = .overlay, // macOS-style: floats, auto-hides
+    .focus_ring_width = 3, // HIG-like: thicker ring, closer to the control
+    .focus_ring_offset = 2,
     .cursors = true,
 };
 
@@ -569,6 +571,8 @@ test "theme: platform tokens — mobile defaults, desktop presets" {
     try std.testing.expectEqual(@as(f32, 1.0), t.platform.spacing_scale);
     try std.testing.expectEqual(ScrollbarStyle.classic, t.platform.scrollbar_style);
     try std.testing.expect(!t.platform.cursors);
+    try std.testing.expectEqual(@as(f32, 2), t.platform.focus_ring_width);
+    try std.testing.expectEqual(@as(f32, 3), t.platform.focus_ring_offset);
     // the mobile presets stay mobile
     try std.testing.expectEqual(Density.mobile, light.platform.density);
     try std.testing.expectEqual(Density.mobile, dark.platform.density);
@@ -580,6 +584,8 @@ test "theme: platform tokens — mobile defaults, desktop presets" {
         try std.testing.expectEqual(@as(f32, 0.9), dt.platform.spacing_scale);
         try std.testing.expectEqual(ScrollbarStyle.overlay, dt.platform.scrollbar_style);
         try std.testing.expect(dt.platform.cursors);
+        try std.testing.expectEqual(@as(f32, 3), dt.platform.focus_ring_width);
+        try std.testing.expectEqual(@as(f32, 2), dt.platform.focus_ring_offset);
     }
     // desktop presets keep the M3E schemes
     try std.testing.expectEqual(light.colors.primary, desktop_light.colors.primary);

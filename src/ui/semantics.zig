@@ -307,13 +307,11 @@ fn logBridgeCb(userdata: ?*anyopaque, ev: BridgeEvent) void {
 
 // --- FocusManager (keyboard focus + focus ring) ---
 
-/// The focus ring: bounds expanded by this margin; the ring itself is painted
-/// on the ring rect's inner edge (ring_width thick).
-const RING_MARGIN: f32 = 3;
-
-fn ringRect(n: *Node) Rect {
+/// The focus ring rect: the node's bounds expanded by `margin`; the ring
+/// itself is painted on the ring rect's inner edge (ring_width thick).
+fn ringRect(n: *Node, margin: f32) Rect {
     const r = n.mapRectToRoot(n.bounds);
-    return .{ .x = r.x - RING_MARGIN, .y = r.y - RING_MARGIN, .w = r.w + 2 * RING_MARGIN, .h = r.h + 2 * RING_MARGIN };
+    return .{ .x = r.x - margin, .y = r.y - margin, .w = r.w + 2 * margin, .h = r.h + 2 * margin };
 }
 
 pub const FocusManager = struct {
@@ -322,7 +320,8 @@ pub const FocusManager = struct {
     focused: ?*Node = null,
     focused_sig: *state_mod.Signal(?*Node),
     ring_color: Color = 0x1C7ED6FF,
-    ring_width: f32 = 2,
+    ring_width: f32 = 2, // theme.platform.focus_ring_width
+    ring_offset: f32 = 3, // theme.platform.focus_ring_offset
 
     pub fn init(allocator: std.mem.Allocator) !*FocusManager {
         const fm = try allocator.create(FocusManager);
@@ -376,8 +375,8 @@ pub const FocusManager = struct {
         // Damage the old + new ring regions (mapped to window space) so the
         // host repaints exactly what the ring vacated/occupies.
         if (fm.root) |r| {
-            if (fm.focused) |old| r.markDirtyRect(ringRect(old));
-            if (node) |new| r.markDirtyRect(ringRect(new));
+            if (fm.focused) |old| r.markDirtyRect(ringRect(old, fm.ring_offset));
+            if (node) |new| r.markDirtyRect(ringRect(new, fm.ring_offset));
         }
         fm.focused = node;
         fm.focused_sig.set(node);
@@ -463,7 +462,7 @@ pub const FocusManager = struct {
     /// after painting the tree). 4 fillRects — no stroke primitive needed.
     pub fn paintRing(fm: *FocusManager, ctx: *kx.Ctx) void {
         const n = fm.focused orelse return;
-        const r = ringRect(n);
+        const r = ringRect(n, fm.ring_offset);
         const w = fm.ring_width;
         const c = fm.ring_color;
         paint_mod.fillRect(ctx, r.x, r.y, r.w, w, c); // top
@@ -840,4 +839,20 @@ test "golden: focus ring paints around the focused node (exact pixels)" {
     try std.testing.expectEqual(ring, f2.pixelAt(18, 30)); // left bar (x 17..19)
     try std.testing.expectEqual(ring, f2.pixelAt(40, 18)); // top bar (y 17..19)
     try std.testing.expectEqual(box, f2.pixelAt(40, 30)); // center: the box, not the ring
+}
+
+test "focus ring: the offset expands the bounds; the tokens carry width + offset" {
+    const n = try clickNode(std.testing.allocator);
+    defer n.deinit();
+    n.layout(.{ .x = 10, .y = 20, .w = 30, .h = 40 });
+    const r = ringRect(n, 4);
+    try std.testing.expectEqual(@as(f32, 6), r.x);
+    try std.testing.expectEqual(@as(f32, 16), r.y);
+    try std.testing.expectEqual(@as(f32, 38), r.w);
+    try std.testing.expectEqual(@as(f32, 48), r.h);
+    // the FocusManager carries the tokens (mobile defaults)
+    const fm = try FocusManager.init(std.testing.allocator);
+    defer fm.deinit();
+    try std.testing.expectEqual(@as(f32, 2), fm.ring_width);
+    try std.testing.expectEqual(@as(f32, 3), fm.ring_offset);
 }
