@@ -248,6 +248,16 @@ fn tabsOnPointer(n: *Node, ev: input.PointerEvent) bool {
             return true;
         },
         .move => return s.pressed != null,
+        // Uncaptured hover over an unchanged deepest node: track the hovered
+        // cell (the enter/leave pair only fires when the node changes).
+        .hover_move => {
+            const h = tabAtPoint(n, s, ev.raw_x, ev.raw_y);
+            if (h != s.hovered) {
+                s.hovered = h;
+                n.markDirty();
+            }
+            return true;
+        },
         else => return false,
     }
 }
@@ -269,6 +279,7 @@ fn tabsOnKey(n: *Node, ev: input.KeyEvent) bool {
             if (sel > 0) {
                 s.sig.set(sel - 1);
                 n.markLayoutDirty();
+                input.requestFocus(n.children.items[sel - 1]); // selection-follows-focus, both ways
                 return true;
             }
             return false;
@@ -278,6 +289,7 @@ fn tabsOnKey(n: *Node, ev: input.KeyEvent) bool {
             if (sel + 1 < n.children.items.len) {
                 s.sig.set(sel + 1);
                 n.markLayoutDirty();
+                input.requestFocus(n.children.items[sel + 1]);
                 return true;
             }
             return false;
@@ -427,6 +439,35 @@ test "tabs: click selects the tab under the pointer" {
     router.dispatchPointer(row, .{ .phase = .down, .x = 300, .y = 32 });
     router.dispatchPointer(row, .{ .phase = .up, .x = 300, .y = 32 });
     try std.testing.expectEqual(@as(usize, 1), sel.peek());
+}
+
+test "tabs: arrows move the selection AND the focus; hover tracks across cells" {
+    const sel = try ui.state.Signal(usize).init(std.testing.allocator, 0);
+    defer sel.deinit();
+    const row = try tabs(std.testing.allocator, sel, .{});
+    defer row.deinit();
+    const a = try testTab(std.testing.allocator, "One");
+    const b = try testTab(std.testing.allocator, "Two");
+    row.add(a);
+    row.add(b);
+    row.layout(.{ .x = 0, .y = 0, .w = 400, .h = 64 });
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    // focus followed the selection: Enter activates the NEW tab
+    input.requestFocus(a);
+    try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .right }));
+    try std.testing.expectEqual(@as(usize, 1), sel.peek());
+    try std.testing.expect(router.focused == b);
+    try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .enter }));
+    try std.testing.expectEqual(@as(usize, 1), sel.peek());
+    // hover_move: y=4 is inside the row but above the centered content —
+    // moving between such spots keeps the same deepest node (the row).
+    const s = stateOf(row);
+    router.dispatchPointer(row, .{ .phase = .move, .x = 50, .y = 4 });
+    try std.testing.expectEqual(@as(?usize, 0), s.hovered);
+    router.dispatchPointer(row, .{ .phase = .move, .x = 250, .y = 4 });
+    try std.testing.expectEqual(@as(?usize, 1), s.hovered);
 }
 
 test "golden: tabs paint the surface, the divider and the primary indicator" {

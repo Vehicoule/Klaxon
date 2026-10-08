@@ -218,6 +218,10 @@ fn treeFromValueInner(ctx: *BuildCtx, v: Value) !*Node {
     errdefer node.deinit();
     try ctx.recordAdopt(node, entry.name, snapshot, res.live, res.skip_children);
     if (v.get("children")) |c| {
+        // Slot widgets (app_bar, drawer) own their children as internal
+        // chrome: document children would build but never serialize
+        // (treeToValue skips them) — reject instead of losing them silently.
+        if (res.skip_children) return error.ChildrenNotSupported;
         switch (c) {
             .array => |arr| for (arr) |cv| {
                 const child = try treeFromValueInner(ctx, cv);
@@ -720,6 +724,18 @@ test "registry: app_bar round-trips with its slots" {
     const out = try treeToJson(&ctx, node, std.testing.allocator);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: slot widgets reject document children (they would never serialize)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // app_bar's children are its internal slots; a document child would build
+    // but be dropped by treeToValue — rejected at load instead.
+    const doc = "{\"name\":\"app_bar\",\"options\":{},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc));
+    // same for the drawer
+    const doc2 = "{\"name\":\"drawer\",\"options\":{},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc2));
 }
 
 test "registry: navigation chrome schemas expose slots and live fields" {

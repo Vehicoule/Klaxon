@@ -63,6 +63,7 @@ const DrawerState = struct {
     laid_out: bool = false,
     panel_w: f32 = 0, // laid-out panel width (drives the slide offset)
     anim_channel: u8 = 0, // channel marker (stable address)
+    back_registered: bool = false, // on the router's modal back stack while open
 };
 
 fn stateOf(n: *Node) *DrawerState {
@@ -107,6 +108,9 @@ fn panelPaint(n: *Node, ctx: *kx.Ctx) void {
     _ = ctx; // transparent: the background child paints (translated)
 }
 fn panelPreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
+    // Own save: the restore in post_children_paint must not pop a caller's
+    // canvas state — an enclosing clip (scroll view, damage rect) survives.
+    ui.paint.save(ctx);
     ui.paint.translate(ctx, panelStateOf(n).offset_x, 0);
 }
 fn panelPostChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
@@ -292,6 +296,7 @@ fn animateProgress(n: *Node, s: *DrawerState, to: f32) void {
 fn drawerSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     const s = stateOf(n);
+    syncBackHandler(n, s); // before the laid_out gate: registration tracks state
     if (!s.laid_out) return;
     const target: f32 = if (s.sig.peek()) 1 else 0;
     if (target != s.anim_to) animateProgress(n, s, target);
@@ -301,6 +306,30 @@ fn closeDrawer(n: *Node) void {
     const s = stateOf(n);
     s.sig.set(false);
     if (s.on_closed) |cb| cb.fn_ptr(cb.userdata);
+}
+
+/// Escape / hardware-back while the drawer is open (the router consults the
+/// modal back stack before the navigator — dispatchBack).
+fn drawerBackCb(userdata: ?*anyopaque) bool {
+    const n: *Node = @ptrCast(@alignCast(userdata.?));
+    const s = stateOf(n);
+    if (!s.sig.peek()) return false;
+    closeDrawer(n); // the signal sync pops the handler
+    return true;
+}
+
+/// Keep the router's modal back stack in sync with the open state: while open,
+/// Escape dismisses the drawer even when keyboard focus is outside it.
+fn syncBackHandler(n: *Node, s: *DrawerState) void {
+    const want = s.sig.peek();
+    if (want == s.back_registered) return;
+    const router = input.current() orelse return;
+    if (want) {
+        if (router.pushBackHandler(.{ .fn_ptr = drawerBackCb, .userdata = n })) s.back_registered = true;
+    } else {
+        router.popBackHandler(n);
+        s.back_registered = false;
+    }
 }
 
 fn drawerMeasure(n: *Node, c: Constraints) Size {
@@ -349,6 +378,10 @@ fn drawerDeinit(n: *Node) void {
     const s = stateOf(n);
     if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.anim_channel)); // the update cb points at this node
     s.sig.unsubscribe(.{ .callback = .{ .fn_ptr = drawerSyncCb, .userdata = n } });
+    if (s.back_registered) {
+        if (input.current()) |r| r.popBackHandler(n); // destroyed while open
+        s.back_registered = false;
+    }
     input.releaseNode(n);
     n.allocator.destroy(s);
 }
@@ -402,6 +435,7 @@ pub fn drawer(allocator: std.mem.Allocator, open: *ui.state.Signal(bool), on_clo
     ui.semantics.attach(scrim, .{ .role = .button, .label = "Close drawer", .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
     ui.semantics.attach(panel, .{ .role = .group, .label = opts.label }); // Phase 2c
     open.subscribe(.{ .callback = .{ .fn_ptr = drawerSyncCb, .userdata = node } });
+    syncBackHandler(node, s); // already open at build: register immediately
     return node;
 }
 
@@ -523,6 +557,40 @@ test "drawer: a scrim click closes it (and fires on_closed); Escape too" {
     try std.testing.expect(router2.dispatchKey(.{ .kind = .key_down, .key = .escape }));
     try std.testing.expect(!open.peek());
     try std.testing.expectEqual(@as(u32, 2), closed);
+}
+
+test "drawer: the global back path closes it even when focus is outside" {
+    const open = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer open.deinit();
+    const d = try drawer(std.testing.allocator, open, null, .{
+        .body = try golden.solidBox(std.testing.allocator, 480, 200, 0xFF),
+    });
+    defer d.deinit();
+    d.layout(.{ .x = 0, .y = 0, .w = 480, .h = 200 });
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    // a navigator back handler is registered (would pop a page)
+    var popped: u32 = 0;
+    router.setBackHandler(.{ .fn_ptr = struct {
+        fn cb(ud: ?*anyopaque) bool {
+            const p: *u32 = @ptrCast(@alignCast(ud.?));
+            p.* += 1;
+            return true;
+        }
+    }.cb, .userdata = &popped });
+    // open the drawer with no focus inside it: it registers on the back stack
+    open.set(true);
+    d.layout(.{ .x = 0, .y = 0, .w = 480, .h = 200 });
+    try std.testing.expectEqual(@as(usize, 1), router.back_stack_len);
+    // back request: the drawer dismisses itself, the navigator is NOT popped
+    try std.testing.expect(router.dispatchBack());
+    try std.testing.expect(!open.peek());
+    try std.testing.expectEqual(@as(u32, 0), popped);
+    try std.testing.expectEqual(@as(usize, 0), router.back_stack_len);
+    // closed: back falls through to the navigator
+    try std.testing.expect(router.dispatchBack());
+    try std.testing.expectEqual(@as(u32, 1), popped);
 }
 
 test "golden: drawer paints the body, the scrim and the panel (open)" {

@@ -2,9 +2,9 @@
 //
 // Spec: m3.material.io/components/top-app-bar (M3E) + Compose
 // AppBarSmallTokens / matraic m3e-app-bar:
-//   - container height 64, container color surface (elevation 0 — the
-//     scroll-aware scrim/elevation is a later refinement; v1 keeps the bar
-//     fixed, no collapse),
+//   - container height 64, container color surface — the M3E small app bar
+//     rests on `surface`; `surface_container` applies only in the scrolled
+//     state, which v1 does not implement (fixed bar, no collapse, elevation 0),
 //   - title type style title_large,
 //   - horizontal padding 4 (TopAppBarHorizontalPadding); leading icon slot
 //     48x48 at start+4; the title starts at 16 without a leading slot and at
@@ -160,7 +160,7 @@ test "app_bar: layout without leading insets the title by 16" {
     try std.testing.expectEqual(@as(f32, 16), title.bounds.x);
 }
 
-test "golden: app_bar paints the M3 surface container" {
+test "golden: app_bar paints the M3 surface container color" {
     const text_w = @import("text.zig");
     const bar = try appBar(std.testing.allocator, .{ .title = try text_w.text(std.testing.allocator, "Hello", .{ .color = theme_mod.light.colors.on_surface }) });
     defer bar.deinit();

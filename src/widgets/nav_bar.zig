@@ -207,6 +207,16 @@ fn navBarOnPointer(n: *Node, ev: input.PointerEvent) bool {
             return true;
         },
         .move => return s.pressed != null,
+        // Uncaptured hover over an unchanged deepest node: track the hovered
+        // cell (the enter/leave pair only fires when the node changes).
+        .hover_move => {
+            const h = itemAtPoint(n, s, ev.raw_x, ev.raw_y);
+            if (h != s.hovered) {
+                s.hovered = h;
+                n.markDirty();
+            }
+            return true;
+        },
         else => return false,
     }
 }
@@ -226,6 +236,7 @@ fn navBarOnKey(n: *Node, ev: input.KeyEvent) bool {
             const sel = s.sig.peek();
             if (sel > 0) {
                 s.sig.set(sel - 1);
+                input.requestFocus(n.children.items[sel - 1]); // selection-follows-focus, both ways
                 return true;
             }
             return false;
@@ -234,6 +245,7 @@ fn navBarOnKey(n: *Node, ev: input.KeyEvent) bool {
             const sel = s.sig.peek();
             if (sel + 1 < n.children.items.len) {
                 s.sig.set(sel + 1);
+                input.requestFocus(n.children.items[sel + 1]);
                 return true;
             }
             return false;
@@ -372,12 +384,43 @@ test "nav_bar: arrows move the selection, Enter activates the focused item" {
     input.requestFocus(a); // arrows move the selection (selection-follows-focus)
     try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .right }));
     try std.testing.expectEqual(@as(usize, 1), sel.peek());
+    // focus followed the selection: Enter activates the NEW item, not the old one
+    try std.testing.expect(router.focused == b);
+    try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .enter }));
+    try std.testing.expectEqual(@as(usize, 1), sel.peek());
     // clamped at the end: nothing to do, the key is not handled
     try std.testing.expect(!router.dispatchKey(.{ .kind = .key_down, .key = .right }));
     try std.testing.expectEqual(@as(usize, 1), sel.peek());
-    input.requestFocus(a);
-    try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .enter }));
+    try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .left }));
+    try std.testing.expect(router.focused == a);
     try std.testing.expectEqual(@as(usize, 0), sel.peek());
+}
+
+test "nav_bar: hover tracks across empty cell space (hover_move)" {
+    const sel = try ui.state.Signal(usize).init(std.testing.allocator, 0);
+    defer sel.deinit();
+    const bar = try navBar(std.testing.allocator, sel, .{});
+    defer bar.deinit();
+    bar.add(try testItem(std.testing.allocator, "One"));
+    bar.add(try testItem(std.testing.allocator, "Two"));
+    bar.add(try testItem(std.testing.allocator, "Three"));
+    bar.layout(.{ .x = 0, .y = 0, .w = 300, .h = 80 });
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const s = stateOf(bar);
+    // y=4 is inside the bar but above the centered item content: the deepest
+    // hit node is the bar itself — moving between such spots changes no node,
+    // so the router delivers hover_move and the highlight must follow.
+    router.dispatchPointer(bar, .{ .phase = .move, .x = 50, .y = 4 });
+    try std.testing.expectEqual(@as(?usize, 0), s.hovered);
+    router.dispatchPointer(bar, .{ .phase = .move, .x = 175, .y = 4 });
+    try std.testing.expectEqual(@as(?usize, 1), s.hovered);
+    router.dispatchPointer(bar, .{ .phase = .move, .x = 275, .y = 4 });
+    try std.testing.expectEqual(@as(?usize, 2), s.hovered);
+    // off the bar: leave clears the hover
+    router.dispatchPointer(bar, .{ .phase = .move, .x = 50, .y = 200 });
+    try std.testing.expectEqual(@as(?usize, null), s.hovered);
 }
 
 test "golden: nav_bar paints the surface container and the active indicator" {

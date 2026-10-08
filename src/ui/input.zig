@@ -18,7 +18,7 @@ const semantics_mod = @import("semantics.zig");
 
 const Node = node_mod.Node;
 
-pub const PointerPhase = enum { down, move, up, enter, leave, outside_down };
+pub const PointerPhase = enum { down, move, up, enter, leave, outside_down, hover_move };
 
 pub const PointerEvent = struct {
     phase: PointerPhase,
@@ -94,6 +94,11 @@ pub const InputRouter = struct {
     focused: ?*Node = null,
     open_popup: ?*Node = null,
     back_handler: ?BackHandler = null, // navigator pop (Phase 2a)
+    /// Modal back handlers (Escape / hardware back), consulted by dispatchBack
+    /// BEFORE the navigator's back_handler. Fixed-size stack (no allocator):
+    /// nesting is shallow (drawer < dialog < bottom sheet…). LIFO.
+    back_stack: [8]BackHandler = undefined,
+    back_stack_len: usize = 0,
 
     fn captureSlot(self: *InputRouter, pointer: u64) ?usize {
         for (self.captured, 0..) |slot, i| {
@@ -184,6 +189,13 @@ pub const InputRouter = struct {
                         if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = ev.x, .y = ev.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                         self.hovered = hovered;
                         if (hit) |h| _ = sendPointer(h.node, .{ .phase = .enter, .x = h.x, .y = h.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                    } else if (hit) |h| {
+                        // Unchanged deepest node: deliver hover_move so widgets
+                        // with per-cell hover (nav bar / tabs) track across
+                        // cell gaps. A separate phase on purpose: uncaptured
+                        // hover must never reach drag consumers of `.move`
+                        // (sliders set their value on move, gestures track drags).
+                        _ = sendPointer(h.node, .{ .phase = .hover_move, .x = h.x, .y = h.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                     }
                 }
             },
@@ -196,8 +208,8 @@ pub const InputRouter = struct {
                     _ = sendPointer(hit.node, .{ .phase = ev.phase, .x = hit.x, .y = hit.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                 }
             },
-            // enter/leave/outside_down are synthesized by the router itself.
-            .enter, .leave, .outside_down => {},
+            // enter/leave/outside_down/hover_move are synthesized by the router.
+            .enter, .leave, .outside_down, .hover_move => {},
         }
     }
 
@@ -212,13 +224,41 @@ pub const InputRouter = struct {
         self.back_handler = h;
     }
 
+    /// Register a modal back handler (a drawer/dialog/bottom sheet while open).
+    /// Returns false when the stack is full (back falls through to the next
+    /// handler). Modals must pop themselves when closed or destroyed.
+    pub fn pushBackHandler(self: *InputRouter, h: BackHandler) bool {
+        if (self.back_stack_len >= self.back_stack.len) return false;
+        self.back_stack[self.back_stack_len] = h;
+        self.back_stack_len += 1;
+        return true;
+    }
+
+    /// Remove the handler registered for `userdata` (topmost match, LIFO).
+    pub fn popBackHandler(self: *InputRouter, userdata: ?*anyopaque) void {
+        var i = self.back_stack_len;
+        while (i > 0) {
+            i -= 1;
+            if (self.back_stack[i].userdata == userdata) {
+                for (i..self.back_stack_len - 1) |j| self.back_stack[j] = self.back_stack[j + 1];
+                self.back_stack_len -= 1;
+                return;
+            }
+        }
+    }
+
     /// Hardware back (Android) / Escape (desktop), Phase 2a. The focused
     /// chain gets `.escape` first (a text field consumes it: Escape blurs);
-    /// then the registered back handler (the navigator pops). Returns true
-    /// when the back request was handled.
+    /// then the modal back stack (topmost first — an open drawer/dialog
+    /// dismisses itself even when focus is outside it); then the registered
+    /// back handler (the navigator pops). Returns true when handled.
     pub fn dispatchBack(self: *InputRouter) bool {
         if (self.focused) |f| {
             if (sendKey(f, .{ .kind = .key_down, .key = .escape })) return true;
+        }
+        if (self.back_stack_len > 0) {
+            const h = self.back_stack[self.back_stack_len - 1];
+            return h.fn_ptr(h.userdata);
         }
         if (self.back_handler) |h| return h.fn_ptr(h.userdata);
         return false;
