@@ -69,6 +69,7 @@ const ScrollbarState = struct {
     // show/hide (overlay + auto_hide): scroll activity / hover / drag show
     // the scrollbar; an idle delay fades it out (classic: always shown)
     shown: bool = false,
+    hovering: bool = false, // the pointer rests on the scrollbar: no idle hide
     alpha: f32 = 0,
     anim_to: f32 = 0,
     hide_deadline: ?u64 = null,
@@ -94,7 +95,31 @@ fn trackRect(s: *const ScrollbarState, n: *Node) Rect {
 }
 
 fn scrollbarHitBounds(n: *Node) Rect {
-    return trackRect(stateOf(ScrollbarState, n), n);
+    const s = stateOf(ScrollbarState, n);
+    // nothing to scroll: an empty hit zone — the overlay never intercepts
+    // the content's clicks
+    if (!s.opts.scroll.vtable.scroll_info.?(s.opts.scroll).canScroll()) return .{};
+    return trackRect(s, n);
+}
+
+/// Damage for a show/hide/offset change: the overlay node measures zero
+/// width, so its own bounds would be discarded by the damage union — dirty
+/// the track rect (parent space) instead.
+fn damageSb(s: *ScrollbarState) void {
+    if (styleOf(s) == .overlay) {
+        s.node.markDirtyRect(trackRect(s, s.node));
+    } else {
+        s.node.markDirty();
+    }
+}
+
+/// Wheel over the overlay strip: the wheel bubbles to ancestors only, so
+/// forward it to the scrollable (the strip floats over the content).
+fn scrollbarOnScroll(n: *Node, ev: input.ScrollEvent) bool {
+    const s = stateOf(ScrollbarState, n);
+    const scroll = s.opts.scroll;
+    if (scroll.vtable.on_scroll) |h| return h(scroll, ev);
+    return false;
 }
 
 /// Timeline ticker: mark the scrollbar dirty when the scroll offset moved
@@ -107,12 +132,12 @@ fn sbTickCb(userdata: ?*anyopaque, now_ms: u64) void {
     const info = s.opts.scroll.vtable.scroll_info.?(s.opts.scroll);
     if (info.offset != s.last_offset) {
         s.last_offset = info.offset;
-        s.node.markDirty();
+        damageSb(s);
         if (styleOf(s) != .classic) showSb(s, now_ms); // scroll activity shows it
     }
-    // the idle hide timer (overlay/auto_hide)
+    // the idle hide timer (overlay/auto_hide) — suppressed while hovered
     if (s.hide_deadline) |dl| {
-        if (now_ms >= dl) {
+        if (!s.hovering and now_ms >= dl) {
             s.hide_deadline = null;
             hideSb(s);
         }
@@ -217,10 +242,20 @@ fn scrollbarOnPointer(n: *Node, ev: input.PointerEvent) bool {
         // hover shows an overlay/auto_hide scrollbar (a notification: it
         // never claims hover, and bubbles past anyway)
         .enter, .hover_move => {
-            if (styleOf(s) != .classic) showSb(s, ev.time_ms);
+            if (styleOf(s) != .classic) {
+                s.hovering = true;
+                showSb(s, ev.time_ms);
+            }
             return false;
         },
-        else => return false,
+        // leaving keeps it visible briefly (the idle hide arms from the leave)
+        .leave => {
+            if (styleOf(s) != .classic) {
+                s.hovering = false;
+                s.hide_deadline = ev.time_ms + hide_delay_ms;
+            }
+            return false;
+        },
     }
 }
 
@@ -231,7 +266,7 @@ fn showSb(s: *ScrollbarState, now_ms: u64) void {
     s.shown = true;
     s.hide_deadline = now_ms + hide_delay_ms;
     if (s.anim_to != 1) animateAlpha(s, 1);
-    s.node.markDirty();
+    damageSb(s);
 }
 
 /// Hide the scrollbar (the idle delay elapsed).
@@ -239,7 +274,7 @@ fn hideSb(s: *ScrollbarState) void {
     if (styleOf(s) == .classic) return;
     s.shown = false;
     if (s.anim_to != 0) animateAlpha(s, 0);
-    s.node.markDirty();
+    damageSb(s);
 }
 
 /// Fade the scrollbar to `to` (0/1); without a timeline, snap.
@@ -261,7 +296,7 @@ fn sbAnimUpdateCb(userdata: ?*anyopaque, value: anim.Vec4) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     const s = stateOf(ScrollbarState, n);
     s.alpha = value[0];
-    n.markDirty();
+    damageSb(s);
 }
 
 fn scrollbarDeinit(n: *Node) void {
@@ -279,6 +314,7 @@ const scrollbar_vtable = ui.node.VTable{
     .paint = scrollbarPaint,
     .deinit = scrollbarDeinit,
     .on_pointer = scrollbarOnPointer,
+    .on_scroll = scrollbarOnScroll,
     .hit_bounds = scrollbarHitBounds,
 };
 
@@ -558,4 +594,74 @@ test "golden: overlay scrollbar floats over the parent's right edge (no track)" 
     try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f2.pixelAt(96, 10)); // thumb (inset 2: 94..98)
     try std.testing.expectEqual(@as(Color, 0x3B5BDBFF), f2.pixelAt(92, 10)); // no track: the list shows
     try std.testing.expectEqual(@as(Color, 0x3B5BDBFF), f2.pixelAt(96, 100)); // below the 24px thumb
+}
+
+test "scrollbar overlay: wheel over the strip scrolls the content" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const row = try layout_w.row(std.testing.allocator, .{});
+    defer row.deinit();
+    const list = try testList();
+    const sb = try scrollbar(std.testing.allocator, .{ .scroll = list, .theme = overlayTheme() });
+    addToRow(row, list, sb, 100);
+    const list_mod = @import("list_view.zig");
+    // wheel down over the overlay strip (x=96): forwarded to the scrollable
+    router.dispatchScroll(row, .{ .x = 96, .y = 100, .delta_y = -10 });
+    const off1 = list_mod.scrollOffset(list);
+    try std.testing.expect(off1 > 0);
+    // wheel down over the content (x=50): scrolls directly
+    router.dispatchScroll(row, .{ .x = 50, .y = 100, .delta_y = -10 });
+    try std.testing.expect(list_mod.scrollOffset(list) > off1);
+}
+
+test "scrollbar overlay: a stationary pointer keeps it shown; leaving hides it" {
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const row = try layout_w.row(std.testing.allocator, .{});
+    defer row.deinit();
+    const list = try testList();
+    const sb = try scrollbar(std.testing.allocator, .{ .scroll = list, .theme = overlayTheme() });
+    addToRow(row, list, sb, 100);
+    const s = stateOf(ScrollbarState, sb);
+    // enter at t=0 → shown; the idle deadline expires but the pointer rests there
+    router.dispatchPointer(row, .{ .phase = .move, .x = 96, .y = 100, .time_ms = 0 });
+    tl.tick(0);
+    tl.tick(200); // fade in settled
+    try std.testing.expect(s.shown);
+    try std.testing.expectEqual(@as(f32, 1), s.alpha);
+    tl.tick(1000); // the idle deadline (800) expired — but the pointer hovers
+    try std.testing.expect(s.shown);
+    // leave at t=1000 → the hide deadline arms from the leave
+    router.dispatchPointer(row, .{ .phase = .move, .x = 50, .y = 100, .time_ms = 1000 });
+    try std.testing.expect(!s.hovering);
+    tl.tick(1900); // deadline (1000 + 800) passed → hide
+    try std.testing.expect(!s.shown);
+    tl.tick(2100); // the fade-out settled
+    try std.testing.expectEqual(@as(f32, 0), s.alpha);
+}
+
+test "scrollbar overlay: no hit zone when the content fits (clicks pass through)" {
+    const row = try layout_w.row(std.testing.allocator, .{});
+    defer row.deinit();
+    const list_mod = @import("list_view.zig");
+    const list = try list_mod.listView(std.testing.allocator, .{
+        .item_count = 2, // content 96 < viewport 200: nothing to scroll
+        .factory = test_factory,
+        .item_height = 48,
+    });
+    const sb = try scrollbar(std.testing.allocator, .{ .scroll = list, .theme = overlayTheme() });
+    addToRow(row, list, sb, 100);
+    // the hit zone is empty: the overlay never intercepts the content's clicks
+    const hb = sb.vtable.hit_bounds.?(sb);
+    try std.testing.expectEqual(@as(f32, 0), hb.w);
+    try std.testing.expectEqual(@as(f32, 0), hb.h);
+    const hit = row.hitTestMapped(96, 100);
+    try std.testing.expect(hit != null);
+    try std.testing.expect(hit.?.node != sb);
 }
