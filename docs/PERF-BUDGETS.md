@@ -12,7 +12,7 @@
 | **TTFF** (time to first frame) | < 50 ms (tightened 2026-10-08 from 100 ms; measured 42–45 ms) | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
 | **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo (CI gate < 7 Mo — tightened 2026-10-08 from 10 Mo; current 6.0 Mo) | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip done; Skia trim (args.gn) to get under 5 Mo |
 | **Input latency** (key/tap → repaint) | ≤ 1 frame (≤ 8.3 ms) | synchronous dispatch in the loop | ✅ Router + dirty-flag (Phase 1c/1d) |
-| **Nav transition duration** | ≤ 350 ms (target 300 ms, M3 standard curve) | 300 ms | ✅ Phase 2a |
+| **Nav transition duration** | ≤ 350 ms (target 300 ms, M3 standard curve) | — (target; lands with Phase 2a) | 🎯 Phase 2a |
 | **WASM size hello** | < 5 Mo | 6.9 Mo | 🔧 Skia wasm trim |
 | **Build time e2e** (gradle included) | Always shorter than Flutter/Qt | 4.7s vs Flutter ~60s, Qt ~120s | ✅ Already winning |
 | **allocs_per_frame** (steady-state) | 0 | 0 (target met by design) | ✅ Arena allocator |
