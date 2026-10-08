@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-08 (Phase 2a — navigation, DONE; Phase 1 COMPLETE: 1a–1g)
+**Last updated**: 2026-10-08 (Phase 2b — i18n, DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
 
 ## Current phase
 
@@ -34,7 +34,9 @@
 
 - **2a done** — Navigation: `ui/navigator.zig` (page stack: route patterns `anime/{id}` + params, imperative push/pop/replace/popToRoot, deep links `klaxon://anime/42?tab=2`, cold start, change notifications, monotonic page ids) + `widgets/navigator.zig` (`NavigatorView`: transform wrappers (translate + scale + alpha layer), transitions slide/slide_up/fade/scale/none (300 ms M3 standard tween, parallax 0.3, interrupted-transition snap, top-only hit-testing, dirty-rect swept damage) + `Hero` shared-element flight (placeholder keeps the destination size, source hero hidden, child reparented via remove+add)). Back: `input.dispatchBack` (focused chain first, then the navigator's back handler) + `Key.back` + host maps Escape/AC_BACK + `Node.insert` (hero re-attach at the original index). kx_skia ABI **0.4.0** (additive): `kx_layer_alpha` (saveLayerAlphaf — fade transitions). Demo: `src/navigator_main.zig` (5 routes, all transition kinds, hero, CLI deep link `klaxon://detail/42`) + `zig build navigator` + CI headless smoke (600 frames, scripted push/push/pop/push/popToRoot/push). Widgets 33/50. `docs/NAVIGATION.md`. Métriques (Mac dev, raster headless, smoke 600 frames): hello TTFF 0,1 ms / frame 0,63 ms / RSS 26 Mo / ReleaseSmall 6,30 Mo; gallery TTFF 4,2 ms / 3,35 ms / 43 Mo / 6,36 Mo; navigator TTFF 0,1 ms / 1,03 ms / 31 Mo / 6,32 Mo. Cibles resserrées atteintes: frame p99 ≤ 4 ms ✓, TTFF < 50 ms ✓, binaire < 7 Mo (gate CI) ✓, RSS hello < 40 Mo ✓, nav transition ≤ 350 ms ✓ (300 ms). fps p99 ≥ 120 = device gate (Phase 4, inchangé).
 
-**Next: Phase 2b — i18n (tr, ARB, RTL, pluralization, ICU).**
+- **2b done** — i18n: `ui/i18n.zig` (`I18n` registry: ARB locales, `tr` fallback chain, `{name}` interpolation from a comptime args struct, ARB plural blocks + CLDR rules en/fr/ja/ar, number/date formatting per-locale tables, process-global direction) + RTL auto-mirror in the layout layer (`TextAlign.start/end`, `Alignment.mirrored`, `EdgeInsetsDirectional`, flex main-axis reversal, `paddingDir` widget) + runtime switching (`setLocale` → locale signal → widgets re-resolve + re-measure; direction flip → `on_direction_changed`). Widgets: `l10nText`, `L10nText(Args)`, `l10nPlural`, `l10nPluralSig` (`src/widgets/i18n.zig`). Demo: `src/i18n_main.zig` + `src/locales/{en,fr,ja,ar}.arb` (@embedFile) + `zig build i18n` + CI headless smoke (600 frames, scripted switches). Widgets 34/50. `docs/I18N.md`. 236 tests green (34 golden). Métriques (Mac dev, raster headless, smoke 600 frames): hello TTFF 0,1 ms / frame 0,66 ms / RSS 26 Mo / ReleaseSmall 6,30 Mo; gallery 4,2 / 3,33 / 43 / 6,36; navigator 0,0 / 0,99 / 31 / 6,32; i18n 0,0 / 1,18 / 33 / 6,37. Cibles resserrées renforcées (2b): frame p99 ≤ 3 ms (device), TTFF < 20 ms (device), binaire < 6,8 Mo (gate CI). Merged as PR #12.
+
+**Next: Phase 2c — accessibility (semantics tree, keyboard focus, AT-SPI Linux).**
 
 ## What exists (code, this repo)
 
@@ -63,6 +65,11 @@
 - ✅ `src/ui/navigator.zig` — Navigator: page stack, route patterns + params, deep links, back (Phase 2a) + `docs/NAVIGATION.md`
 - ✅ `src/widgets/navigator.zig` — NavigatorView (page stack + transitions) + Hero (shared element flight) (Phase 2a)
 - ✅ `src/navigator_main.zig` — navigator demo app (5 routes, all transitions, hero, deep link) (Phase 2a)
+- ✅ `src/ui/i18n.zig` — I18n: ARB locales, tr/trArgs/trPlural, CLDR plurals, number/date formatting, direction + locale signal (Phase 2b) + `docs/I18N.md`
+- ✅ `src/widgets/i18n.zig` — l10nText / L10nText(Args) / l10nPlural / l10nPluralSig (Phase 2b)
+- ✅ `src/i18n_main.zig` + `src/locales/{en,fr,ja,ar}.arb` — i18n demo app (4 locales, @embedFile, scripted switches) (Phase 2b)
+- ✅ `src/ui/layout.zig` — RTL mirror: TextAlign.start/end, Alignment.mirrored, EdgeInsetsDirectional, flex main-axis reversal (Phase 2b)
+- ✅ `src/widgets/layout.zig` — paddingDir (directional padding) (Phase 2b)
 - ✅ `src/ui/input.zig` — back handler (`dispatchBack`: focused chain first, then the navigator pops) + `Key.back` (Phase 2a)
 - ✅ `src/ui/node.zig` — `Node.insert` (re-insert at the original index — hero re-attach) (Phase 2a)
 - ✅ `kx_skia/` — ABI 0.4.0: `kx_layer_alpha` (saveLayerAlphaf — fade transitions) (Phase 2a)
@@ -91,8 +98,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 ## What does NOT exist (greenfield)
 
-- ❌ i18n
-- ❌ All 50 widgets
+- ❌ All 50 widgets (34/50)
 - ❌ A11y bridges (6)
 - ❌ DevTools
 - ❌ CLI
@@ -135,10 +141,10 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 | Metric | Target |
 |---|---|
 | fps p99 (real scenes, incl. video_playback) | ≥ 120 (device gate, Phase 4 — unchanged) |
-| frame p99 | ≤ 4 ms (tightened from 8.3 ms; measured 0.63 hello / 3.35 gallery / 1.03 navigator, raster headless) |
+| frame p99 | ≤ 3 ms (tightened 2026-10-08 from 4 ms; measured 0.66 hello / 3.33 gallery / 0.99 navigator / 1.18 i18n, raster headless) |
 | RSS hello | < 40 Mo (measured 26 Mo — continuous improvement target) |
-| TTFF | < 50 ms (tightened from 100 ms; measured 0.1 hello / 4.2 gallery / 0.1 navigator, run-start → first frame) |
-| Binary size hello | < 5 Mo (CI gate < 7 Mo — tightened from 10 Mo; current 6.30 Mo) |
+| TTFF | < 20 ms (tightened 2026-10-08 from 50 ms; measured 0.1 hello / 4.2 gallery / 0.0 navigator / 0.0 i18n, run-start → first frame) |
+| Binary size hello | < 5 Mo (CI gate < 6,8 Mo — tightened 2026-10-08 from 7 Mo; current 6.30 Mo) |
 | Input latency (key/tap → repaint) | ≤ 1 frame |
 | Nav transition duration | ≤ 350 ms (target 300 ms) |
 | WASM size hello | < 5 Mo |
@@ -163,4 +169,5 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 13. ~~Phase 1f: scroll (ListView/GridView virtualized, ScrollView, Scrollbar)~~ done (PR #8)
 14. ~~Phase 1g: gallery (full showcase: all widgets, themes, animations, gestures, scroll 10k)~~ done (PR #9)
 15. ~~Phase 2a: navigation (`ui/navigator.zig` — page stack, transitions, deep links, back stack)~~ done (PR #11)
-16. **Phase 2b: i18n (`ui/i18n.zig` — tr, ARB, RTL, pluralization, ICU)**
+16. ~~Phase 2b: i18n (`ui/i18n.zig` — tr, ARB, RTL, pluralization, number/date formatting)~~ done (PR #12)
+17. **Phase 2c: accessibility (`ui/semantics.zig` — semantic tree, keyboard focus, AT-SPI Linux)**

@@ -8,3 +8,4 @@ pub const gestures = @import("ui/gestures.zig");
 pub const anim = @import("ui/anim.zig");
 pub const scroll = @import("ui/scroll.zig");
 pub const navigator = @import("ui/navigator.zig");
+pub const i18n = @import("ui/i18n.zig");

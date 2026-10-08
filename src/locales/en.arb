@@ -1,0 +1,15 @@
+{
+  "@@locale": "en",
+  "app_title": "Klaxon i18n demo",
+  "@app_title": { "description": "Window/app title" },
+  "greeting": "Hello {name}!",
+  "@greeting": { "description": "Greeting with a name placeholder" },
+  "items": "{count, plural, =0 {No items} one {# item} other {# items}}",
+  "@items": { "description": "Item count (plural)" },
+  "direction_label": "Text direction",
+  "direction_value": "Left → right",
+  "locale_label": "Locale",
+  "number_label": "Number",
+  "date_label": "Date",
+  "rtl_hint": "Switch to AR to flip the layout (RTL)"
+}

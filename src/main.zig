@@ -79,12 +79,13 @@ test "smoke" {
 test "widgets" {
     const widgets = @import("widgets.zig");
     std.testing.refAllDecls(widgets);
-    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input, widgets.gestures, widgets.anim, widgets.list_view, widgets.grid_view, widgets.scroll_view, widgets.scrollbar, widgets.navigator }) |mod| {
+    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input, widgets.gestures, widgets.anim, widgets.list_view, widgets.grid_view, widgets.scroll_view, widgets.scrollbar, widgets.navigator, widgets.i18n }) |mod| {
         std.testing.refAllDecls(mod);
     }
     std.testing.refAllDecls(ui.anim);
     std.testing.refAllDecls(ui.scroll);
     std.testing.refAllDecls(ui.navigator);
+    std.testing.refAllDecls(ui.i18n);
     std.testing.refAllDecls(ui.node);
     std.testing.refAllDecls(ui.state);
     std.testing.refAllDecls(ui.input);
@@ -99,4 +100,8 @@ test "gallery" {
 
 test "navigator demo" {
     std.testing.refAllDecls(@import("navigator_main.zig"));
+}
+
+test "i18n demo" {
+    std.testing.refAllDecls(@import("i18n_main.zig"));
 }

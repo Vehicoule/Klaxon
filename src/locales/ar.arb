@@ -1,0 +1,21 @@
+{
+  "@@locale": "ar",
+  "app_title": "عرض i18n بالعربية",
+  "@app_title": {
+    "description": "عنوان النافذة"
+  },
+  "greeting": "مرحبا {name}!",
+  "@greeting": {
+    "description": "تحية تحتوي على اسم"
+  },
+  "items": "{count, plural, zero {لا عناصر} one {عنصر واحد} two {عنصران} few {# عناصر} many {# عنصراً} other {# عنصر}}",
+  "@items": {
+    "description": "عدد العناصر (الجمع)"
+  },
+  "direction_label": "اتجاه النص",
+  "direction_value": "يمين ← يسار",
+  "locale_label": "اللغة",
+  "number_label": "الرقم",
+  "date_label": "التاريخ",
+  "rtl_hint": "غيّر اللغة إلى العربية لعكس التخطيط (من اليمين إلى اليسار)"
+}

@@ -3,9 +3,14 @@
 // reusable core shared by every layout widget (Row, Column, Stack, Grid, ...).
 const std = @import("std");
 const node_mod = @import("node.zig");
+const i18n_mod = @import("i18n.zig");
 
 const Node = node_mod.Node;
 const Rect = node_mod.Rect;
+
+/// Text direction (re-exported from ui/i18n.zig — the layout layer mirrors
+/// against it, Phase 2b.2).
+pub const Direction = i18n_mod.Direction;
 
 pub const Axis = enum { horizontal, vertical };
 
@@ -119,14 +124,44 @@ pub const EdgeInsets = struct {
     }
 };
 
+/// Directional insets (Flutter's EdgeInsetsDirectional): start/end resolve
+/// against the text direction (start = left in LTR, right in RTL). Phase 2b.2.
+pub const EdgeInsetsDirectional = struct {
+    start: f32 = 0,
+    end: f32 = 0,
+    top: f32 = 0,
+    bottom: f32 = 0,
+
+    pub fn all(v: f32) EdgeInsetsDirectional {
+        return .{ .start = v, .end = v, .top = v, .bottom = v };
+    }
+
+    pub fn resolve(e: EdgeInsetsDirectional, dir: Direction) EdgeInsets {
+        return switch (dir) {
+            .ltr => .{ .left = e.start, .right = e.end, .top = e.top, .bottom = e.bottom },
+            .rtl => .{ .left = e.end, .right = e.start, .top = e.top, .bottom = e.bottom },
+        };
+    }
+};
+
 /// Main-axis alignment inside a flex container (Row/Column).
 pub const MainAlign = enum { start, center, end, space_between, space_around, space_evenly };
 
 /// Cross-axis alignment inside a flex container (Row/Column).
 pub const CrossAlign = enum { start, center, end, stretch };
 
-/// Horizontal text alignment (Text).
-pub const TextAlign = enum { left, center, right };
+/// Horizontal text alignment (Text). `start`/`end` resolve against the
+/// current text direction (start = left in LTR, right in RTL).
+pub const TextAlign = enum { left, center, right, start, end };
+
+/// Resolve a directional text alignment against the text direction.
+pub fn resolveAlign(a: TextAlign, dir: Direction) TextAlign {
+    return switch (a) {
+        .start => if (dir == .rtl) .right else .left,
+        .end => if (dir == .rtl) .left else .right,
+        else => a,
+    };
+}
 
 /// 9-point alignment: x/y in [-1, 1] (-1 = top/left, 0 = center, +1 = bottom/right).
 pub const Alignment = struct {
@@ -150,6 +185,15 @@ pub const Alignment = struct {
             .y = bounds.y + (bounds.h - s.h) * (a.y + 1) / 2,
             .w = s.w,
             .h = s.h,
+        };
+    }
+
+    /// Mirror the horizontal component for RTL (left ↔ right). Vertical
+    /// alignment is unaffected.
+    pub fn mirrored(a: Alignment, dir: Direction) Alignment {
+        return switch (dir) {
+            .ltr => a,
+            .rtl => .{ .x = -a.x, .y = a.y },
         };
     }
 };
@@ -300,6 +344,7 @@ pub fn flexLayout(
     }
 
     // Pass 2: place children.
+    const rtl = axis == .horizontal and i18n_mod.direction() == .rtl;
     var cursor = start;
     for (node.children.items, 0..) |child, i| {
         const s = sizes[i];
@@ -312,8 +357,12 @@ pub fn flexLayout(
             cross_avail
         else
             @min(s.cross(axis), cross_avail);
+        // RTL mirrors the horizontal main axis: the logical order runs
+        // right → left (the cursor math — gaps, padding, free space — is
+        // direction-agnostic, so mirroring the position is exact).
+        const main_pos: f32 = if (rtl) bounds.w - cursor - s.w else cursor;
         const child_bounds = switch (axis) {
-            .horizontal => Rect{ .x = bounds.x + cursor, .y = bounds.y + cross_pos, .w = s.w, .h = cross_size },
+            .horizontal => Rect{ .x = bounds.x + main_pos, .y = bounds.y + cross_pos, .w = s.w, .h = cross_size },
             .vertical => Rect{ .x = bounds.x + cross_pos, .y = bounds.y + cursor, .w = cross_size, .h = s.h },
         };
         child.layout(child_bounds);
@@ -387,6 +436,36 @@ test "constraints loosen zeroes the minimums" {
     try std.testing.expectEqual(@as(f32, 100), c.max_w);
     try std.testing.expectEqual(@as(f32, 0), c.min_h);
     try std.testing.expectEqual(@as(f32, 50), c.max_h);
+}
+
+test "text align start/end resolve against the direction" {
+    try std.testing.expectEqual(TextAlign.left, resolveAlign(.start, .ltr));
+    try std.testing.expectEqual(TextAlign.right, resolveAlign(.start, .rtl));
+    try std.testing.expectEqual(TextAlign.right, resolveAlign(.end, .ltr));
+    try std.testing.expectEqual(TextAlign.left, resolveAlign(.end, .rtl));
+    try std.testing.expectEqual(TextAlign.center, resolveAlign(.center, .rtl));
+    try std.testing.expectEqual(TextAlign.left, resolveAlign(.left, .rtl)); // absolute stays
+}
+
+test "edge insets directional resolve start/end per direction" {
+    const e = EdgeInsetsDirectional{ .start = 2, .end = 6, .top = 4, .bottom = 8 };
+    const ltr = e.resolve(.ltr);
+    try std.testing.expectEqual(@as(f32, 2), ltr.left);
+    try std.testing.expectEqual(@as(f32, 6), ltr.right);
+    const rtl = e.resolve(.rtl);
+    try std.testing.expectEqual(@as(f32, 6), rtl.left);
+    try std.testing.expectEqual(@as(f32, 2), rtl.right);
+    try std.testing.expectEqual(@as(f32, 4), rtl.top);
+}
+
+test "alignment mirrored flips only the horizontal component" {
+    const tl = Alignment.top_left.mirrored(.rtl);
+    try std.testing.expectEqual(@as(f32, 1), tl.x);
+    try std.testing.expectEqual(@as(f32, -1), tl.y);
+    const c = Alignment.center.mirrored(.rtl);
+    try std.testing.expectEqual(@as(f32, 0), c.x);
+    const ltr = Alignment.top_right.mirrored(.ltr);
+    try std.testing.expectEqual(@as(f32, 1), ltr.x);
 }
 
 test "alignment position centers a child in bounds" {

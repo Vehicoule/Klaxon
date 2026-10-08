@@ -108,15 +108,19 @@ Hero) + `docs/NAVIGATION.md` + kx ABI 0.4.0 (`kx_layer_alpha` for fades).
 Demo: `zig build navigator` (CI headless smoke, 600 scripted frames).
 Widgets 33/50.
 
-### 2b. i18n (week 1)
+### 2b. i18n (week 1) — DONE (PR #12)
 
-| # | Task | Deliverable |
-|---|---|---|
-| 2b.1 | `ui/i18n.zig` — `tr(key)` + ARB locale files | Load locales at runtime |
-| 2b.2 | RTL auto (layout mirror for Arabic/Hebrew) | Row → reversed, padding start/end |
-| 2b.3 | Pluralization (`{n, plural, ...}`) | ARB plural rules |
-| 2b.4 | Date/number formatting (ICU) | Locale-aware formats |
-| 2b.5 | Locale switching at runtime | No restart needed |
+`ui/i18n.zig` — `I18n` registry (ARB locales, `tr` fallback chain, `{name}`
+interpolation from a comptime args struct), ARB plural blocks with CLDR
+rules (en/fr/ja/ar), number/date formatting (per-locale tables), and the
+process-global direction. RTL mirrors automatically: `TextAlign.start/end`,
+`Alignment.mirrored`, `EdgeInsetsDirectional`, horizontal flex main-axis
+reversal. Runtime switching via the locale signal (`setLocale` → widgets
+re-resolve + re-measure; a direction flip fires `on_direction_changed`).
+Widgets: `l10nText`, `L10nText(Args)`, `l10nPlural`, `l10nPluralSig`
+(`widgets/i18n.zig`) + `paddingDir` (`widgets/layout.zig`). Demo:
+`zig build i18n` (4 locales @embedFile, scripted switches, CI headless
+smoke). `docs/I18N.md`. Widgets 34/50.
 
 ### 2c. Accessibility (week 2)
 
@@ -143,7 +147,7 @@ Widgets 33/50.
 | Tooltip | `widgets/tooltip.zig` |
 | SnackBar | `widgets/snackbar.zig` |
 
-**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR). A11y on Linux (AT-SPI). 40 widgets total (33 today).
+**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR) — DONE (2b). A11y on Linux (AT-SPI). 40 widgets total (34 today).
 
 ---
 
@@ -340,7 +344,7 @@ API reference: generated from Zig doc comments (English).
 - [x] Animations (Spring M3E closed-form, Tween, staggered, SIMD, dirty-rect) — Phase 1e; hero/opacity land with the layer ABI
 - [x] Scroll (ListView/GridView virtualized, ScrollView, Scrollbar, wheel + drag) — Phase 1f
 - [x] Navigation (page stack, transitions, hero, deep links, back) — Phase 2a
-- [ ] i18n (tr, ARB, RTL, pluralization, ICU)
+- [x] i18n (tr, ARB, RTL, pluralization, number/date formatting) — Phase 2b
 - [ ] A11y (6 bridges: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA)
 - [ ] DevTools (overlay, inspector, memory ledger, frame timeline)
 - [ ] Testing (unit, widget, golden ×150, integration)

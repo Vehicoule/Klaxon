@@ -7,10 +7,10 @@
 | Metric | Target | Measured (retail, Adreno 750) | Status |
 |---|---|---|---|
 | **fps p99** (scroll_10k, real scenes) | ≥ 120 | ~135 avg on empty app — **too easy, target real scenes** | 🎯 Target real scenes (gallery, scroll, anim) |
-| **frame p99** | ≤ 4 ms (tightened 2026-10-08 from 8.3 ms; measured 0.43 ms hello / 1.71 ms gallery, raster headless) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
+| **frame p99** | ≤ 3 ms (tightened 2026-10-08 from 4 ms; measured 0.66 hello / 3.33 gallery / 0.99 navigator / 1.18 i18n, raster headless) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
 | **RSS hello** | < 40 Mo (measured 24.0 Mo — continuous improvement target) | ~45 Mo estimated (Skia floor ~14 + app ~5 + overhead) | 🎯 Ambitious. Gate v1 = < 40 Mo. May take time. |
-| **TTFF** (time to first frame) | < 50 ms (tightened 2026-10-08 from 100 ms; measured 42–45 ms) | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
-| **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo (CI gate < 7 Mo — tightened 2026-10-08 from 10 Mo; current 6.0 Mo) | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip done; Skia trim (args.gn) to get under 5 Mo |
+| **TTFF** (time to first frame) | < 20 ms (tightened 2026-10-08 from 50 ms; measured 0.1 hello / 4.2 gallery / 0.0 navigator / 0.0 i18n, run-start → first frame, raster headless) | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
+| **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo (CI gate < 6,8 Mo — tightened 2026-10-08 from 7 Mo; current 6.30 Mo) | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip done; Skia trim (args.gn) to get under 5 Mo |
 | **Input latency** (key/tap → repaint) | ≤ 1 frame (≤ 8.3 ms) | synchronous dispatch in the loop | ✅ Router + dirty-flag (Phase 1c/1d) |
 | **Nav transition duration** | ≤ 350 ms (target 300 ms, M3 standard curve) | — (target; lands with Phase 2a) | 🎯 Phase 2a |
 | **WASM size hello** | < 5 Mo | 6.9 Mo | 🔧 Skia wasm trim |
@@ -34,10 +34,10 @@ Gates migrate toward the North Star at each major version.
 
 | Metric | Gate CI v1 | North Star |
 |---|---|---|
-| TTFF | < 100 ms (proxy llvmpipe) → < 50 ms (device) | < 40 ms |
+| TTFF | < 100 ms (proxy llvmpipe) → **< 20 ms (device)** (tightened 2026-10-08 from 50 ms) | < 10 ms |
 | RSS | < 60 Mo (llvmpipe proxy) → **< 40 Mo (device)** | < 20 Mo |
-| Binary size | < 7 Mo | < 5 Mo |
-| frame p99 | ≤ 4 ms | ≤ 2 ms |
+| Binary size | < 6,8 Mo (tightened 2026-10-08 from 7 Mo) | < 5 Mo |
+| frame p99 | ≤ 3 ms (tightened 2026-10-08 from 4 ms) | ≤ 1,5 ms |
 | WASM size | < 8 Mo | < 5 Mo |
 | Idle | 0 frames, 0% CPU | 0 wakeups/min |
 
@@ -46,7 +46,7 @@ Gates migrate toward the North Star at each major version.
 | Metric | Gate CI v1 | North Star |
 |---|---|---|
 | fps p99 | ≥ 120 (device) / ≥ 60 (llvmpipe proxy) | 120 everywhere |
-| frame p99 | ≤ 4 ms (device) / ≤ 16.7 ms (proxy) | ≤ 4 ms everywhere |
+| frame p99 | ≤ 3 ms (device; tightened 2026-10-08) / ≤ 12 ms (proxy) | ≤ 4 ms everywhere |
 | frame avg | ≤ 4 ms | ≤ 2 ms |
 | RSS peak | < 80 Mo | < 50 Mo |
 | allocs_per_frame | 0 | 0 |
@@ -163,12 +163,12 @@ CI-tier gates run on GitHub Actions runners (Linux/Windows/macOS + Android emula
 {
   "gates": [
     { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 100, "tier": "ci", "platform": "linux-llvmpipe" },
-    { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 50, "tier": "device", "platform": "android-arm64" },
+    { "scene": "hello", "metric": "ttff_ms", "op": "<", "value": 20, "tier": "device", "platform": "android-arm64" },
     { "scene": "hello", "metric": "peak_rss_mb", "op": "<", "value": 40, "tier": "device", "platform": "android-arm64" },
     { "scene": "scroll_10k", "metric": "fps_p99", "op": ">=", "value": 120, "tier": "device", "platform": "android-arm64" },
     { "scene": "scroll_10k", "metric": "fps_p99", "op": ">=", "value": 60, "tier": "ci", "platform": "linux-llvmpipe" },
     { "scene": "scroll_10k", "metric": "allocs_per_frame", "op": "==", "value": 0, "tier": "ci", "platform": "all" },
-    { "scene": "hello", "metric": "binary_size_mb", "op": "<", "value": 7, "tier": "ci", "platform": "linux-x64" },
+    { "scene": "hello", "metric": "binary_size_mb", "op": "<", "value": 6.8, "tier": "ci", "platform": "linux-x64" },
     { "scene": "hello", "metric": "binary_size_mb", "op": "<", "value": 5, "tier": "north_star", "platform": "all" }
   ]
 }
