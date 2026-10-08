@@ -4,6 +4,12 @@
 //   - down: hit-test → deepest node, capture it (it receives move/up = drag),
 //     events bubble up until a node reports them handled.
 //   - move: to the captured node while dragging, else hover (enter/leave).
+//     Hover phases (enter/leave/hover_move) are notifications, not claims:
+//     they bubble through the whole ancestor chain even past handlers that
+//     report them handled, so a wrapper (tooltip) observes hover on children
+//     that claim it (a Button sets its hover state and reports handled).
+//     Interaction phases (down/move/up/outside_down) stop at the first
+//     handler that claims them.
 //   - up: to the captured node (a "click" is down+up on the same node — the
 //     widget decides, e.g. Button fires onPressed only if up is inside).
 //   - keyboard: delivered to the focused node's chain (TextField).
@@ -291,14 +297,24 @@ pub const InputRouter = struct {
 };
 
 /// Deliver a pointer event to `node`, bubbling up to the root until handled.
+/// Hover phases are notifications: they keep bubbling past handlers that
+/// report them handled (see the module header).
 fn sendPointer(node: *Node, ev: PointerEvent) bool {
+    const notify = switch (ev.phase) {
+        .enter, .leave, .hover_move => true,
+        else => false,
+    };
+    var handled = false;
     var n: ?*Node = node;
     while (n) |cur| : (n = cur.parent) {
         if (cur.vtable.on_pointer) |h| {
-            if (h(cur, ev)) return true;
+            if (h(cur, ev)) {
+                handled = true;
+                if (!notify) return true;
+            }
         }
     }
-    return false;
+    return handled;
 }
 
 /// Deliver a key event to `node`, bubbling up to the root until handled.
@@ -520,6 +536,29 @@ test "hover: enter and leave fire on move" {
     try std.testing.expectEqual(@as(usize, 2), log.len);
     try std.testing.expectEqual(PointerPhase.enter, log[0]);
     try std.testing.expectEqual(PointerPhase.leave, log[1]);
+}
+
+test "hover phases bubble past a child that reports them handled" {
+    // A claiming child (Button sets its hover state and reports handled)
+    // must not hide hover from wrapper ancestors (tooltip shows on hover).
+    const parent = try recNode(std.testing.allocator, false);
+    defer parent.deinit();
+    const child = try recNode(std.testing.allocator, true); // claims every phase
+    parent.add(child);
+    parent.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    child.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    var router = InputRouter{};
+    router.dispatchPointer(parent, .{ .phase = .move, .x = 50, .y = 50 }); // enter
+    router.dispatchPointer(parent, .{ .phase = .move, .x = 50, .y = 50 }); // hover_move
+    router.dispatchPointer(parent, .{ .phase = .move, .x = 500, .y = 500 }); // leave
+    const log = recState(parent).log.items;
+    try std.testing.expectEqual(@as(usize, 3), log.len);
+    try std.testing.expectEqual(PointerPhase.enter, log[0]);
+    try std.testing.expectEqual(PointerPhase.hover_move, log[1]);
+    try std.testing.expectEqual(PointerPhase.leave, log[2]);
+    // Interaction phases still stop at the claiming child.
+    router.dispatchPointer(parent, .{ .phase = .down, .x = 50, .y = 50 });
+    try std.testing.expectEqual(@as(usize, 3), recState(parent).log.items.len);
 }
 
 test "keyboard goes to the focused node" {

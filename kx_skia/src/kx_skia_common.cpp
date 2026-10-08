@@ -14,6 +14,7 @@
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkPathBuilder.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
@@ -187,6 +188,20 @@ void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius
     ctx->canvas->drawRoundRect(SkRect::MakeXYWH(x, y, w, h), radius, radius, paint);
 }
 
+void kx_stroke_polyline(kx_ctx* ctx, const float* xs, const float* ys, int count, float stroke_w, bool round_cap, uint32_t rgba) {
+    if (!ctx || !ctx->canvas || !xs || !ys || count < 2 || stroke_w <= 0) return;
+    SkPaint paint;
+    paint.setColor(kx_to_skcolor(rgba));
+    paint.setAntiAlias(true);
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeWidth(stroke_w);
+    paint.setStrokeCap(round_cap ? SkPaint::kRound_Cap : SkPaint::kButt_Cap);
+    SkPathBuilder builder;
+    builder.moveTo(xs[0], ys[0]);
+    for (int i = 1; i < count; i++) builder.lineTo(xs[i], ys[i]);
+    ctx->canvas->drawPath(builder.snapshot(), paint);
+}
+
 void kx_save(kx_ctx* ctx) {
     if (ctx && ctx->canvas) ctx->canvas->save();
 }
@@ -238,7 +253,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.4.0";
+    return "0.5.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {

@@ -107,6 +107,10 @@ pub const Node = struct {
     semantics: ?*semantics_mod.Semantics = null,
     /// Hide this subtree from the semantic tree (decorative, Phase 2c).
     exclude_semantics: bool = false,
+    /// Internal chrome owned by a widget (a tooltip bubble, a popup): the
+    /// node is part of the tree (paint/hit-test) but is NOT document data —
+    /// the registry's treeToValue skips it (the widget rebuilds it).
+    internal: bool = false,
     // Dirty-rect (Phase 1e): the root accumulates the damaged region — the
     // union of every dirty mark's rect — and the host repaints the tree
     // clipped to it (the surface is retained between frames).
