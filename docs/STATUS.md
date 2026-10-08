@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-08 (Phase 2d-0 — M3E design tokens, DONE; Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
+**Last updated**: 2026-10-08 (Phase 2d-0.6 — widget registry + serialization, DONE; Phase 2d-0 — M3E design tokens, DONE; Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
 
 ## Current phase
 
@@ -40,7 +40,16 @@
 
 - **2d-0 done** — Design system: Material 3 Expressive adopted as the base (ADR-0010, `docs/DESIGN-SYSTEM.md`). `src/theme.zig` rewritten as the full M3E token set: `ColorScheme` (39 roles, M3 baseline light/dark schemes), `TypeScale` (15 styles), `Shape`, `Elevation` (levels 0-5), `Motion` (M3 durations + easings, M3E spring presets default/spatial/effects), `StateLayers` (hover/focus/pressed/drag), `Spacing`, plus helpers `stateLayer` / `relativeLuminance` / `contrastRatio`. The old 10-token placeholder is dropped (no retrocompat — unreleased). `ui/anim.zig`: `Spring.fromDampingRatio` bridges the M3E spec parameterization (stiffness + damping ratio) to the engine's (k, c). Gallery + gallery pulse migrated to M3 roles (state layers replace the hardcoded hover color). 265 tests green (35 golden), incl. WCAG contrast >= 4.5:1 on every on-color/container pair in both schemes. Métriques (Mac dev, raster headless, smoke 600 frames): hello frame 0,67 ms / RSS 27,4 Mo / ReleaseSmall 6,01 Mo; gallery ~3,5 ms (3,49-3,63); a11y RSS 28,5 Mo. Gates: frame p99 <= 3 ms ✓, RSS hello < 40 Mo ✓, binary < 6,8 Mo ✓. TTFF not re-measured (host path untouched). Widgets 34/50 (unchanged — no widget code). Merged as PR #14.
 
-**Next: Phase 2d — widgets P1 (navigation + feedback: AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar) on the M3E token base (2d-0 DONE). Widget design review with the product owner before any implementation.**
+- **2d-0.6 done** — Widget registry + serialization (no-code enabler): `ui/value.zig` (serializable `Value` model + JSON via std.json + comptime adapters `optionsFromValue`/`valueFromOptions` + `schemaOf` inspector schema) + `src/registry.zig` (`WidgetEntry` registry, `BuildCtx` owning designer-created signals + per-node option snapshots, `treeFromValue`/`treeToValue`/`treeFromJson`/`treeToJson`). Snapshot-based describe: zero changes to existing widgets. Registry v1: layout (column/row/padding/center/constrained_box) + display (divider/text/icon) + input (button/toggle/checkbox/slider). Every batch 1+ widget self-registers. 282 tests green (14 new: value model + registry), 37 goldens. App binaries unchanged (registry/value are test-build only). Merged as PR #15.
+
+## Strategic decisions (2026-10-08)
+
+- **v1 widget bar = the full Material 3 Expressive catalog** (~65 widgets), not a fixed count. Batches: 2d.1 navigation+feedback (10), 2d.2 inputs M3E, 2d.3 surfaces & display, 2d.4 pickers + M3E loading indicator. P0 fixtures are replaced progressively; nothing is released, no retrocompat.
+- **One visual language (M3E)** + platform behavior borrowed from HIG/Fluent/GTK (2d-0.5 token layer: desktop density, scrollbars, hover/focus, hit targets) + app branding via token overrides. OEM ideas (Samsung/Oppo) absorbed as options/variants, never a second visual language.
+- **Pixel-perfect policy: spec-identical, never bit-identical** (fonts/AA/shadows differ cross-platform; goldens assert structure + spec values). References: m3.material.io (tokens), matraic/m3e (catalog web components), lnkiai/m3e-canvas (M3E motion + loading indicator + visual oracle), Compose Material3 (canonical), Flutter.
+- **No-code designer** (Phase 2e, after batch 2): native app built with Klaxon — canvas WYSIWYG, auto-generated inspector (comptime introspection), M3E theme panel, preview; export = runtime JSON + golden-tested Zig. Enabler: 2d-0.6 widget registry + serialization.
+
+**Next: Phase 2d.1 — batch 1 widgets P1 (AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar) on the M3E token base (2d-0 DONE), self-registered in the widget registry (2d-0.6 DONE). Design validated; the product owner's hand-made designs fold in as overrides. Then 2d-0.5 (platform tokens), batches 2d.2-2d.4 (full M3E catalog), Phase 2e (no-code designer).**
 
 ## What exists (code, this repo)
 

@@ -92,6 +92,8 @@ test "widgets" {
     std.testing.refAllDecls(ui.input);
     std.testing.refAllDecls(ui.layout);
     std.testing.refAllDecls(ui.gestures);
+    std.testing.refAllDecls(ui.value);
+    std.testing.refAllDecls(@import("registry.zig"));
 }
 
 test "gallery" {

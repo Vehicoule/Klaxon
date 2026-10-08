@@ -79,8 +79,37 @@ Helpers: `theme.stateLayer(base, on, alpha)` (M3 state layer), `theme.relativeLu
 | `border` | `colors.outline_variant` |
 | `danger` | `colors.error` |
 
+## References
+
+Pixel-perfect policy: **spec-identical, never bit-identical** — fonts, anti-aliasing and shadow rasterization differ cross-platform (Skia vs Canvas2D/WebGL); goldens assert structure + spec values (geometry, colors, motion curves, timings), never glyph bitmaps or exact frames.
+
+| Need | Reference |
+|---|---|
+| Tokens / values | m3.material.io (spec) — encoded in `src/theme.zig` |
+| Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT — per-component source: layout math, state layers, motion, a11y) + Jetpack Compose Material3 (canonical behavior) |
+| M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code, live-demo screenshots, loading indicator ported from material-components-android, standard/expressive spring schemes to cross-check our presets) + Flutter |
+
+Per widget: read the reference source **before** implementing; encode the extracted spec values in the widget's golden assertions. Both repos are MIT; we port behavior (TS/JS → Zig), never code, and re-tokenize every hardcoded value into `Theme`.
+
+## No-code designer (Phase 2e)
+
+Enabler landed in 2d-0.6: a serializable data model + widget registry (see `src/registry.zig`, `ui/value.zig`). The designer is a native desktop app built **with Klaxon** (dogfooding + showcase):
+
+```
+canvas (renders the designed tree with the REAL widgets → WYSIWYG by construction)
+· palette (registry categories) · layers panel
+· inspector — auto-generated from options structs via comptime introspection
+  (@typeInfo field_names, the ADR-0001 argument in action)
+· M3E theme panel — the 4 axes: color / shape / type / motion (all tokenized)
+· preview — tap-through transitions via the navigator, motion via Timeline
+· export — runtime JSON (no codegen) + Zig source; the generated code is
+  golden-tested (render both trees, diff pixels)
+```
+
+OEM/alternative looks (Samsung, Oppo, the product's own taste) are **configurations of the data model** (options + theme overrides), never forks. IA inspired by m3e-canvas (palette / inspector / layers / theme panel / preview).
+
 ## Roadmap notes
 
 - **Dynamic color** (HCT tonal palettes from a seed/wallpaper) is a later addition; `ColorScheme` isolates it.
-- **P0 widget migration**: the 34 P0 widgets keep hardcoded fixture colors until migrated to tokens — tracked in ROADMAP. P1 widgets are the first token-consuming components.
-- **Desktop adaptation layer**: density/hover/focus specifics are designed per widget during 2d, informed by Fluent/HIG behavior — never their visuals.
+- **P0 widget migration**: the 34 P0 widgets keep hardcoded fixture colors until migrated to tokens — tracked in ROADMAP (batches 2d.2-2d.4 replace them). P1 widgets are the first token-consuming components.
+- **Desktop adaptation layer** (2d-0.5): `Theme.platform` tokens — control heights (48 mobile / 32-40 desktop), spacing scale, hit targets, scrollbar style (overlay / classic / auto-hide), focus ring, cursors. Behavior borrowed from HIG/Fluent/GTK — never their visuals.

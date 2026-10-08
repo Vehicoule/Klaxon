@@ -1,6 +1,6 @@
 # Roadmap — Klaxon Framework
 
-> v1 means everything. All platforms, 50 widgets, full testing, DevTools, packaging, CLI. No V1/V2 split for features. V2 items are explicitly listed below.
+> v1 means everything. All platforms, the full Material 3 Expressive widget catalog (~65 widgets), full testing, DevTools + the no-code designer, packaging, CLI. No V1/V2 split for features. V2 items are explicitly listed below.
 
 ## Phase 0 — Foundations (1 week)
 
@@ -94,7 +94,9 @@ Full showcase: all 31 widgets, themes (dark/light, live toggle), animations, ges
 
 ---
 
-## Phase 2 — Navigation + i18n + A11y (2 weeks)
+## Phase 2 — Design system + Nav + i18n + A11y + M3E Widget Catalog + Designer (6-8 weeks)
+
+**Goal**: the full Material 3 Expressive catalog as the v1 widget bar (~65 widgets), the platform-adaptation token layer, and the no-code designer enabler. One visual language (M3E), platform behavior borrowed from HIG/Fluent/GTK, app branding via token overrides.
 
 ### 2a. Navigation (week 1) — DONE (PR #11)
 
@@ -140,14 +142,37 @@ in sync. Demo: `zig build a11y` (CI headless smoke, scripted keyboard).
 (Phase 3a) — the bridge interface is ready; it needs a session bus + the
 AT-SPI registry daemon (absent on the dev Mac).
 
-### 2d-0. Design tokens — Material 3 Expressive (prerequisite) — DONE
+### 2d-0. Design tokens — Material 3 Expressive (prerequisite) — DONE (PR #14)
 
 - `src/theme.zig` rewritten: full M3E token set (ColorScheme light/dark M3 baselines, TypeScale, Shape, Elevation, Motion with M3E spring presets, StateLayers, Spacing). Decision: ADR-0010; reference + widget → spec mapping: `docs/DESIGN-SYSTEM.md`.
 - `ui/anim.zig`: `Spring.fromDampingRatio` (M3E stiffness + damping-ratio spec parameterization → engine k/c).
 - Gallery migrated to M3 roles; state layers replace hardcoded hover colors.
 - P1 widgets consume tokens (`theme: Theme` in the options struct, default `theme.light`); P0 widgets migrate progressively.
 
-### 2d. Widgets P1 — Navigation + Feedback (week 2)
+### 2d-0.5. Platform adaptation tokens (desktop density) — PLANNED
+
+M3E is mobile-first; the desktop gap is filled by a token layer, never by per-widget
+decisions: `Theme.platform` — control heights (48 mobile / 32-40 desktop), spacing scale,
+hit targets, scrollbar style (overlay macOS-style / classic / auto-hide), focus ring,
+cursors. Behavior borrowed from Apple HIG / Fluent / GTK (libadwaita) — never their
+visuals. Refines the P0 Scrollbar (overlay + auto-hide).
+
+### 2d-0.6. Widget registry + serialization (no-code enabler) — DONE (PR #15)
+
+- `ui/value.zig`: serializable `Value` model (null/bool/int/float/string/array/object) +
+  JSON (std.json) + comptime adapters `optionsFromValue` / `valueFromOptions` (typed
+  options ↔ data, defaults applied, unknown fields ignored) + `schemaOf` (options type →
+  inspector schema: field → editor kind).
+- `src/registry.zig`: `WidgetEntry` registry (name, category, build), `BuildCtx` (owns
+  designer-created signals + per-node option snapshots), `treeFromValue` / `treeToValue` /
+  `treeFromJson` / `treeToJson`. Snapshot-based describe: zero changes to existing widgets.
+- Registry v1: layout (column/row/padding/center/constrained_box) + display
+  (divider/text/icon) + input (button/toggle/checkbox/slider). Batch 1+ widgets
+  self-register.
+- Purpose: the no-code designer (Phase 2e) manipulates this data model; the framework
+  renders it with the real widgets (WYSIWYG by construction).
+
+### 2d.1. Widgets P1 — Navigation + Feedback (batch 1) — NEXT
 
 | Widget | File |
 |---|---|
@@ -162,7 +187,47 @@ AT-SPI registry daemon (absent on the dev Mac).
 | Tooltip | `widgets/tooltip.zig` |
 | SnackBar | `widgets/snackbar.zig` |
 
-**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR) — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). Design tokens M3E in place — DONE (2d-0). 40 widgets total (34 today).
+Design validated with the product owner (`docs/DESIGN-SYSTEM.md`). OEM ideas (Samsung /
+Oppo navbars etc.) are absorbed as options/variants — never as a second visual language
+(e.g. NavBar `indicator_style: .pill | .underline | .dot`, free item count, configurable
+height); a strong enough pattern is promoted to a framework variant.
+
+### 2d.2. Widgets — Inputs M3E (batch 2) — PLANNED
+
+Buttons ×5 (elevated / filled / filled-tonal / outlined / text), icon buttons ×4,
+checkbox / radio / switch / slider M3E, chips ×5 (assist / elevated / filter / input /
+suggestion), text fields (outlined / filled) — replacing the P0 fixtures. Self-register.
+
+### 2d.3. Widgets — Surfaces & display (batch 3) — PLANNED
+
+Cards ×3 (elevated / filled / outlined), lists, menus M3E, search bar, navigation rail,
+side sheets, pull-to-refresh, segmented + split buttons.
+
+### 2d.4. Widgets — Pickers + M3E extras (batch 4) — PLANNED
+
+Date/time pickers, the M3E shape-morphing loading indicator (reference: m3e-canvas ports
+it from material-components-android), color picker.
+
+### 2e. Designer — no-code UI builder — PLANNED (v1 after 2d.2)
+
+Native desktop app built WITH Klaxon (dogfooding + showcase): canvas (WYSIWYG — the tool
+renders the designed tree with the real widgets), widget palette, layers panel,
+auto-generated inspector (comptime introspection of options structs), M3E theme panel
+(color / shape / type / motion), preview with transitions. Export: runtime JSON (no
+codegen) + Zig source (`pub fn build(allocator) !*Node`) — the generated code is
+golden-tested (render both trees, diff pixels). IA inspired by m3e-canvas. Architecture +
+references: `docs/DESIGN-SYSTEM.md`.
+
+**References** — pixel-perfect policy: **spec-identical, never bit-identical** (fonts, AA
+and shadow rasterization differ cross-platform; goldens assert structure + spec values).
+
+| Need | Reference |
+|---|---|
+| Tokens / values | m3.material.io (spec) — encoded in `src/theme.zig` |
+| Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
+| M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
+
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 34 today). No-code designer v1 (2e).
 
 ---
 
@@ -253,8 +318,8 @@ Rendering shim done in Phase 0. Remaining:
 | # | Task |
 |---|---|
 | 4b.1 | Unit: all modules covered |
-| 4b.2 | Widget: all 50 widgets have widget tests |
-| 4b.3 | Golden: all 50 widgets × 3 backends (Linux) = 150 goldens |
+| 4b.2 | Widget: every catalog widget has widget tests |
+| 4b.3 | Golden: every catalog widget × 3 backends (Linux) |
 | 4b.4 | Integration: `gates/device.sh` — full device matrix (below) | On-device metrics |
 
 **Device matrix** (integration tests + device-tier perf gates):
@@ -282,11 +347,11 @@ Rendering shim done in Phase 0. Remaining:
 | 4c.6 | Published results (JSON in repo + HTML report) |
 | 4c.7 | **Klaxon Conformance Suite** — behavioral conformance spec (layout rules, gesture semantics, text shaping, a11y roles, i18n/RTL rules) + runner that scores ANY UI framework against it. Research 2026-10: no cross-framework UI conformance suite exists (WPT is web-only; Appium/Espresso/XCUITest are per-platform E2E). Klaxon publishes the spec + scores for Klaxon, Flutter, Qt, Compose — the WPT ambition for UI frameworks. | Public conformance report |
 
-### 4d. Widgets P2 — Advanced (10 widgets)
+### 4d. Widgets — advanced extras
 
-Table, Tree, Calendar, DatePicker, ColorPicker, Avatar, Card, ExpansionPanel, Stepper, SegmentedControl, SearchBar, Menu → **50 widgets total**
+The advanced widgets (Table, Tree, Calendar, DatePicker, ColorPicker, Avatar, Card, ExpansionPanel, Stepper, SegmentedControl, SearchBar, Menu) are folded into the M3E catalog batches (2d.2-2d.4). Anything not in the M3E families lands here.
 
-**Exit criteria Phase 4**: DevTools work on Linux. 150 goldens green. Benchmarks published (Klaxon vs Flutter vs Qt vs Compose). 50 widgets done.
+**Exit criteria Phase 4**: DevTools work on Linux. Golden suite green for the full catalog. Benchmarks published (Klaxon vs Flutter vs Qt vs Compose). Catalog complete (2d.1-2d.4). Designer v1 (2e).
 
 ---
 
@@ -341,7 +406,7 @@ Table, Tree, Calendar, DatePicker, ColorPicker, Avatar, Card, ExpansionPanel, St
 | `DEVTOOLS.md` | DevTools deep-dive |
 | `BUILD.md` | Build system + CLI + packaging |
 | `PLATFORM.md` | Platform integration (14 services) |
-| `WIDGETS.md` | Widget API reference (50 widgets) |
+| `WIDGETS.md` | Widget API reference (full M3E catalog) |
 | `STATUS.md` | Current state (updated every session) |
 
 API reference: generated from Zig doc comments (English).
@@ -353,7 +418,7 @@ API reference: generated from Zig doc comments (English).
 ## v1 = everything (checklist)
 
 - [ ] 6 platforms: Linux x64/arm64, Windows x64, macOS arm64, Android arm64/x64, iOS arm64, Web WASM
-- [ ] 50 widgets (P0 + P1 + P2)
+- [ ] Full M3E widget catalog (~65 widgets) — batches 2d.1-2d.4; registry self-registration — 2d-0.6 DONE (PR #15)
 - [x] State management (Signal, Memo, Effect, Store) — Phase 1a
 - [x] Gestures (tap, double-tap, long-press, pan, swipe, pinch, rotate) — Phase 1d
 - [x] Animations (Spring M3E closed-form, Tween, staggered, SIMD, dirty-rect) — Phase 1e; hero/opacity land with the layer ABI
@@ -363,6 +428,7 @@ API reference: generated from Zig doc comments (English).
 - [x] A11y core (semantic tree, keyboard focus, live regions, bridge C ABI) — Phase 2c; the 6 OS bridges land per-platform (Phase 3)
 - [x] Design system: Material 3 Expressive tokens (ADR-0010, `docs/DESIGN-SYSTEM.md`) — Phase 2d-0
 - [ ] DevTools (overlay, inspector, memory ledger, frame timeline)
+- [ ] No-code designer (Phase 2e: canvas, auto-generated inspector, M3E theme panel, JSON/Zig export)
 - [ ] Testing (unit, widget, golden ×150, integration)
 - [ ] Benchmarks (9 scenes, cross-framework comparison, published)
 - [ ] Conformance suite (behavioral spec + scores for Klaxon/Flutter/Qt/Compose, published)
@@ -374,7 +440,7 @@ API reference: generated from Zig doc comments (English).
 ## V2 (explicitly NOT v1)
 
 - Hot reload
-- Themes v2 (full design system, more presets)
+- Dynamic color (HCT tonal palettes from a seed/wallpaper) + extra theme presets
 - FreeBSD packaging
 - Snap packaging
 - HarmonyOS
@@ -388,9 +454,9 @@ API reference: generated from Zig doc comments (English).
 |---|---|---|
 | Phase 0 — Foundations | 1 week | 1 week |
 | Phase 1 — Widgets + Core | 3-4 weeks | 4-5 weeks |
-| Phase 2 — Nav + i18n + A11y | 2 weeks | 6-7 weeks |
-| Phase 3 — Multi-platform | 2-3 weeks | 8-10 weeks |
-| Phase 4 — DevTools + Testing + Bench | 2 weeks | 10-12 weeks |
-| Phase 5 — Packaging + CLI + Docs | 2 weeks | 12-14 weeks |
+| Phase 2 — Design system + catalog + designer | 6-8 weeks | 10-13 weeks |
+| Phase 3 — Multi-platform | 2-3 weeks | 12-16 weeks |
+| Phase 4 — DevTools + Testing + Bench | 2 weeks | 14-18 weeks |
+| Phase 5 — Packaging + CLI + Docs | 2 weeks | 16-20 weeks |
 
-**Total: 12-14 weeks for a v1 that competes with Flutter/Qt.**
+**Total: 16-20 weeks for a v1 that competes with Flutter/Qt.**
