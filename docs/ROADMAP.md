@@ -172,20 +172,20 @@ visuals. Refines the P0 Scrollbar (overlay + auto-hide).
 - Purpose: the no-code designer (Phase 2e) manipulates this data model; the framework
   renders it with the real widgets (WYSIWYG by construction).
 
-### 2d.1. Widgets P1 — Navigation + Feedback (batch 1) — NEXT
+### 2d.1. Widgets P1 — Navigation + Feedback (batch 1) — IN PROGRESS (PR A done: 4/10)
 
-| Widget | File |
-|---|---|
-| AppBar | `widgets/app_bar.zig` |
-| NavBar | `widgets/nav_bar.zig` |
-| Drawer | `widgets/drawer.zig` |
-| Tabs | `widgets/tabs.zig` |
-| BottomSheet | `widgets/bottom_sheet.zig` |
-| Dialog | `widgets/dialog.zig` |
-| ProgressIndicator (linear/circular) | `widgets/progress.zig` |
-| Badge | `widgets/badge.zig` |
-| Tooltip | `widgets/tooltip.zig` |
-| SnackBar | `widgets/snackbar.zig` |
+| Widget | File | Status |
+|---|---|---|
+| AppBar | `widgets/app_bar.zig` | DONE (PR A) |
+| NavBar | `widgets/nav_bar.zig` | DONE (PR A) |
+| Drawer | `widgets/drawer.zig` | DONE (PR A) |
+| Tabs | `widgets/tabs.zig` | DONE (PR A) |
+| BottomSheet | `widgets/bottom_sheet.zig` | NEXT (PR B) |
+| Dialog | `widgets/dialog.zig` | NEXT (PR B) |
+| ProgressIndicator (linear/circular) | `widgets/progress.zig` | NEXT (PR B) |
+| Badge | `widgets/badge.zig` | NEXT (PR B) |
+| Tooltip | `widgets/tooltip.zig` | NEXT (PR B) |
+| SnackBar | `widgets/snackbar.zig` | NEXT (PR B) |
 
 Design validated with the product owner (`docs/DESIGN-SYSTEM.md`). OEM ideas (Samsung /
 Oppo navbars etc.) are absorbed as options/variants — never as a second visual language
@@ -227,7 +227,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 34 today). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 38 today — 2d.1 PR A landed, PR B next). No-code designer v1 (2e).
 
 ---
 

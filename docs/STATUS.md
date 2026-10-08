@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-08 (Phase 2d-0.6 — widget registry + serialization, DONE; Phase 2d-0 — M3E design tokens, DONE; Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
+**Last updated**: 2026-10-08 (Phase 2d.1 IN PROGRESS — batch 1 PR A: AppBar/NavBar/Drawer/Tabs landed, PR B next; Phase 2d-0.6 — widget registry + serialization, DONE; Phase 2d-0 — M3E design tokens, DONE; Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
 
 ## Current phase
 
@@ -42,6 +42,8 @@
 
 - **2d-0.6 done** — Widget registry + serialization (no-code enabler): `ui/value.zig` (serializable `Value` model + JSON via std.json + comptime adapters `optionsFromValue`/`valueFromOptions` + `schemaOf` inspector schema) + `src/registry.zig` (`WidgetEntry` registry, `BuildCtx` owning designer-created signals + per-node option snapshots, `treeFromValue`/`treeToValue`/`treeFromJson`/`treeToJson`). Snapshot-based describe: zero changes to existing widgets. Registry v1: layout (column/row/padding/center/constrained_box) + display (divider/text/icon) + input (button/toggle/checkbox/slider). Every batch 1+ widget self-registers. 282 tests green (14 new: value model + registry), 37 goldens. App binaries unchanged (registry/value are test-build only). Merged as PR #15.
 
+- **2d.1 in progress — batch 1 PR A (navigation chrome) done** — AppBar / NavBar / Drawer / Tabs, first P1 widgets on the M3E token base, self-registered in the widget registry (category "navigation"). `src/widgets/app_bar.zig` (small AppBar: h=64, surface container, leading/title/actions slots, title_large). `src/widgets/nav_bar.zig` (h=80, surface_container, 56x32 pill indicator secondary_container, Signal(usize) selection, arrow-key navigation with selection-follows-focus, `.tab` semantics with checked sync). `src/widgets/tabs.zig` (primary tabs h=64, 3dp primary pill indicator, GLIDING indicator on the theme spring, state layer = selected content color per Compose Tab.kt). `src/widgets/drawer.zig` (modal: w=360, h=100% of finite constraints, surface_container_low, 16dp end-side corners, 32% animated scrim, spatial-spring slide, scrim click + Escape to close; sizing contract documented: wrap in a bounded box inside unbounded scroll content). Supporting changes: `ui/value.zig` options-from-Value now applies nested struct fields over the FIELD defaults (partial overrides like `{"theme":{"colors":{...}}}` on `theme.light`); `Theme` fields carry defaults so `Theme{}` is valid. Gallery: new "Navigation chrome" section + wiring test (nav/tabs click selection, drawer open → scrim click closes). 317 tests green (35 new), 42 goldens. Métriques (Mac dev, raster headless, smoke 600 frames): hello frame 1,12 ms / RSS 99,9 Mo (macOS; baseline main 99,8 Mo — no regression, the CI gate < 60 Mo is measured on the llvmpipe Linux proxy where hello sits at 26-27 Mo) / ReleaseSmall 6,01 Mo. Widgets 38/50. Branch `phase-2d1-app-chrome`.
+
 ## Strategic decisions (2026-10-08)
 
 - **v1 widget bar = the full Material 3 Expressive catalog** (~65 widgets), not a fixed count. Batches: 2d.1 navigation+feedback (10), 2d.2 inputs M3E, 2d.3 surfaces & display, 2d.4 pickers + M3E loading indicator. P0 fixtures are replaced progressively; nothing is released, no retrocompat.
@@ -49,7 +51,7 @@
 - **Pixel-perfect policy: spec-identical, never bit-identical** (fonts/AA/shadows differ cross-platform; goldens assert structure + spec values). References: m3.material.io (tokens), matraic/m3e (catalog web components), lnkiai/m3e-canvas (M3E motion + loading indicator + visual oracle), Compose Material3 (canonical), Flutter.
 - **No-code designer** (Phase 2e, after batch 2): native app built with Klaxon — canvas WYSIWYG, auto-generated inspector (comptime introspection), M3E theme panel, preview; export = runtime JSON + golden-tested Zig. Enabler: 2d-0.6 widget registry + serialization.
 
-**Next: Phase 2d.1 — batch 1 widgets P1 (AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar) on the M3E token base (2d-0 DONE), self-registered in the widget registry (2d-0.6 DONE). Design validated; the product owner's hand-made designs fold in as overrides. Then 2d-0.5 (platform tokens), batches 2d.2-2d.4 (full M3E catalog), Phase 2e (no-code designer).**
+**Next: Phase 2d.1 — batch 1 PR B (BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar) to complete the 10-widget batch; PR A (AppBar, NavBar, Drawer, Tabs) landed on `phase-2d1-app-chrome`. Then 2d-0.5 (platform tokens), batches 2d.2-2d.4 (full M3E catalog), Phase 2e (no-code designer).**
 
 ## What exists (code, this repo)
 
@@ -61,7 +63,7 @@
 - ✅ `src/ui.zig` — ui core re-exports
 - ✅ `src/demo.zig` — demo widgets (Box, Label, Column) + showcase tree + flex tests
 - ✅ `src/host.zig` — window, dirty-flag event loop (0-frame idle), stats, PPM dump
-- ✅ `src/widgets/` — widget library (14 P0 + 8 input + 1 gesture + 3 animated + 4 scroll + BoundText = 31, Phases 1b/1c/1d/1e/1f/1g) + `src/widgets.zig` re-exports
+- ✅ `src/widgets/` — widget library (14 P0 + 8 input + 1 gesture + 3 animated + 4 scroll + BoundText = 31, Phases 1b/1c/1d/1e/1f/1g; + app_bar/nav_bar/drawer/tabs M3E P1, Phase 2d.1 PR A) + `src/widgets.zig` re-exports
 - ✅ `src/gallery.zig` + `src/gallery_main.zig` — gallery app (full showcase, dark/light themes) (Phase 1g)
 - ✅ `src/theme.zig` — Material 3 Expressive token set: ColorScheme (39 roles, M3 baseline light/dark), TypeScale (15 styles), Shape, Elevation, Motion (M3 durations/easings + M3E spring presets), StateLayers, Spacing + stateLayer/contrastRatio helpers (Phase 2d-0, ADR-0010) + `docs/DESIGN-SYSTEM.md`
 - ✅ `src/test_runner_golden.zig` — golden-only test runner (runtime name filter) (Phase 1g)
@@ -114,7 +116,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 
 ## What does NOT exist (greenfield)
 
-- ❌ All 50 widgets (34/50)
+- ❌ All 50 widgets (38/50 — 2d.1 PR A: AppBar/NavBar/Drawer/Tabs done, PR B next)
 - ❌ A11y OS bridges (6: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA — the C-ABI bridge interface is ready, Phase 2c; AT-SPI lands with the Linux target, Phase 3a)
 - ❌ DevTools
 - ❌ CLI

@@ -15,6 +15,7 @@
 // field default".
 const std = @import("std");
 const node_mod = @import("node.zig");
+const kx = @import("../kx.zig");
 
 const Node = node_mod.Node;
 
@@ -318,24 +319,57 @@ pub const DescribeNodeFn = *const fn (userdata: ?*anyopaque, n: *Node) anyerror!
 
 /// Typed options from a Value object. Missing fields keep their defaults;
 /// null fields mean "default"; unknown fields are ignored. Strings are
-/// BORROWED from `v` (see the file header).
+/// BORROWED from `v` (see the file header). Nested structs start from the
+/// FIELD's default (not from scratch): a partial `{"theme":{"colors":{…}}}`
+/// overrides single tokens on top of the field default (e.g. theme.light).
 pub fn optionsFromValue(comptime T: type, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !T {
     if (v != .object) return error.ExpectedObject;
     var opts: T = .{};
+    try applyFields(T, &opts, v, slot_builder, slot_userdata);
+    return opts;
+}
+
+fn applyFields(comptime T: type, opts: *T, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !void {
+    if (v != .object) return error.ExpectedObject;
     const info = @typeInfo(T).@"struct";
     inline for (info.field_names, info.field_types) |name, FT| {
         if (v.get(name)) |fv| {
             // no `continue` here: it is comptime control flow inside a
             // runtime block (the if) — invert the condition instead
             if (fv != .null) {
-                @field(opts, name) = try fieldFromValue(FT, fv, slot_builder, slot_userdata);
+                @field(opts, name) = fieldFromValue(FT, @field(opts.*, name), fv, slot_builder, slot_userdata) catch |err| {
+                    // A later field failed: the caller's cleanup only starts
+                    // after a successful return — destroy the slot subtrees
+                    // already assigned to opts here, or they leak.
+                    cleanupSlots(T, opts);
+                    return err;
+                };
             }
         }
     }
-    return opts;
 }
 
-fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !FT {
+/// Destroy every slot subtree (?*Node fields, recursing into struct fields)
+/// already assigned in `opts`. Used on the applyFields failure path.
+fn cleanupSlots(comptime T: type, opts: *T) void {
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types) |name, FT| {
+        switch (@typeInfo(FT)) {
+            .optional => |o| {
+                if (comptime isNodePtr(o.child)) {
+                    if (@field(opts, name)) |node| {
+                        node.deinit();
+                        @field(opts, name) = null;
+                    }
+                }
+            },
+            .@"struct" => cleanupSlots(FT, &@field(opts, name)),
+            else => {},
+        }
+    }
+}
+
+fn fieldFromValue(comptime FT: type, def: FT, v: Value, slot_builder: ?SlotBuilder, slot_userdata: ?*anyopaque) !FT {
     switch (@typeInfo(FT)) {
         .bool => return switch (v) {
             .bool => |b| b,
@@ -364,8 +398,16 @@ fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_
         },
         .optional => |o| {
             if (v == .null) return null;
-            // slots (*Node) are handled by the .pointer arm below
-            return try fieldFromValue(o.child, v, slot_builder, slot_userdata);
+            // slots (*Node) are handled by the .pointer arm below; nested
+            // structs start from the field default when there is one
+            if (def) |d| return try fieldFromValue(o.child, d, v, slot_builder, slot_userdata);
+            if (comptime @typeInfo(o.child) == .@"struct") {
+                var fresh: o.child = .{};
+                try applyFields(o.child, &fresh, v, slot_builder, slot_userdata);
+                return fresh;
+            }
+            // scalars/pointers never read the default
+            return try fieldFromValue(o.child, undefined, v, slot_builder, slot_userdata);
         },
         .pointer => {
             // comptime ifs: the dead branches must not type-check against FT
@@ -378,7 +420,12 @@ fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_
             if (comptime isNodePtr(FT)) return try buildSlot(v, slot_builder, slot_userdata);
             return error.UnsupportedFieldType;
         },
-        .@"struct" => return try optionsFromValue(FT, v, slot_builder, slot_userdata),
+        .@"struct" => {
+            // partial override on top of the field default
+            var copy = def;
+            try applyFields(FT, &copy, v, slot_builder, slot_userdata);
+            return copy;
+        },
         else => return error.UnsupportedFieldType,
     }
 }
@@ -696,4 +743,51 @@ test "value: schemaOf kinds, enum tags, defaults" {
     try std.testing.expectEqual(EditorKind.color, schema[5].kind); // knob_on (?u32 unwrapped)
     try std.testing.expect(schema[5].default == .null);
     try std.testing.expectEqual(@as(i64, 0x3B5BDBFF), schema[0].default.int);
+}
+
+test "value: a failing field destroys the slot subtrees already built" {
+    // app-bar-shaped options: two slots, then a field that fails to parse.
+    // The caller's cleanup starts only after a successful return — the
+    // failure path inside applyFields must destroy the built slots itself
+    // (std.testing.allocator reports any leak).
+    const T = struct {
+        leading: ?*Node = null,
+        title: ?*Node = null,
+        height: f32 = 64,
+    };
+    const stub_vtable = node_mod.VTable{
+        .measure = struct {
+            fn m(n: *node_mod.Node, c: node_mod.Constraints) node_mod.Size {
+                _ = n;
+                return c.constrain(.{});
+            }
+        }.m,
+        .layout = struct {
+            fn l(n: *node_mod.Node, b: node_mod.Rect) void {
+                _ = n;
+                _ = b;
+            }
+        }.l,
+        .paint = struct {
+            fn p(n: *node_mod.Node, ctx: *kx.Ctx) void {
+                _ = n;
+                _ = ctx;
+            }
+        }.p,
+    };
+    const builder = struct {
+        fn build(ud: ?*anyopaque, v: Value) anyerror!*Node {
+            _ = ud;
+            _ = v;
+            const n = try node_mod.Node.create(std.testing.allocator, &stub_vtable);
+            return n;
+        }
+    }.build;
+    var empty = [_]Field{};
+    var fields = [_]Field{
+        .{ .name = "leading", .value = .{ .object = &empty } },
+        .{ .name = "height", .value = .{ .string = "nope" } }, // not a number
+    };
+    const v: Value = .{ .object = &fields };
+    try std.testing.expectError(error.TypeMismatch, optionsFromValue(T, v, builder, null));
 }

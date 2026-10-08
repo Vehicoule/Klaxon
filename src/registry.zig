@@ -25,6 +25,10 @@ const text_w = @import("widgets/text.zig");
 const icon_w = @import("widgets/icon.zig");
 const divider_w = @import("widgets/divider.zig");
 const input_w = @import("widgets/input.zig");
+const app_bar_w = @import("widgets/app_bar.zig");
+const nav_bar_w = @import("widgets/nav_bar.zig");
+const drawer_w = @import("widgets/drawer.zig");
+const tabs_w = @import("widgets/tabs.zig");
 const golden = @import("golden.zig"); // tests
 
 /// Options type for widgets without options.
@@ -42,6 +46,10 @@ pub const LiveBinding = struct {
 pub const BuildResult = struct {
     node: *Node,
     live: ?LiveBinding = null,
+    /// True when the node's children are internal chrome (e.g. the drawer's
+    /// scrim/panel): the document has no children for this widget — content
+    /// passes through option slots, preserved verbatim in the snapshot.
+    skip_children: bool = false,
 };
 
 pub const BuildFn = *const fn (allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult;
@@ -55,7 +63,9 @@ pub const WidgetEntry = struct {
     schema: SchemaFn, // options type -> inspector schema (comptime-generated)
 };
 
-/// Registry v1: layout + display + input. Batch 1+ widgets self-register here.
+/// Registry: layout + display + input (v1) + navigation chrome (v2, batch
+/// 2d.1 PR A: app_bar, nav_bar, drawer, tabs — M3E). Batch 1+ widgets
+/// self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
     .{ .name = "row", .category = "layout", .build = buildRow, .schema = schemaRow },
@@ -69,6 +79,10 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "toggle", .category = "input", .build = buildToggle, .schema = schemaToggle },
     .{ .name = "checkbox", .category = "input", .build = buildCheckbox, .schema = schemaCheckbox },
     .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
+    .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
+    .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
+    .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
+    .{ .name = "tabs", .category = "navigation", .build = buildTabs, .schema = schemaTabs },
 };
 
 pub fn byName(name: []const u8) ?WidgetEntry {
@@ -88,6 +102,7 @@ pub const BuildCtx = struct {
         entry_name: []const u8,
         opts: Value, // owned snapshot — nodes borrow strings from it
         live: ?LiveBinding = null,
+        skip_children: bool = false,
     };
     const Tracked = struct {
         ptr: *anyopaque,
@@ -161,8 +176,8 @@ pub const BuildCtx = struct {
     }
 
     /// Stores the snapshot + live binding (owns `opts` — frees it on failure).
-    fn recordAdopt(ctx: *BuildCtx, n: *Node, entry_name: []const u8, opts: Value, live: ?LiveBinding) !void {
-        ctx.records.put(n, .{ .entry_name = entry_name, .opts = opts, .live = live }) catch |e| {
+    fn recordAdopt(ctx: *BuildCtx, n: *Node, entry_name: []const u8, opts: Value, live: ?LiveBinding, skip_children: bool) !void {
+        ctx.records.put(n, .{ .entry_name = entry_name, .opts = opts, .live = live, .skip_children = skip_children }) catch |e| {
             opts.deinit(ctx.allocator);
             return e;
         };
@@ -201,8 +216,12 @@ fn treeFromValueInner(ctx: *BuildCtx, v: Value) !*Node {
     };
     const node = res.node;
     errdefer node.deinit();
-    try ctx.recordAdopt(node, entry.name, snapshot, res.live);
+    try ctx.recordAdopt(node, entry.name, snapshot, res.live, res.skip_children);
     if (v.get("children")) |c| {
+        // Slot widgets (app_bar, drawer) own their children as internal
+        // chrome: document children would build but never serialize
+        // (treeToValue skips them) — reject instead of losing them silently.
+        if (res.skip_children) return error.ChildrenNotSupported;
         switch (c) {
             .array => |arr| for (arr) |cv| {
                 const child = try treeFromValueInner(ctx, cv);
@@ -240,7 +259,9 @@ pub fn treeToValue(ctx: *BuildCtx, root: *Node, allocator: std.mem.Allocator) !V
         for (children.items) |c| c.deinit(allocator);
         children.deinit();
     }
-    for (root.children.items) |child| try children.append(try treeToValue(ctx, child, allocator));
+    if (!rec.skip_children) {
+        for (root.children.items) |child| try children.append(try treeToValue(ctx, child, allocator));
+    }
     if (children.items.len > 0) {
         const children_slice = try children.toOwnedSlice();
         fields.append(.{ .name = try allocator.dupe(u8, "children"), .value = .{ .array = children_slice } }) catch |e| {
@@ -379,6 +400,90 @@ fn deinitF32Signal(p: *anyopaque) void {
     s.deinit(); // Signal.deinit frees itself (state.zig)
 }
 
+// --- batch 2d.1 PR A: navigation chrome (M3E) ---
+
+/// Slot builder for the registry builds: a slot Value is a subtree document
+/// built through the same ctx (records + rollback apply to slot subtrees).
+fn buildSlotNode(userdata: ?*anyopaque, v: Value) anyerror!*Node {
+    const ctx: *BuildCtx = @ptrCast(@alignCast(userdata.?));
+    return treeFromValueInner(ctx, v);
+}
+
+/// Free option slots built by optionsFromValue when the widget factory fails
+/// (the slots are not attached to any node yet — the tree owns nothing).
+fn deinitSlot2(a: ?*Node, b: ?*Node) void {
+    if (a) |n| n.deinit();
+    if (b) |n| n.deinit();
+}
+
+fn deinitSlot3(a: ?*Node, b: ?*Node, c: ?*Node) void {
+    deinitSlot2(a, b);
+    if (c) |n| n.deinit();
+}
+
+fn buildAppBar(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const aopts = try value_mod.optionsFromValue(app_bar_w.AppBarOptions, opts, buildSlotNode, ctx);
+    errdefer deinitSlot3(aopts.leading, aopts.title, aopts.actions);
+    // the node's children are the slots (leading/title/actions) — content
+    // passes through the option slots, preserved verbatim in the snapshot
+    return .{ .node = try app_bar_w.appBar(allocator, aopts), .skip_children = true };
+}
+
+/// usize signal (nav_bar / tabs "selected"): initialized from the options,
+/// exported as the CURRENT selection.
+fn buildUsizeSignal(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*state.Signal(usize) {
+    const sel: usize = if (opts.get("selected")) |x| switch (x) {
+        .int => |i| std.math.cast(usize, i) orelse return error.ValueOutOfRange,
+        .float => |f| blk: {
+            if (!std.math.isFinite(f) or f < 0) return error.ValueOutOfRange;
+            break :blk std.math.cast(usize, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
+        },
+        else => 0,
+    } else 0;
+    const sig = try state.Signal(usize).init(allocator, sel);
+    try ctx.track(sig, deinitUsizeSignal);
+    return sig;
+}
+
+fn readUsizeSignal(p: *anyopaque) Value {
+    const s: *state.Signal(usize) = @ptrCast(@alignCast(p));
+    return .{ .int = @intCast(s.peek()) };
+}
+
+fn deinitUsizeSignal(p: *anyopaque) void {
+    const s: *state.Signal(usize) = @ptrCast(@alignCast(p));
+    s.deinit(); // Signal.deinit frees itself (state.zig)
+}
+
+fn buildNavBar(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const nopts = try value_mod.optionsFromValue(nav_bar_w.NavBarOptions, opts, null, null);
+    const sig = try buildUsizeSignal(allocator, opts, ctx);
+    const n = try nav_bar_w.navBar(allocator, sig, nopts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal } };
+}
+
+fn buildTabs(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const topts = try value_mod.optionsFromValue(tabs_w.TabsOptions, opts, null, null);
+    const sig = try buildUsizeSignal(allocator, opts, ctx);
+    const n = try tabs_w.tabs(allocator, sig, topts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal } };
+}
+
+fn buildDrawer(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const dopts = try value_mod.optionsFromValue(drawer_w.DrawerOptions, opts, buildSlotNode, ctx);
+    errdefer deinitSlot2(dopts.content, dopts.body);
+    const is_open: bool = if (opts.get("open")) |x| switch (x) {
+        .bool => |b| b,
+        else => false,
+    } else false;
+    const sig = try state.Signal(bool).init(allocator, is_open);
+    try ctx.track(sig, deinitBoolSignal);
+    const n = try drawer_w.drawer(allocator, sig, null, dopts);
+    // the node's children (body slot + internal scrim/panel) are not document
+    // children — content passes through the option slots
+    return .{ .node = n, .live = .{ .signal = sig, .field = "open", .read = readBoolSignal }, .skip_children = true };
+}
+
 // --- per-widget inspector schemas (comptime-generated from options types) ---
 
 fn schemaColumn(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -437,6 +542,28 @@ fn schemaSlider(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.appendSchemaProp(base, allocator, "value", .number, &.{}, .{ .float = 0.5 });
 }
 
+// --- batch 2d.1 PR A schemas ---
+
+fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // leading/title/actions are slots; theme is unsupported (global token set)
+    return value_mod.schemaOf(app_bar_w.AppBarOptions, allocator);
+}
+
+fn schemaNavBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(nav_bar_w.NavBarOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "selected", .number, &.{}, .{ .int = 0 });
+}
+
+fn schemaTabs(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(tabs_w.TabsOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "selected", .number, &.{}, .{ .int = 0 });
+}
+
+fn schemaDrawer(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(drawer_w.DrawerOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
+}
+
 // --- tests ---
 
 fn slotBuilder(userdata: ?*anyopaque, v: Value) anyerror!*Node {
@@ -449,7 +576,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("column") != null);
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 12), widgets.len);
+    try std.testing.expectEqual(@as(usize, 16), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -550,6 +677,91 @@ test "registry: signal widgets round-trip their live value" {
     const out = try treeToJson(&ctx, node, std.testing.allocator);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: nav_bar round-trips with its selection and item children" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"nav_bar\",\"options\":{\"selected\":1},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"One\"}},{\"name\":\"text\",\"options\":{\"text\":\"Two\"}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(@as(usize, 2), node.children.items.len);
+    try std.testing.expectEqual(@as(usize, 1), ctx.tracked.items.len); // the selection signal
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: tabs round-trips with its selection" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"tabs\",\"options\":{\"selected\":0},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"One\"}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: drawer round-trips with its open state and slots" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"drawer\",\"options\":{\"open\":true,\"width\":280,\"body\":{\"name\":\"text\",\"options\":{\"text\":\"Body\"}},\"content\":{\"name\":\"text\",\"options\":{\"text\":\"Panel\"}}}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: app_bar round-trips with its slots" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"app_bar\",\"options\":{\"title\":{\"name\":\"text\",\"options\":{\"text\":\"Hello\"}},\"leading\":{\"name\":\"icon\",\"options\":{\"icon\":\"menu\"}}}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(@as(usize, 2), node.children.items.len); // leading + title
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: slot widgets reject document children (they would never serialize)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // app_bar's children are its internal slots; a document child would build
+    // but be dropped by treeToValue — rejected at load instead.
+    const doc = "{\"name\":\"app_bar\",\"options\":{},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc));
+    // same for the drawer
+    const doc2 = "{\"name\":\"drawer\",\"options\":{},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc2));
+}
+
+test "registry: navigation chrome schemas expose slots and live fields" {
+    const app_bar_schema = try byName("app_bar").?.schema(std.testing.allocator);
+    defer {
+        for (app_bar_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(app_bar_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(app_bar_schema, "leading").?);
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(app_bar_schema, "title").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(app_bar_schema, "height").?);
+    try std.testing.expect(findProp(app_bar_schema, "theme") == null); // global tokens, not per-widget
+    const nav_schema = try byName("nav_bar").?.schema(std.testing.allocator);
+    defer {
+        for (nav_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(nav_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(nav_schema, "selected").?);
+    const drawer_schema = try byName("drawer").?.schema(std.testing.allocator);
+    defer {
+        for (drawer_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(drawer_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(drawer_schema, "open").?);
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(drawer_schema, "content").?);
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(drawer_schema, "body").?);
 }
 
 fn findProp(schema: []const value_mod.PropSchema, name: []const u8) ?value_mod.EditorKind {

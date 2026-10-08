@@ -288,16 +288,17 @@ const spacing: Spacing = .{ .xs = 4, .s = 8, .m = 12, .l = 16, .xl = 24, .xxl = 
 
 /// A complete theme: every design token a widget needs. Copy and override
 /// fields (or the whole value) to reskin — widgets read tokens, never
-/// hardcode them.
+/// hardcode them. Field defaults are the light scheme, so `Theme{}` is a
+/// valid theme (and `optionsFromValue` can build a partial override object).
 pub const Theme = struct {
-    name: []const u8,
-    colors: ColorScheme,
-    type_scale: TypeScale,
-    shape: Shape,
-    elevation: Elevation,
-    motion: Motion,
-    state: StateLayers,
-    spacing: Spacing,
+    name: []const u8 = "light",
+    colors: ColorScheme = light_colors,
+    type_scale: TypeScale = type_scale,
+    shape: Shape = shape,
+    elevation: Elevation = elevation,
+    motion: Motion = motion,
+    state: StateLayers = state_layers,
+    spacing: Spacing = spacing,
 };
 
 /// M3 baseline light scheme.
