@@ -30,6 +30,17 @@ pub const Stats = struct {
 
 pub const OnFrame = *const fn (ctx: ?*anyopaque, frame: u64) void;
 
+fn sdlSystemCursor(c: input_mod.PointerCursor) sdl.c.SDL_SystemCursor {
+    const id: c_int = switch (c) {
+        .default => sdl.c.SDL_SYSTEM_CURSOR_DEFAULT,
+        .hand => sdl.c.SDL_SYSTEM_CURSOR_POINTER,
+        .ibeam => sdl.c.SDL_SYSTEM_CURSOR_TEXT,
+        .move => sdl.c.SDL_SYSTEM_CURSOR_MOVE,
+        .wait => sdl.c.SDL_SYSTEM_CURSOR_WAIT,
+    };
+    return @intCast(id);
+}
+
 pub const Host = struct {
     allocator: std.mem.Allocator,
     window: *sdl.c.SDL_Window,
@@ -44,6 +55,12 @@ pub const Host = struct {
     input: input_mod.InputRouter,
     timeline: anim.Timeline,
     frame_start_ns: u64 = 0,
+    /// Pointer cursors (Phase 2d-0.5, desktop): the app sets this from the
+    /// theme's platform tokens (theme.platform.cursors).
+    cursors: bool = false,
+    cursors_unavailable: bool = false, // headless / no driver: fail-soft
+    current_cursor: input_mod.PointerCursor = .default,
+    cursor_cache: [5]?*sdl.c.SDL_Cursor = .{ null, null, null, null, null },
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -113,8 +130,31 @@ pub const Host = struct {
         };
     }
 
+    /// Pointer cursors (Phase 2d-0.5, desktop): map the hovered node to a
+    /// system cursor. Fail-soft: without a video driver the creation returns
+    /// null and cursors are simply never set.
+    fn updateCursor(host: *Host) void {
+        if (!host.cursors or host.cursors_unavailable) return;
+        const want = input_mod.cursorForNode(host.input.hoveredNode());
+        if (want == host.current_cursor) return;
+        const idx: usize = @backingInt(want);
+        const cur = host.cursor_cache[idx] orelse blk: {
+            const created = sdl.c.SDL_CreateSystemCursor(sdlSystemCursor(want)) orelse {
+                host.cursors_unavailable = true; // headless: no cursors
+                return;
+            };
+            host.cursor_cache[idx] = created;
+            break :blk created;
+        };
+        if (!sdl.c.SDL_SetCursor(cur)) return;
+        host.current_cursor = want;
+    }
+
     pub fn deinit(host: *Host) void {
         host.timeline.deinit();
+        for (host.cursor_cache) |c| {
+            if (c) |cur| sdl.c.SDL_DestroyCursor(cur);
+        }
         if (host.texture) |t| sdl.c.SDL_DestroyTexture(t);
         if (host.renderer) |r| sdl.c.SDL_DestroyRenderer(r);
         kx.c.kx_destroy(host.ctx);
@@ -190,6 +230,8 @@ pub const Host = struct {
             if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
             // Render when the tree is dirty (or the app ticks: continuous).
             if (!quit and (root.dirty or on_frame != null)) host.renderFrame(root);
+            // Pointer cursor follows the hovered node (desktop, Phase 2d-0.5).
+            host.updateCursor();
             // Pace the whole iteration to the frame budget (~120 fps active).
             host.paceIteration(iter_start_ns);
         }
@@ -203,6 +245,8 @@ pub const Host = struct {
             root.dirty = true;
             root.clearDamage();
             semantics_mod.notifyTreeDirty(); // the semantic tree may have changed
+            // content moved under a stationary pointer: refresh hover (cursors)
+            host.input.refreshHover(root);
         }
         host.frame_start_ns = sdl.c.SDL_GetTicksNS();
         kx.c.kx_begin_frame(host.ctx);
@@ -273,11 +317,13 @@ pub const Host = struct {
         // not the handling time — so queued events keep their real clock.
         const time_ms: u64 = event.common.timestamp / 1_000_000;
         switch (event.type) {
+            // The mouse is the primary pointer: normalized to ID 0 (hover
+            // tracks pointer 0 only). Touches keep their own IDs (multi-touch).
             sdl.c.SDL_EVENT_MOUSE_MOTION => host.input.dispatchPointer(root, .{
                 .phase = .move,
                 .x = event.motion.x,
                 .y = event.motion.y,
-                .pointer = event.motion.which,
+                .pointer = 0,
                 .time_ms = time_ms,
             }),
             sdl.c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -286,7 +332,7 @@ pub const Host = struct {
                         .phase = .down,
                         .x = event.button.x,
                         .y = event.button.y,
-                        .pointer = event.button.which,
+                        .pointer = 0,
                         .time_ms = time_ms,
                     });
                 }
@@ -297,7 +343,7 @@ pub const Host = struct {
                         .phase = .up,
                         .x = event.button.x,
                         .y = event.button.y,
-                        .pointer = event.button.which,
+                        .pointer = 0,
                         .time_ms = time_ms,
                     });
                 }
@@ -325,14 +371,18 @@ pub const Host = struct {
                 .time_ms = time_ms,
             }),
             // Wheel → scroll event (Phase 1f): routed like pointer input.
-            sdl.c.SDL_EVENT_MOUSE_WHEEL => host.input.dispatchScroll(root, .{
-                .x = event.wheel.mouse_x,
-                .y = event.wheel.mouse_y,
-                .delta_x = event.wheel.x,
-                .delta_y = event.wheel.y,
-                .pointer = event.wheel.which,
-                .time_ms = time_ms,
-            }),
+            // The content may scroll under a stationary pointer: refresh hover.
+            sdl.c.SDL_EVENT_MOUSE_WHEEL => {
+                host.input.dispatchScroll(root, .{
+                    .x = event.wheel.mouse_x,
+                    .y = event.wheel.mouse_y,
+                    .delta_x = event.wheel.x,
+                    .delta_y = event.wheel.y,
+                    .pointer = 0,
+                    .time_ms = time_ms,
+                });
+                host.input.refreshHover(root);
+            },
             sdl.c.SDL_EVENT_TEXT_INPUT => {
                 _ = host.input.dispatchKey(.{
                     .kind = .text_input,

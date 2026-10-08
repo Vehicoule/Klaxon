@@ -87,6 +87,9 @@ pub const Gallery = struct {
     tree: ?*Node = null, // root's current child (rebuilt on theme switch)
     // Signals (owned by the gallery, survive theme rebuilds).
     dark_mode: *state.Signal(bool),
+    /// App hook fired after a theme/platform rebuild (the app re-reads the
+    /// platform tokens — e.g. host.cursors).
+    on_platform_changed: ?state.Callback = null,
     bg_sig: *state.Signal(Color),
     press_count: *state.Signal(u32),
     radio_group: *state.Signal(u32),
@@ -127,6 +130,7 @@ pub const Gallery = struct {
         g.* = undefined;
         g.allocator = allocator;
         g.tree = null; // no tree yet (undefined would NOT pick up the default)
+        g.on_platform_changed = null; // same: undefined would NOT pick up the default
         g.saved_tf = std.mem.zeroes([128]u8);
         g.saved_tf_len = 0;
         g.saved_dd = 0;
@@ -881,7 +885,10 @@ fn chipCb(userdata: ?*anyopaque) void {
 }
 
 fn themeToggleCb(userdata: ?*anyopaque) void {
-    galleryOf(userdata).rebuild() catch @panic("klaxon: out of memory");
+    const g = galleryOf(userdata);
+    g.rebuild() catch @panic("klaxon: out of memory");
+    // the platform layer may have changed (density presets): notify the app
+    if (g.on_platform_changed) |cb| cb.fn_ptr(cb.userdata);
 }
 
 fn echoCb(userdata: ?*anyopaque) void {

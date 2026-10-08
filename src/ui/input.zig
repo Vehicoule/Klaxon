@@ -24,6 +24,8 @@ const semantics_mod = @import("semantics.zig");
 
 const Node = node_mod.Node;
 
+pub const PointerCursor = node_mod.PointerCursor;
+
 pub const PointerPhase = enum { down, move, up, enter, leave, outside_down, hover_move };
 
 pub const PointerEvent = struct {
@@ -97,6 +99,11 @@ fn nullCaptureSlots() [MAX_POINTERS]?Capture {
 pub const InputRouter = struct {
     captured: [MAX_POINTERS]?Capture = nullCaptureSlots(), // per-pointer capture (drag)
     hovered: ?*Node = null,
+    /// Last primary-pointer position (window px) — to refresh hover after a
+    /// drag release, a scroll under a stationary pointer, or a layout change.
+    last_x: f32 = 0,
+    last_y: f32 = 0,
+    has_last: bool = false,
     focused: ?*Node = null,
     open_popup: ?*Node = null,
     back_handler: ?BackHandler = null, // navigator pop (Phase 2a)
@@ -147,6 +154,11 @@ pub const InputRouter = struct {
         var ev = ev_in;
         ev.raw_x = ev_in.x;
         ev.raw_y = ev_in.y;
+        if (ev.pointer == 0) {
+            self.last_x = ev.x;
+            self.last_y = ev.y;
+            self.has_last = true;
+        }
         switch (ev.phase) {
             .down => {
                 // A click outside an open popup closes it and is consumed
@@ -189,20 +201,7 @@ pub const InputRouter = struct {
                     _ = sendPointer(c, .{ .phase = ev.phase, .x = local.x, .y = local.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                 } else if (ev.pointer == 0) {
                     // Hover follows the primary (mouse) pointer only.
-                    const hit = root.hitTestMapped(ev.x, ev.y);
-                    const hovered = if (hit) |h| h.node else null;
-                    if (hovered != self.hovered) {
-                        if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = ev.x, .y = ev.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
-                        self.hovered = hovered;
-                        if (hit) |h| _ = sendPointer(h.node, .{ .phase = .enter, .x = h.x, .y = h.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
-                    } else if (hit) |h| {
-                        // Unchanged deepest node: deliver hover_move so widgets
-                        // with per-cell hover (nav bar / tabs) track across
-                        // cell gaps. A separate phase on purpose: uncaptured
-                        // hover must never reach drag consumers of `.move`
-                        // (sliders set their value on move, gestures track drags).
-                        _ = sendPointer(h.node, .{ .phase = .hover_move, .x = h.x, .y = h.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
-                    }
+                    self.updateHover(root, ev.x, ev.y, true);
                 }
             },
             .up => {
@@ -210,6 +209,9 @@ pub const InputRouter = struct {
                     self.captureClear(ev.pointer);
                     const local = Node.mapPointToParentSpace(c, ev.x, ev.y);
                     _ = sendPointer(c, .{ .phase = ev.phase, .x = local.x, .y = local.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                    // after a drag, the pointer may rest over another node:
+                    // refresh hover from the release position (primary pointer)
+                    if (ev.pointer == 0) self.refreshHover(root);
                 } else if (root.hitTestMapped(ev.x, ev.y)) |hit| {
                     _ = sendPointer(hit.node, .{ .phase = ev.phase, .x = hit.x, .y = hit.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                 }
@@ -270,16 +272,49 @@ pub const InputRouter = struct {
         return false;
     }
 
+    /// Hit-test + update the hovered node (enter/leave notifications).
+    /// `send_move` also emits hover_move for an unchanged deepest node (per-cell
+    /// hover: nav bar / tabs track across cell gaps; a separate phase on
+    /// purpose — uncaptured hover must never reach drag consumers of `.move`).
+    fn updateHover(self: *InputRouter, root: *Node, x: f32, y: f32, send_move: bool) void {
+        const hit = root.hitTestMapped(x, y);
+        const hovered = if (hit) |h| h.node else null;
+        if (hovered != self.hovered) {
+            if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = x, .y = y, .raw_x = x, .raw_y = y, .pointer = 0, .time_ms = 0 });
+            self.hovered = hovered;
+            if (hit) |h| _ = sendPointer(h.node, .{ .phase = .enter, .x = h.x, .y = h.y, .raw_x = x, .raw_y = y, .pointer = 0, .time_ms = 0 });
+        } else if (send_move) {
+            if (hit) |h| _ = sendPointer(h.node, .{ .phase = .hover_move, .x = h.x, .y = h.y, .raw_x = x, .raw_y = y, .pointer = 0, .time_ms = 0 });
+        }
+    }
+
+    /// Re-hit-test the primary pointer's last position and update hover
+    /// (enter/leave) — after a drag release, a scroll under a stationary
+    /// pointer, or a layout change (the host calls this; Phase 2d-0.5).
+    pub fn refreshHover(self: *InputRouter, root: *Node) void {
+        if (!self.has_last) return;
+        self.updateHover(root, self.last_x, self.last_y, false);
+    }
+
     /// Scroll: hit-test at the pointer position, deliver to the node's
     /// chain (bubbles until a scrollable reports it handled).
     pub fn dispatchScroll(self: *InputRouter, root: *Node, ev: ScrollEvent) void {
-        _ = self;
+        if (ev.pointer == 0) {
+            self.last_x = ev.x;
+            self.last_y = ev.y;
+            self.has_last = true;
+        }
         const hit = root.hitTest(ev.x, ev.y) orelse return;
         _ = sendScroll(hit, ev);
     }
 
     pub fn focus(self: *InputRouter, node: ?*Node) void {
         self.focused = node;
+    }
+
+    /// The node currently hovered by the primary (mouse) pointer, if any.
+    pub fn hoveredNode(self: *InputRouter) ?*Node {
+        return self.hovered;
     }
 
     /// Release every reference to a node being destroyed. No GC: widgets with
@@ -295,6 +330,24 @@ pub const InputRouter = struct {
         if (self.open_popup == node) self.open_popup = null;
     }
 };
+
+/// The pointer cursor for a hovered node (Phase 2d-0.5, desktop): the
+/// deepest node's VTable.cursor hook wins, then the semantic role
+/// (.button/.link → hand, .text_field → ibeam), else the default arrow.
+pub fn cursorForNode(node: ?*Node) PointerCursor {
+    var n = node;
+    while (n) |cur| : (n = cur.parent) {
+        if (cur.vtable.cursor) |c| return c(cur);
+        if (cur.semantics) |sem| {
+            switch (sem.role) {
+                .button, .link => return .hand,
+                .text_field => return .ibeam,
+                else => {},
+            }
+        }
+    }
+    return .default;
+}
 
 /// Deliver a pointer event to `node`, bubbling up to the root until handled.
 /// Hover phases are notifications: they keep bubbling past handlers that
@@ -522,7 +575,10 @@ test "up after a down elsewhere still goes to the captured node (no phantom clic
     router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 10 });
     router.dispatchPointer(root, .{ .phase = .up, .x = 80, .y = 10 }); // over B
     try std.testing.expectEqual(@as(usize, 2), recState(a).log.items.len); // down + up
-    try std.testing.expectEqual(@as(usize, 0), recState(b).log.items.len);
+    // B gets no click — only the hover-refresh enter (the pointer rests on it)
+    const blog = recState(b).log.items;
+    try std.testing.expectEqual(@as(usize, 1), blog.len);
+    try std.testing.expectEqual(PointerPhase.enter, blog[0]);
 }
 
 test "hover: enter and leave fire on move" {
@@ -559,6 +615,65 @@ test "hover phases bubble past a child that reports them handled" {
     // Interaction phases still stop at the claiming child.
     router.dispatchPointer(parent, .{ .phase = .down, .x = 50, .y = 50 });
     try std.testing.expectEqual(@as(usize, 3), recState(parent).log.items.len);
+}
+
+const cursor_hook_vtable = blk: {
+    var vt = rec_vtable;
+    vt.cursor = struct {
+        fn c(_: *Node) node_mod.PointerCursor {
+            return .move;
+        }
+    }.c;
+    break :blk vt;
+};
+
+test "cursors: cursorForNode maps the vtable hook, then the semantic role" {
+    // null / plain node → the default arrow
+    try std.testing.expectEqual(PointerCursor.default, cursorForNode(null));
+    const plain = try recNode(std.testing.allocator, false);
+    defer plain.deinit();
+    try std.testing.expectEqual(PointerCursor.default, cursorForNode(plain));
+    // a .button semantic on the parent → hand (seen from the child)
+    const parent = try recNode(std.testing.allocator, false);
+    defer parent.deinit();
+    const child = try recNode(std.testing.allocator, false);
+    parent.add(child);
+    semantics_mod.attach(parent, .{ .role = .button, .label = "ok" });
+    try std.testing.expectEqual(PointerCursor.hand, cursorForNode(child));
+    // a .text_field semantic on the child → ibeam
+    semantics_mod.attach(child, .{ .role = .text_field, .label = "name" });
+    try std.testing.expectEqual(PointerCursor.ibeam, cursorForNode(child));
+    // the vtable hook wins over the semantic role
+    const custom = try recNode(std.testing.allocator, false);
+    defer custom.deinit();
+    custom.vtable = &cursor_hook_vtable;
+    semantics_mod.attach(custom, .{ .role = .text_field, .label = "x" });
+    try std.testing.expectEqual(PointerCursor.move, cursorForNode(custom));
+}
+
+test "hover refreshes after a captured drag ends over another node" {
+    var router = InputRouter{};
+    const root = try recNode(std.testing.allocator, false);
+    defer root.deinit();
+    const btn = try recNode(std.testing.allocator, true); // claims (a button)
+    const bg = try recNode(std.testing.allocator, false);
+    root.add(btn);
+    root.add(bg);
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    btn.layout(.{ .x = 0, .y = 0, .w = 50, .h = 100 });
+    bg.layout(.{ .x = 50, .y = 0, .w = 50, .h = 100 });
+    // hover the button, press (capture), drag over the background, release
+    router.dispatchPointer(root, .{ .phase = .move, .x = 10, .y = 50 });
+    try std.testing.expectEqual(btn, router.hoveredNode());
+    router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 50 });
+    router.dispatchPointer(root, .{ .phase = .move, .x = 80, .y = 50 }); // captured: hover unchanged
+    try std.testing.expectEqual(btn, router.hoveredNode());
+    router.dispatchPointer(root, .{ .phase = .up, .x = 80, .y = 50 });
+    // the release refreshes hover: the background is now hovered
+    try std.testing.expectEqual(bg, router.hoveredNode());
+    const log = recState(bg).log.items;
+    try std.testing.expect(log.len > 0);
+    try std.testing.expectEqual(PointerPhase.enter, log[log.len - 1]);
 }
 
 test "keyboard goes to the focused node" {

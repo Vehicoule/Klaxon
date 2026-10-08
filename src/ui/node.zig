@@ -48,6 +48,12 @@ pub fn rectUnion(a: Rect, b: Rect) Rect {
     return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
 }
 
+/// Pointer cursor shapes (Phase 2d-0.5): the host maps the hovered node to
+/// a system cursor on desktop (SDL). A widget overrides via VTable.cursor;
+/// otherwise the semantic role decides (.button/.link → hand, .text_field →
+/// ibeam — ui/input.zig cursorForNode); the fallback is the default arrow.
+pub const PointerCursor = enum { default, hand, ibeam, move, wait };
+
 pub const VTable = struct {
     measure: *const fn (node: *Node, c: Constraints) Size,
     layout: *const fn (node: *Node, bounds: Rect) void,
@@ -61,6 +67,9 @@ pub const VTable = struct {
     /// Scroll (wheel) input (Phase 1f) — bubbles up until a scrollable
     /// reports it handled.
     on_scroll: ?*const fn (node: *Node, ev: input_mod.ScrollEvent) bool = null,
+    /// Pointer cursor override (Phase 2d-0.5, desktop): when set, wins over
+    /// the semantic-role mapping (ui/input.zig cursorForNode).
+    cursor: ?*const fn (node: *Node) PointerCursor = null,
     /// Scrollable interface (Phase 1f): the Scrollbar drives any scrollable
     /// through these hooks — no direct widget-to-widget dependency.
     scroll_info: ?*const fn (node: *Node) scroll_mod.ScrollInfo = null,
