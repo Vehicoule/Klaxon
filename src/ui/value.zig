@@ -681,6 +681,31 @@ test "value: options round-trip valueFromOptions ∘ optionsFromValue" {
     try std.testing.expectEqual(opts.knob_on, back.knob_on);
 }
 
+test "value: platform tokens round-trip (nested struct + enums)" {
+    const theme_mod = @import("../theme.zig");
+    const POpts = struct {
+        platform: theme_mod.PlatformTokens = .{},
+        theme: theme_mod.Theme = theme_mod.light,
+    };
+    // partial overrides on top of the field defaults
+    const v = try parseJson(std.testing.allocator, "{\"platform\":{\"density\":\"desktop\",\"control_height\":36},\"theme\":{\"platform\":{\"scrollbar_style\":\"overlay\"}}}");
+    defer v.deinit(std.testing.allocator);
+    const o = try optionsFromValue(POpts, v, null, null);
+    try std.testing.expectEqual(theme_mod.Density.desktop, o.platform.density);
+    try std.testing.expectEqual(@as(f32, 36), o.platform.control_height);
+    try std.testing.expectEqual(@as(f32, 48), o.platform.hit_target_min); // untouched → default
+    try std.testing.expectEqual(theme_mod.Density.mobile, o.theme.platform.density);
+    try std.testing.expectEqual(theme_mod.ScrollbarStyle.overlay, o.theme.platform.scrollbar_style);
+    // round-trip through valueFromOptions
+    const back = try valueFromOptions(std.testing.allocator, POpts, o, null, null);
+    defer back.deinit(std.testing.allocator);
+    const o2 = try optionsFromValue(POpts, back, null, null);
+    try std.testing.expectEqual(o.platform.density, o2.platform.density);
+    try std.testing.expectEqual(o.platform.control_height, o2.platform.control_height);
+    try std.testing.expectEqual(o.theme.platform.scrollbar_style, o2.theme.platform.scrollbar_style);
+    try std.testing.expectEqual(o.theme.colors.primary, o2.theme.colors.primary);
+}
+
 test "value: type mismatch errors" {
     const bad = try parseJson(std.testing.allocator, "{\"radius\":\"big\"}");
     defer bad.deinit(std.testing.allocator);

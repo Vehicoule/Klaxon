@@ -223,6 +223,35 @@ pub const Spacing = struct {
     xxl: f32,
 };
 
+/// Platform density (Phase 2d-0.5): M3E is mobile-first; the desktop gap is
+/// a token layer, never per-widget decisions.
+pub const Density = enum { mobile, desktop };
+
+/// Scrollbar behavior (Phase 2d-0.5): classic (permanent, takes layout
+/// space — GTK), overlay (floats over the content, appears on scroll/hover
+/// — macOS), auto_hide (takes layout space, hidden at rest — Windows).
+pub const ScrollbarStyle = enum { classic, overlay, auto_hide };
+
+/// Platform adaptation tokens: control heights, hit targets, spacing scale,
+/// scrollbar style, focus ring, cursors. Behavior is borrowed from Apple
+/// HIG / Fluent / GTK — never their visuals.
+pub const PlatformTokens = struct {
+    density: Density = .mobile,
+    /// Control heights: 48dp mobile (M3E spec), 40dp desktop (comfortable).
+    control_height: f32 = 48,
+    /// Minimum pointer hit target (a11y floor): 48dp mobile, 24dp desktop.
+    hit_target_min: f32 = 48,
+    /// Spacing multiplier (denser layout on desktop): 1.0 mobile, 0.9 desktop.
+    spacing_scale: f32 = 1.0,
+    scrollbar_style: ScrollbarStyle = .classic,
+    scrollbar_width: f32 = 8,
+    /// Host-painted focus ring (Phase 2c): width + offset from the control.
+    focus_ring_width: f32 = 2,
+    focus_ring_offset: f32 = 2,
+    /// Pointer cursors (hand/ibeam/...) mapped by the host on desktop.
+    cursors: bool = false,
+};
+
 const type_scale: TypeScale = .{
     .display_large = .{ .size = 57, .line_height = 64, .weight = 400, .letter_spacing = -0.25 },
     .display_medium = .{ .size = 45, .line_height = 52, .weight = 400, .letter_spacing = 0 },
@@ -286,6 +315,16 @@ const state_layers: StateLayers = .{ .hover = 0.08, .focus = 0.10, .pressed = 0.
 
 const spacing: Spacing = .{ .xs = 4, .s = 8, .m = 12, .l = 16, .xl = 24, .xxl = 32 };
 
+const platform_mobile: PlatformTokens = .{};
+const platform_desktop: PlatformTokens = .{
+    .density = .desktop,
+    .control_height = 40, // comfortable (macOS-like)
+    .hit_target_min = 24,
+    .spacing_scale = 0.9,
+    .scrollbar_style = .overlay, // macOS-style: floats, auto-hides
+    .cursors = true,
+};
+
 /// A complete theme: every design token a widget needs. Copy and override
 /// fields (or the whole value) to reskin — widgets read tokens, never
 /// hardcode them. Field defaults are the light scheme, so `Theme{}` is a
@@ -299,6 +338,7 @@ pub const Theme = struct {
     motion: Motion = motion,
     state: StateLayers = state_layers,
     spacing: Spacing = spacing,
+    platform: PlatformTokens = platform_mobile,
 };
 
 /// M3 baseline light scheme.
@@ -405,6 +445,33 @@ pub const dark: Theme = .{
     .spacing = spacing,
 };
 
+/// Desktop presets (Phase 2d-0.5): the same M3E schemes with the platform
+/// layer set to desktop (40dp comfortable controls, denser spacing, overlay
+/// scrollbars, pointer cursors).
+pub const desktop_light: Theme = .{
+    .name = "desktop light",
+    .colors = light_colors,
+    .type_scale = type_scale,
+    .shape = shape,
+    .elevation = elevation,
+    .motion = motion,
+    .state = state_layers,
+    .spacing = spacing,
+    .platform = platform_desktop,
+};
+
+pub const desktop_dark: Theme = .{
+    .name = "desktop dark",
+    .colors = dark_colors,
+    .type_scale = type_scale,
+    .shape = shape,
+    .elevation = elevation,
+    .motion = motion,
+    .state = state_layers,
+    .spacing = spacing,
+    .platform = platform_desktop,
+};
+
 // --- tests ---
 
 test "theme: stateLayer blends the on-color at the state alpha" {
@@ -490,4 +557,32 @@ test "theme: light and dark share the non-color tokens" {
     try std.testing.expectEqual(light.motion.durations.medium2, dark.motion.durations.medium2);
     try std.testing.expectEqual(light.state.hover, dark.state.hover);
     try std.testing.expectEqual(light.spacing.m, dark.spacing.m);
+    try std.testing.expectEqual(light.platform.control_height, dark.platform.control_height);
+}
+
+test "theme: platform tokens — mobile defaults, desktop presets" {
+    // Theme{} is the mobile platform (M3E spec values)
+    const t = Theme{};
+    try std.testing.expectEqual(Density.mobile, t.platform.density);
+    try std.testing.expectEqual(@as(f32, 48), t.platform.control_height);
+    try std.testing.expectEqual(@as(f32, 48), t.platform.hit_target_min);
+    try std.testing.expectEqual(@as(f32, 1.0), t.platform.spacing_scale);
+    try std.testing.expectEqual(ScrollbarStyle.classic, t.platform.scrollbar_style);
+    try std.testing.expect(!t.platform.cursors);
+    // the mobile presets stay mobile
+    try std.testing.expectEqual(Density.mobile, light.platform.density);
+    try std.testing.expectEqual(Density.mobile, dark.platform.density);
+    // desktop presets: comfortable 40dp, denser spacing, overlay scrollbar, cursors
+    inline for (.{ desktop_light, desktop_dark }) |dt| {
+        try std.testing.expectEqual(Density.desktop, dt.platform.density);
+        try std.testing.expectEqual(@as(f32, 40), dt.platform.control_height);
+        try std.testing.expectEqual(@as(f32, 24), dt.platform.hit_target_min);
+        try std.testing.expectEqual(@as(f32, 0.9), dt.platform.spacing_scale);
+        try std.testing.expectEqual(ScrollbarStyle.overlay, dt.platform.scrollbar_style);
+        try std.testing.expect(dt.platform.cursors);
+    }
+    // desktop presets keep the M3E schemes
+    try std.testing.expectEqual(light.colors.primary, desktop_light.colors.primary);
+    try std.testing.expectEqual(dark.colors.primary, desktop_dark.colors.primary);
+    try std.testing.expect(desktop_light.colors.primary != desktop_dark.colors.primary);
 }
