@@ -245,6 +245,8 @@ pub const Host = struct {
             root.dirty = true;
             root.clearDamage();
             semantics_mod.notifyTreeDirty(); // the semantic tree may have changed
+            // content moved under a stationary pointer: refresh hover (cursors)
+            host.input.refreshHover(root);
         }
         host.frame_start_ns = sdl.c.SDL_GetTicksNS();
         kx.c.kx_begin_frame(host.ctx);
@@ -315,11 +317,13 @@ pub const Host = struct {
         // not the handling time — so queued events keep their real clock.
         const time_ms: u64 = event.common.timestamp / 1_000_000;
         switch (event.type) {
+            // The mouse is the primary pointer: normalized to ID 0 (hover
+            // tracks pointer 0 only). Touches keep their own IDs (multi-touch).
             sdl.c.SDL_EVENT_MOUSE_MOTION => host.input.dispatchPointer(root, .{
                 .phase = .move,
                 .x = event.motion.x,
                 .y = event.motion.y,
-                .pointer = event.motion.which,
+                .pointer = 0,
                 .time_ms = time_ms,
             }),
             sdl.c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -328,7 +332,7 @@ pub const Host = struct {
                         .phase = .down,
                         .x = event.button.x,
                         .y = event.button.y,
-                        .pointer = event.button.which,
+                        .pointer = 0,
                         .time_ms = time_ms,
                     });
                 }
@@ -339,7 +343,7 @@ pub const Host = struct {
                         .phase = .up,
                         .x = event.button.x,
                         .y = event.button.y,
-                        .pointer = event.button.which,
+                        .pointer = 0,
                         .time_ms = time_ms,
                     });
                 }
@@ -367,14 +371,18 @@ pub const Host = struct {
                 .time_ms = time_ms,
             }),
             // Wheel → scroll event (Phase 1f): routed like pointer input.
-            sdl.c.SDL_EVENT_MOUSE_WHEEL => host.input.dispatchScroll(root, .{
-                .x = event.wheel.mouse_x,
-                .y = event.wheel.mouse_y,
-                .delta_x = event.wheel.x,
-                .delta_y = event.wheel.y,
-                .pointer = event.wheel.which,
-                .time_ms = time_ms,
-            }),
+            // The content may scroll under a stationary pointer: refresh hover.
+            sdl.c.SDL_EVENT_MOUSE_WHEEL => {
+                host.input.dispatchScroll(root, .{
+                    .x = event.wheel.mouse_x,
+                    .y = event.wheel.mouse_y,
+                    .delta_x = event.wheel.x,
+                    .delta_y = event.wheel.y,
+                    .pointer = 0,
+                    .time_ms = time_ms,
+                });
+                host.input.refreshHover(root);
+            },
             sdl.c.SDL_EVENT_TEXT_INPUT => {
                 _ = host.input.dispatchKey(.{
                     .kind = .text_input,

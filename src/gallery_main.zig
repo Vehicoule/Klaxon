@@ -60,10 +60,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer host.deinit();
     input_mod.setCurrent(&host.input); // the router is process-global (single-window P0)
     ui.anim.setCurrent(&host.timeline); // the animation timeline, same pattern
-    host.cursors = true; // pointer cursors (Phase 2d-0.5): hand/ibeam over controls
 
     const g = try gallery_mod.Gallery.init(allocator);
     defer g.deinit();
+
+    // Pointer cursors follow the theme's platform layer (Phase 2d-0.5):
+    // hand/ibeam over controls when the desktop preset is active.
+    host.cursors = g.currentTheme().platform.cursors;
+    var platform_ctx = struct { host: *host_mod.Host, gallery: *gallery_mod.Gallery }{ .host = &host, .gallery = g };
+    g.on_platform_changed = .{ .fn_ptr = struct {
+        fn cb(ud: ?*anyopaque) void {
+            const ctx: *@TypeOf(platform_ctx) = @ptrCast(@alignCast(ud.?));
+            ctx.host.cursors = ctx.gallery.currentTheme().platform.cursors;
+        }
+    }.cb, .userdata = &platform_ctx };
 
     g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) });
 
