@@ -44,6 +44,16 @@ pub const Spring = struct {
     pub const gentle: Spring = .{ .stiffness = 180, .damping = 24 };
     pub const bouncy: Spring = .{ .stiffness = 700, .damping = 40 };
 
+    /// From the M3E spec parameterization (stiffness + damping RATIO zeta):
+    /// c = 2 * zeta * sqrt(k * m).
+    pub fn fromDampingRatio(stiffness: f32, damping_ratio: f32, mass: f32) Spring {
+        return .{
+            .stiffness = stiffness,
+            .damping = 2 * damping_ratio * @sqrt(stiffness * mass),
+            .mass = mass,
+        };
+    }
+
     /// Displacement from the target at time t (seconds), given the initial
     /// displacement d0 and velocity v0. Exact closed form.
     pub fn displacement(s: Spring, d0: f32, v0: f32, t: f32) f32 {
@@ -961,4 +971,12 @@ test "timeline: global setCurrent/timeline" {
     setCurrent(&tl);
     defer setCurrent(null);
     try std.testing.expect(timeline() != null);
+}
+
+test "spring: fromDampingRatio recovers the ratio and settles" {
+    const s = Spring.fromDampingRatio(700, 0.8, 1);
+    const zeta = s.damping / (2 * @sqrt(s.stiffness * s.mass));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), zeta, 1e-4);
+    // underdamped: it overshoots, then settles on target
+    try std.testing.expect(@abs(s.displacement(100, 0, 5.0)) < 0.5);
 }
