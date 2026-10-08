@@ -18,6 +18,8 @@
 //   0.3.0 — Phase 1e: + canvas state (kx_save/kx_restore), transforms
 //           (kx_translate/kx_scale) for paint-time animated offsets/scales,
 //           + clipping (kx_clip_rect/kx_clip_reset) for dirty-rect repaints.
+//   0.4.0 — Phase 2a: + kx_layer_alpha (saveLayer with alpha) for fade
+//           transitions. Restored with kx_restore, like kx_save.
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -79,6 +81,10 @@ void kx_scale(kx_ctx* ctx, float sx, float sy);
 // region is the dirty-rect path (Phase 1e).
 void kx_clip_rect(kx_ctx* ctx, float x, float y, float w, float h);
 void kx_clip_reset(kx_ctx* ctx);
+// Push an alpha layer: everything drawn until the matching kx_restore
+// composites at `alpha` opacity (fade transitions, Phase 2a). Alpha is
+// clamped to [0,1].
+void kx_layer_alpha(kx_ctx* ctx, float alpha);
 
 // Text metrics for widget layout. Ctx-independent: fonts are process-global.
 //   width   — advance width in pixels

@@ -79,14 +79,24 @@ test "smoke" {
 test "widgets" {
     const widgets = @import("widgets.zig");
     std.testing.refAllDecls(widgets);
-    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input, widgets.gestures, widgets.anim, widgets.list_view, widgets.grid_view, widgets.scroll_view, widgets.scrollbar }) |mod| {
+    inline for (.{ widgets.layout, widgets.text, widgets.icon, widgets.image, widgets.container, widgets.divider, widgets.input, widgets.gestures, widgets.anim, widgets.list_view, widgets.grid_view, widgets.scroll_view, widgets.scrollbar, widgets.navigator }) |mod| {
         std.testing.refAllDecls(mod);
     }
     std.testing.refAllDecls(ui.anim);
     std.testing.refAllDecls(ui.scroll);
+    std.testing.refAllDecls(ui.navigator);
+    std.testing.refAllDecls(ui.node);
+    std.testing.refAllDecls(ui.state);
+    std.testing.refAllDecls(ui.input);
+    std.testing.refAllDecls(ui.layout);
+    std.testing.refAllDecls(ui.gestures);
 }
 
 test "gallery" {
     std.testing.refAllDecls(@import("theme.zig"));
     std.testing.refAllDecls(@import("gallery.zig"));
+}
+
+test "navigator demo" {
+    std.testing.refAllDecls(@import("navigator_main.zig"));
 }

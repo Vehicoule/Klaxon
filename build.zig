@@ -91,6 +91,15 @@ pub fn build(b: *std.Build) void {
     const gallery_step = b.step("gallery", "Build and run the gallery app");
     gallery_step.dependOn(&run_gallery.step);
 
+    // --- navigator demo app (Phase 2a) ---
+    const nav_exe = addApp(b, target, optimize, "navigator", "src/navigator_main.zig", translate_sdl, translate_kx, kx_skia, is_macos, tag);
+    b.installArtifact(nav_exe);
+
+    const run_nav = b.addRunArtifact(nav_exe);
+    run_nav.step.dependOn(b.getInstallStep());
+    const nav_step = b.step("navigator", "Build and run the navigator demo app");
+    nav_step.dependOn(&run_nav.step);
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),

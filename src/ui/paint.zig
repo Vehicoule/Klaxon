@@ -53,6 +53,13 @@ pub fn clipReset(ctx: *kx.Ctx) void {
     kx.c.kx_clip_reset(ctx);
 }
 
+/// Push an alpha layer (saveLayer with alpha, ABI 0.4.0): everything painted
+/// until the matching restore() composites at `alpha` opacity — fade
+/// transitions (Phase 2a) and hero dimming.
+pub fn layerAlpha(ctx: *kx.Ctx, alpha: f32) void {
+    kx.c.kx_layer_alpha(ctx, alpha);
+}
+
 pub fn fillRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, color: Color) void {
     kx.c.kx_fill_rect(ctx, x, y, w, h, color);
 }

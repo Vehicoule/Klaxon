@@ -203,6 +203,15 @@ void kx_scale(kx_ctx* ctx, float sx, float sy) {
     if (ctx && ctx->canvas) ctx->canvas->scale(sx, sy);
 }
 
+void kx_layer_alpha(kx_ctx* ctx, float alpha) {
+    if (!ctx || !ctx->canvas) return;
+    float a = alpha;
+    if (a < 0.0f) a = 0.0f;
+    if (a > 1.0f) a = 1.0f;
+    // saveLayerAlphaf pushes a save + layer; the matching kx_restore pops it.
+    ctx->canvas->saveLayerAlphaf(nullptr, a);
+}
+
 void kx_clip_rect(kx_ctx* ctx, float x, float y, float w, float h) {
     if (!ctx || !ctx->canvas) return;
     ctx->canvas->save();
@@ -229,7 +238,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.3.0";
+    return "0.4.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {
