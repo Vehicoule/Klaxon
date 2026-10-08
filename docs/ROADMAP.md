@@ -149,7 +149,7 @@ AT-SPI registry daemon (absent on the dev Mac).
 - Gallery migrated to M3 roles; state layers replace hardcoded hover colors.
 - P1 widgets consume tokens (`theme: Theme` in the options struct, default `theme.light`); P0 widgets migrate progressively.
 
-### 2d-0.5. Platform adaptation tokens (desktop density) — PLANNED
+### 2d-0.5. Platform adaptation tokens (desktop density) — IN PROGRESS (PR #18 + #19 merged; PR #20 cursors open; PR 4 migration next)
 
 M3E is mobile-first; the desktop gap is filled by a token layer, never by per-widget
 decisions: `Theme.platform` — control heights (48 mobile / 32-40 desktop), spacing scale,
