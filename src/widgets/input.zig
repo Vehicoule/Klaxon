@@ -129,6 +129,10 @@ pub const ToggleOptions = struct {
     track_off: Color = 0x444455FF,
     track_on: Color = 0x3B5BDBFF,
     knob: Color = 0xFFFFFFFF,
+    // Per-state thumb colors (M3: on_primary thumb on the primary track,
+    // outline thumb on the surface_container_highest track); null → knob.
+    knob_on: ?Color = null,
+    knob_off: ?Color = null,
 };
 
 const ToggleState = struct {
@@ -150,9 +154,10 @@ fn togglePaint(n: *Node, ctx: *kx.Ctx) void {
     const on = s.sig.get();
     const b = n.bounds;
     ui.paint.fillRRect(ctx, b.x, b.y, b.w, b.h, b.h / 2, if (on) s.opts.track_on else s.opts.track_off);
+    const knob_color = if (on) (s.opts.knob_on orelse s.opts.knob) else (s.opts.knob_off orelse s.opts.knob);
     const knob_size = b.h - 4;
     const knob_x = if (on) b.x + b.w - knob_size - 2 else b.x + 2;
-    ui.paint.fillRRect(ctx, knob_x, b.y + 2, knob_size, knob_size, knob_size / 2, s.opts.knob);
+    ui.paint.fillRRect(ctx, knob_x, b.y + 2, knob_size, knob_size, knob_size / 2, knob_color);
 }
 fn toggleOnPointer(n: *Node, ev: input.PointerEvent) bool {
     const s = stateOf(ToggleState, n);
@@ -894,6 +899,7 @@ pub const ChipOptions = struct {
     bg: Color = 0x282838FF,
     bg_selected: Color = 0x3B5BDBFF,
     color: Color = 0xFFFFFFFF,
+    color_selected: ?Color = null, // label color when selected; null → color
     radius: f32 = 12,
     padding: EdgeInsets = .{ .left = 10, .top = 4, .right = 10, .bottom = 4 },
     size: f32 = 14,
@@ -922,13 +928,14 @@ fn chipPaint(n: *Node, ctx: *kx.Ctx) void {
     const b = n.bounds;
     const selected = if (s.selected) |sig| sig.get() else false;
     ui.paint.fillRRect(ctx, b.x, b.y, b.w, b.h, s.opts.radius, if (selected) s.opts.bg_selected else s.opts.bg);
+    const fg = if (selected) (s.opts.color_selected orelse s.opts.color) else s.opts.color;
     const m = ui.paint.measureText(s.label, s.opts.size, false);
     const text_y = b.y + (b.h - m.height) / 2 + m.ascent;
-    ui.paint.text(ctx, s.label, b.x + s.opts.padding.left, text_y, s.opts.size, false, s.opts.color);
+    ui.paint.text(ctx, s.label, b.x + s.opts.padding.left, text_y, s.opts.size, false, fg);
     if (s.on_deleted != null) {
         const glyph = "\u{2715}"; // ✕
         const gm = ui.paint.measureText(glyph, s.opts.size, false);
-        ui.paint.text(ctx, glyph, b.x + b.w - s.opts.padding.right - gm.width, text_y, s.opts.size, false, s.opts.color);
+        ui.paint.text(ctx, glyph, b.x + b.w - s.opts.padding.right - gm.width, text_y, s.opts.size, false, fg);
     }
 }
 fn chipOnPointer(n: *Node, ev: input.PointerEvent) bool {
@@ -1538,4 +1545,42 @@ test "a11y: slider Enter does not reset the value (no .activate action)" {
     fm.focusNode(s);
     try std.testing.expect(!fm.handleKey(.{ .kind = .key_down, .key = .enter }));
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), sig.peek(), 0.001);
+}
+
+test "golden: chip paints color_selected on the selected background" {
+    const sel = try ui.state.Signal(bool).init(std.testing.allocator, true);
+    defer sel.deinit();
+    // golden.render takes ownership of the root (deinit before the ctx).
+    var f = try golden.render(std.testing.allocator, try chip(std.testing.allocator, "Chip", sel, null, null, .{
+        .bg = 0x282838FF,
+        .bg_selected = 0x4F378BFF,
+        .color = 0xE6E0E9FF,
+        .color_selected = 0xEADDFFFF,
+    }), 128, 64, 0x000000FF);
+    defer f.deinit();
+    try std.testing.expect(f.countColor(0x4F378BFF) > 0); // selected bg
+    try std.testing.expect(f.countColor(0xEADDFFFF) > 0); // selected label ink
+    try std.testing.expectEqual(@as(u64, 0), f.countColor(0xE6E0E9FF)); // unselected fg unused
+}
+
+test "golden: toggle paints knob_on over the on track and knob_off over the off track" {
+    const sig = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer sig.deinit();
+    const opts: ToggleOptions = .{
+        .track_on = 0x6750A4FF,
+        .track_off = 0xE6E0E9FF,
+        .knob_on = 0xFFFFFFFF,
+        .knob_off = 0x79747EFF,
+    };
+    // off state: knob_off ink, no knob_on ink
+    var f1 = try golden.render(std.testing.allocator, try toggle(std.testing.allocator, sig, null, opts), 64, 32, 0x000000FF);
+    defer f1.deinit();
+    try std.testing.expect(f1.countColor(0x79747EFF) > 0);
+    try std.testing.expectEqual(@as(u64, 0), f1.countColor(0xFFFFFFFF));
+    // on state: knob_on ink, no knob_off ink
+    sig.set(true);
+    var f2 = try golden.render(std.testing.allocator, try toggle(std.testing.allocator, sig, null, opts), 64, 32, 0x000000FF);
+    defer f2.deinit();
+    try std.testing.expect(f2.countColor(0xFFFFFFFF) > 0);
+    try std.testing.expectEqual(@as(u64, 0), f2.countColor(0x79747EFF));
 }

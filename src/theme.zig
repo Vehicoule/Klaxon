@@ -176,7 +176,9 @@ pub const Bezier = struct {
     }
 };
 
-/// M3 easing curves.
+/// M3 easing curves. Per the M3 spec, `emphasized` and `standard` share the
+/// same curve (0.2, 0, 0, 1) — the emphasized family differs through its
+/// accelerate/decelerate variants, all exposed here.
 pub const Easings = struct {
     standard: Bezier, // (0.2, 0, 0, 1)
     standard_accelerate: Bezier, // (0.3, 0, 1, 1)
@@ -425,14 +427,24 @@ test "theme: schemes are opaque, distinct, and WCAG-contrastive" {
     }
     try std.testing.expect(light.colors.primary != dark.colors.primary);
     try std.testing.expect(light.colors.surface != dark.colors.surface);
-    // M3 guarantees >= 4.5:1 for text on its container (both schemes).
+    // M3 guarantees >= 4.5:1 for text on its container — every on-color /
+    // container pair, both schemes (containers have dedicated on-colors;
+    // surface containers take on_surface).
     inline for (.{ light.colors, dark.colors }) |cs| {
         const pairs = .{
             .{ cs.primary, cs.on_primary },
+            .{ cs.secondary, cs.on_secondary },
+            .{ cs.tertiary, cs.on_tertiary },
+            .{ cs.@"error", cs.on_error },
+            .{ cs.primary_container, cs.on_primary_container },
+            .{ cs.secondary_container, cs.on_secondary_container },
+            .{ cs.tertiary_container, cs.on_tertiary_container },
+            .{ cs.error_container, cs.on_error_container },
             .{ cs.surface, cs.on_surface },
             .{ cs.surface_variant, cs.on_surface_variant },
-            .{ cs.primary_container, cs.on_primary_container },
-            .{ cs.@"error", cs.on_error },
+            .{ cs.surface_container, cs.on_surface },
+            .{ cs.surface_container_high, cs.on_surface },
+            .{ cs.surface_container_highest, cs.on_surface },
             .{ cs.inverse_surface, cs.inverse_on_surface },
         };
         inline for (pairs) |p| {

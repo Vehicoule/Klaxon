@@ -250,8 +250,9 @@ fn buildHeader(g: *Gallery, theme: Theme) !*Node {
     const right = try layout.row(a, .{ .gap = 8, .cross_align = .center });
     const toggle = try input_w.toggle(a, g.dark_mode, .{ .fn_ptr = themeToggleCb, .userdata = g }, .{
         .track_on = theme.colors.primary,
-        .track_off = theme.colors.outline_variant,
-        .knob = theme.colors.on_surface,
+        .track_off = theme.colors.surface_container_highest,
+        .knob_on = theme.colors.on_primary,
+        .knob_off = theme.colors.outline,
     });
     g.refs.theme_toggle = toggle;
     right.add(toggle);
@@ -265,8 +266,8 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
     const col = try layout.column(a, .{ .gap = 10 });
     // Button + bound press count
     const r1 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
-    const btn = try input_w.button(a, .{ .fn_ptr = pressCb, .userdata = g }, .{ .bg = theme.colors.primary, .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover) });
-    btn.add(try text_w.text(a, "Press me", .{ .size = 14, .color = 0xFFFFFFFF }));
+    const btn = try input_w.button(a, .{ .fn_ptr = pressCb, .userdata = g }, .{ .bg = theme.colors.primary, .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover), .bg_pressed = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.pressed) });
+    btn.add(try text_w.text(a, "Press me", .{ .size = 14, .color = theme.colors.on_primary }));
     g.refs.demo_button = btn;
     r1.add(btn);
     const press_text = try text_w.BoundText(u32).text(a, g.press_count, fmtPress, .{ .size = 13, .color = theme.colors.on_surface });
@@ -275,19 +276,20 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
     col.add(r1);
     // Toggle + Checkbox + Chip
     const r2 = try layout.row(a, .{ .gap = 16, .cross_align = .center });
-    r2.add(try input_w.toggle(a, g.feat_toggle, null, .{ .track_on = theme.colors.primary, .track_off = theme.colors.outline_variant, .knob = theme.colors.on_surface }));
+    r2.add(try input_w.toggle(a, g.feat_toggle, null, .{ .track_on = theme.colors.primary, .track_off = theme.colors.surface_container_highest, .knob_on = theme.colors.on_primary, .knob_off = theme.colors.outline }));
     r2.add(try text_w.text(a, "Toggle", .{ .size = 13, .color = theme.colors.on_surface }));
     r2.add(try input_w.checkbox(a, g.feat_check, null, .{
         .box_color = theme.colors.surface_container_high,
         .border = theme.colors.outline_variant,
-        .check = theme.colors.on_surface,
+        .check = theme.colors.on_primary,
         .accent = theme.colors.primary,
     }));
     r2.add(try text_w.text(a, "Checkbox", .{ .size = 13, .color = theme.colors.on_surface }));
     const chip = try input_w.chip(a, "Chip", g.chip_sel, .{ .fn_ptr = chipCb, .userdata = g }, null, .{
         .bg = theme.colors.surface_container_high,
-        .bg_selected = theme.colors.primary,
+        .bg_selected = theme.colors.primary_container,
         .color = theme.colors.on_surface,
+        .color_selected = theme.colors.on_primary_container,
     });
     g.refs.chip = chip;
     r2.add(chip);
@@ -384,7 +386,7 @@ fn buildAnimSection(g: *Gallery, theme: Theme) !*Node {
     const slide_box = try container_w.container(a, .{ .color = theme.colors.primary, .radius = 8 });
     slide_box.add(try layout.constrainedBox(a, .{ .min_w = 64, .min_h = 44, .max_w = 64, .max_h = 44 }));
     slide.add(slide_box);
-    const slide_btn = try input_w.button(a, .{ .fn_ptr = slideCb, .userdata = g }, .{ .bg = theme.colors.surface_container_high });
+    const slide_btn = try input_w.button(a, .{ .fn_ptr = slideCb, .userdata = g }, .{ .bg = theme.colors.surface_container_high, .bg_hover = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.on_surface, theme.state.hover), .bg_pressed = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.on_surface, theme.state.pressed) });
     slide_btn.add(try text_w.text(a, "Slide", .{ .size = 13, .color = theme.colors.on_surface }));
     const slide_col = try layout.column(a, .{ .gap = 6, .cross_align = .center });
     slide_col.add(slide);
@@ -395,7 +397,7 @@ fn buildAnimSection(g: *Gallery, theme: Theme) !*Node {
     const scale_box = try container_w.container(a, .{ .color = theme.colors.@"error", .radius = 8 });
     scale_box.add(try layout.constrainedBox(a, .{ .min_w = 48, .min_h = 48, .max_w = 48, .max_h = 48 }));
     scale.add(scale_box);
-    const big = try input_w.toggle(a, g.scale_toggle, .{ .fn_ptr = bigToggleCb, .userdata = g }, .{ .track_on = theme.colors.primary, .track_off = theme.colors.outline_variant, .knob = theme.colors.on_surface });
+    const big = try input_w.toggle(a, g.scale_toggle, .{ .fn_ptr = bigToggleCb, .userdata = g }, .{ .track_on = theme.colors.primary, .track_off = theme.colors.surface_container_highest, .knob_on = theme.colors.on_primary, .knob_off = theme.colors.outline });
     const scale_col = try layout.column(a, .{ .gap = 6, .cross_align = .center });
     scale_col.add(scale);
     scale_col.add(big);
