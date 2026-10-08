@@ -735,7 +735,7 @@ test "gallery: clicking the theme toggle rebuilds the tree in the other theme" {
     const tf = g.refs.text_field.bounds;
     router.dispatchPointer(g.root, .{ .phase = .down, .x = tf.x + 10, .y = tf.y + tf.h / 2 });
     router.dispatchPointer(g.root, .{ .phase = .up, .x = tf.x + 10, .y = tf.y + tf.h / 2 });
-    router.dispatchKey(.{ .kind = .text_input, .text = "hello" });
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "hello" });
     try std.testing.expectEqualStrings("hello", input_w.textFieldText(g.refs.text_field));
     _ = widgets.scroll_view.setScrollOffset(g.refs.scroll_view, 120);
     _ = widgets.list_view.setScrollOffset(g.refs.list_10k, 200);

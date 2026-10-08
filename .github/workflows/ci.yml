@@ -78,6 +78,9 @@ jobs:
       - name: i18n headless smoke (raster, 600 frames, scripted locale switches)
         run: SDL_VIDEODRIVER=dummy ./zig-out/bin/i18n
 
+      - name: A11y headless smoke (raster, 600 frames, scripted keyboard)
+        run: SDL_VIDEODRIVER=dummy ./zig-out/bin/a11y
+
       - name: ReleaseSmall build + size gate (< 6,8 Mo)
         run: |
           zig build -Doptimize=ReleaseSmall

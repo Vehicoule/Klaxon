@@ -73,6 +73,7 @@ pub fn codepoint(name: IconName) u21 {
 pub const IconOptions = struct {
     size: f32 = 24,
     color: Color = 0x000000FF, // opaque black (0xRRGGBBAA)
+    label: []const u8 = "", // accessibility label (alt text, Phase 2c)
 };
 
 const IconState = struct {
@@ -112,6 +113,7 @@ pub fn icon(allocator: std.mem.Allocator, name: IconName, opts: IconOptions) !*N
     const len = try std.unicode.utf8Encode(codepoint(name), &buf);
     s.* = .{ .glyph = buf, .glyph_len = len, .opts = opts };
     node.state = s;
+    ui.semantics.attach(node, .{ .role = .image, .label = opts.label }); // Phase 2c
     return node;
 }
 

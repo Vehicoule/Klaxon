@@ -117,6 +117,7 @@ pub fn button(allocator: std.mem.Allocator, on_pressed: ?Callback, opts: ButtonO
     errdefer allocator.destroy(s);
     s.* = .{ .opts = opts, .on_pressed = on_pressed };
     node.state = s;
+    ui.semantics.attach(node, .{ .role = .button, .focusable = true, .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
     return node;
 }
 
@@ -168,9 +169,15 @@ fn toggleOnPointer(n: *Node, ev: input.PointerEvent) bool {
     }
     return false;
 }
+/// Repaint + keep the semantic checked state in sync (Phase 2c).
+fn toggleSyncCb(userdata: ?*anyopaque) void {
+    const n: *Node = @ptrCast(@alignCast(userdata.?));
+    if (n.semantics) |sem| sem.checked = stateOf(ToggleState, n).sig.peek();
+    n.markDirty();
+}
 fn toggleDeinit(n: *Node) void {
     const s = stateOf(ToggleState, n);
-    s.sig.unsubscribe(.{ .node = n });
+    s.sig.unsubscribe(.{ .callback = .{ .fn_ptr = toggleSyncCb, .userdata = n } });
     input.releaseNode(n);
     n.allocator.destroy(s);
 }
@@ -189,7 +196,8 @@ pub fn toggle(allocator: std.mem.Allocator, sig: *ui.state.Signal(bool), on_chan
     errdefer allocator.destroy(s);
     s.* = .{ .sig = sig, .opts = opts, .on_changed = on_changed };
     node.state = s;
-    ui.state.bindNode(node, sig); // visual updates on set
+    ui.semantics.attach(node, .{ .role = .toggle, .focusable = true, .checked = sig.peek(), .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
+    sig.subscribe(.{ .callback = .{ .fn_ptr = toggleSyncCb, .userdata = node } }); // visual + semantic updates on set
     return node;
 }
 
@@ -246,9 +254,15 @@ fn checkboxOnPointer(n: *Node, ev: input.PointerEvent) bool {
     }
     return false;
 }
+/// Repaint + keep the semantic checked state in sync (Phase 2c).
+fn checkboxSyncCb(userdata: ?*anyopaque) void {
+    const n: *Node = @ptrCast(@alignCast(userdata.?));
+    if (n.semantics) |sem| sem.checked = stateOf(CheckboxState, n).sig.peek();
+    n.markDirty();
+}
 fn checkboxDeinit(n: *Node) void {
     const s = stateOf(CheckboxState, n);
-    s.sig.unsubscribe(.{ .node = n });
+    s.sig.unsubscribe(.{ .callback = .{ .fn_ptr = checkboxSyncCb, .userdata = n } });
     input.releaseNode(n);
     n.allocator.destroy(s);
 }
@@ -267,7 +281,8 @@ pub fn checkbox(allocator: std.mem.Allocator, sig: *ui.state.Signal(bool), on_ch
     errdefer allocator.destroy(s);
     s.* = .{ .sig = sig, .opts = opts, .on_changed = on_changed };
     node.state = s;
-    ui.state.bindNode(node, sig);
+    ui.semantics.attach(node, .{ .role = .checkbox, .focusable = true, .checked = sig.peek(), .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
+    sig.subscribe(.{ .callback = .{ .fn_ptr = checkboxSyncCb, .userdata = node } }); // visual + semantic updates on set
     return node;
 }
 
@@ -320,9 +335,16 @@ pub fn Radio(comptime T: type) type {
             }
             return false;
         }
+        /// Repaint + keep the semantic checked state in sync (Phase 2c).
+        fn syncCb(userdata: ?*anyopaque) void {
+            const n: *Node = @ptrCast(@alignCast(userdata.?));
+            const s = stateOf(State, n);
+            if (n.semantics) |sem| sem.checked = std.meta.eql(s.group.peek(), s.value);
+            n.markDirty();
+        }
         fn deinit(n: *Node) void {
             const s = stateOf(State, n);
-            s.group.unsubscribe(.{ .node = n });
+            s.group.unsubscribe(.{ .callback = .{ .fn_ptr = syncCb, .userdata = n } });
             input.releaseNode(n);
             n.allocator.destroy(s);
         }
@@ -341,7 +363,8 @@ pub fn Radio(comptime T: type) type {
             errdefer allocator.destroy(s);
             s.* = .{ .group = group, .value = value, .opts = opts };
             node.state = s;
-            ui.state.bindNode(node, group); // visual updates when the group changes
+            ui.semantics.attach(node, .{ .role = .radio, .focusable = true, .checked = std.meta.eql(group.peek(), value), .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
+            group.subscribe(.{ .callback = .{ .fn_ptr = syncCb, .userdata = node } }); // visual + semantic updates when the group changes
             return node;
         }
     };
@@ -362,6 +385,8 @@ const SliderState = struct {
     sig: *ui.state.Signal(f32),
     opts: SliderOptions,
     on_changed: ?Callback = null,
+    value_buf: [16]u8 = undefined, // semantic value text (Phase 2c)
+    value_len: usize = 0,
 };
 
 fn sliderMeasure(n: *Node, c: Constraints) Size {
@@ -402,9 +427,38 @@ fn sliderOnPointer(n: *Node, ev: input.PointerEvent) bool {
     }
     return false;
 }
+/// Repaint + keep the semantic value in sync (Phase 2c).
+fn sliderSyncCb(userdata: ?*anyopaque) void {
+    const n: *Node = @ptrCast(@alignCast(userdata.?));
+    const s = stateOf(SliderState, n);
+    const str = std.fmt.bufPrint(&s.value_buf, "{d:.0}%", .{s.sig.peek() * 100}) catch return;
+    s.value_len = str.len;
+    if (n.semantics) |sem| sem.value = s.value_buf[0..s.value_len];
+    n.markDirty();
+}
+/// Keyboard: arrows adjust the value (Phase 2c focus).
+fn sliderOnKey(n: *Node, ev: input.KeyEvent) bool {
+    if (ev.kind != .key_down) return false;
+    const s = stateOf(SliderState, n);
+    const step: f32 = 0.05;
+    switch (ev.key) {
+        .left, .down => {
+            s.sig.set(std.math.clamp(s.sig.peek() - step, 0, 1));
+            if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
+            return true;
+        },
+        .right, .up => {
+            s.sig.set(std.math.clamp(s.sig.peek() + step, 0, 1));
+            if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
+            return true;
+        },
+        else => {},
+    }
+    return false;
+}
 fn sliderDeinit(n: *Node) void {
     const s = stateOf(SliderState, n);
-    s.sig.unsubscribe(.{ .node = n });
+    s.sig.unsubscribe(.{ .callback = .{ .fn_ptr = sliderSyncCb, .userdata = n } });
     input.releaseNode(n);
     n.allocator.destroy(s);
 }
@@ -414,6 +468,7 @@ const slider_vtable = ui.node.VTable{
     .paint = sliderPaint,
     .deinit = sliderDeinit,
     .on_pointer = sliderOnPointer,
+    .on_key = sliderOnKey, // Phase 2c: arrows adjust the value
 };
 
 pub fn slider(allocator: std.mem.Allocator, sig: *ui.state.Signal(f32), on_changed: ?Callback, opts: SliderOptions) !*Node {
@@ -423,7 +478,9 @@ pub fn slider(allocator: std.mem.Allocator, sig: *ui.state.Signal(f32), on_chang
     errdefer allocator.destroy(s);
     s.* = .{ .sig = sig, .opts = opts, .on_changed = on_changed };
     node.state = s;
-    ui.state.bindNode(node, sig);
+    ui.semantics.attach(node, .{ .role = .slider, .focusable = true, .actions = ui.semantics.Actions.init(.{ .increment = true, .decrement = true }) }); // Phase 2c
+    sig.subscribe(.{ .callback = .{ .fn_ptr = sliderSyncCb, .userdata = node } }); // visual + semantic updates on set
+    sliderSyncCb(node); // initial semantic value
     return node;
 }
 
@@ -582,6 +639,7 @@ pub fn textField(allocator: std.mem.Allocator, opts: TextFieldOptions, on_change
     }
     setSentinel(&s.buf); // null-terminates the (possibly empty) buffer
     node.state = s;
+    ui.semantics.attach(node, .{ .role = .text_field, .focusable = true, .hint = s.placeholder }); // Phase 2c
     return node;
 }
 
@@ -905,6 +963,7 @@ pub fn chip(allocator: std.mem.Allocator, label: []const u8, selected: ?*ui.stat
     buf[label.len] = 0;
     s.* = .{ .label = buf[0..label.len :0], .selected = selected, .on_pressed = on_pressed, .on_deleted = on_deleted, .opts = opts };
     node.state = s;
+    ui.semantics.attach(node, .{ .role = .button, .label = s.label, .focusable = true, .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
     if (selected) |sig| ui.state.bindNode(node, sig);
     return node;
 }
@@ -1030,17 +1089,17 @@ test "text field edits the buffer (type, backspace, submit, escape)" {
     router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 16 });
     try std.testing.expect(input.isFocused(root));
     // type "ab"
-    router.dispatchKey(.{ .kind = .text_input, .text = "a" });
-    router.dispatchKey(.{ .kind = .text_input, .text = "b" });
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "a" });
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "b" });
     try std.testing.expectEqualStrings("ab", s.text());
     try std.testing.expectEqual(@as(u32, 2), changed.fired);
     // backspace deletes the last codepoint (multi-byte safe)
-    router.dispatchKey(.{ .kind = .key_down, .key = .backspace });
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .backspace });
     try std.testing.expectEqualStrings("a", s.text());
     // enter submits, escape unfocuses
-    router.dispatchKey(.{ .kind = .key_down, .key = .enter });
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .enter });
     try std.testing.expectEqual(@as(u32, 1), submitted.fired);
-    router.dispatchKey(.{ .kind = .key_down, .key = .escape });
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .escape });
     try std.testing.expect(!input.isFocused(root));
 }
 
@@ -1054,9 +1113,9 @@ test "text field deletes multi-byte codepoints correctly" {
     const s = stateOf(TextFieldState, root);
     try std.testing.expectEqualStrings("a\u{25CF}b", s.text());
     router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 16 });
-    router.dispatchKey(.{ .kind = .key_down, .key = .backspace }); // deletes b
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .backspace }); // deletes b
     try std.testing.expectEqualStrings("a\u{25CF}", s.text());
-    router.dispatchKey(.{ .kind = .key_down, .key = .backspace }); // deletes ● (3 bytes at once)
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .backspace }); // deletes ● (3 bytes at once)
     try std.testing.expectEqualStrings("a", s.text());
 }
 
@@ -1326,7 +1385,7 @@ test "golden: text field shows typed text and the focus cursor" {
     defer f2.deinit();
     try std.testing.expect(f2.countColor(white) > f1.countColor(white)); // cursor bar
     // type "ab" → white text replaces the gray placeholder (white ink grows)
-    router.dispatchKey(.{ .kind = .text_input, .text = "ab" });
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "ab" });
     r.paint(root, bg);
     var f3 = try r.readback(std.testing.allocator);
     defer f3.deinit();

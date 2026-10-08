@@ -74,6 +74,7 @@ pub fn image(allocator: std.mem.Allocator, w: i32, h: i32, rgba: []const u8) !*N
     @memcpy(pixels, rgba);
     s.* = .{ .pixels = pixels, .src_w = w, .src_h = h };
     node.state = s;
+    ui.semantics.attach(node, .{ .role = .image }); // Phase 2c (label via attach)
     return node;
 }
 

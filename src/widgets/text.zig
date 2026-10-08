@@ -71,6 +71,7 @@ pub fn text(allocator: std.mem.Allocator, str: []const u8, opts: TextOptions) !*
     buf[str.len] = 0;
     s.* = .{ .text = buf[0..str.len :0], .opts = opts };
     node.state = s;
+    ui.semantics.attach(node, .{ .role = .text, .label = s.text }); // Phase 2c
     return node;
 }
 
@@ -132,6 +133,9 @@ pub fn BoundText(comptime T: type) type {
             errdefer allocator.destroy(s);
             s.* = .{ .sig = sig, .fmt = fmt, .opts = opts };
             node.state = s;
+            // Phase 2c: the label is the initial text — dynamic changes go
+            // through live regions (semantics.announce).
+            ui.semantics.attach(node, .{ .role = .text, .label = bound(node) });
             sig.subscribe(.{ .callback = .{ .fn_ptr = dirtyCb, .userdata = node } });
             return node;
         }
