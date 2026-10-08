@@ -116,6 +116,7 @@ pub fn BoundText(comptime T: type) type {
         }
         fn dirtyCb(userdata: ?*anyopaque) void {
             const n: *Node = @ptrCast(@alignCast(userdata.?));
+            if (n.semantics) |sem| sem.label = bound(n); // a11y: the label follows the signal
             n.markLayoutDirty(); // the text (and its size) changed
             n.markDirty(); // wake the dirty-flag render path (idle repaint)
         }
@@ -353,4 +354,14 @@ test "golden: boundText paints the current signal value" {
     const m2 = ui.paint.measureText("Pressed 100000 times", 24, false);
     try std.testing.expect(m2.width > m.width);
     try std.testing.expect(frame2.countNotIn(.{ .x = 0, .y = 0, .w = m2.width, .h = 64 }, bg) > 0);
+}
+
+test "BoundText: the semantic label follows the signal (a11y)" {
+    const sig = try ui.state.Signal(u32).init(std.testing.allocator, 1);
+    defer sig.deinit();
+    const node = try BoundText(u32).text(std.testing.allocator, sig, fmtBoundCount, .{});
+    defer node.deinit();
+    try std.testing.expectEqualStrings("Pressed 1 times", node.semantics.?.label);
+    sig.set(42);
+    try std.testing.expectEqualStrings("Pressed 42 times", node.semantics.?.label);
 }

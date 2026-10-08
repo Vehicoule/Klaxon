@@ -174,6 +174,7 @@ fn toggleSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     if (n.semantics) |sem| sem.checked = stateOf(ToggleState, n).sig.peek();
     n.markDirty();
+    ui.semantics.notifyControlChanged(n); // a11y: the value changed
 }
 fn toggleDeinit(n: *Node) void {
     const s = stateOf(ToggleState, n);
@@ -259,6 +260,7 @@ fn checkboxSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     if (n.semantics) |sem| sem.checked = stateOf(CheckboxState, n).sig.peek();
     n.markDirty();
+    ui.semantics.notifyControlChanged(n); // a11y: the value changed
 }
 fn checkboxDeinit(n: *Node) void {
     const s = stateOf(CheckboxState, n);
@@ -341,6 +343,7 @@ pub fn Radio(comptime T: type) type {
             const s = stateOf(State, n);
             if (n.semantics) |sem| sem.checked = std.meta.eql(s.group.peek(), s.value);
             n.markDirty();
+            ui.semantics.notifyControlChanged(n); // a11y: the value changed
         }
         fn deinit(n: *Node) void {
             const s = stateOf(State, n);
@@ -435,6 +438,7 @@ fn sliderSyncCb(userdata: ?*anyopaque) void {
     s.value_len = str.len;
     if (n.semantics) |sem| sem.value = s.value_buf[0..s.value_len];
     n.markDirty();
+    ui.semantics.notifyControlChanged(n); // a11y: the value changed
 }
 /// Keyboard: arrows adjust the value (Phase 2c focus).
 fn sliderOnKey(n: *Node, ev: input.KeyEvent) bool {
@@ -567,6 +571,7 @@ fn textFieldOnKey(n: *Node, ev: input.KeyEvent) bool {
             s.buf.appendSlice(ev.text) catch @panic("klaxon: out of memory");
             setSentinel(&s.buf);
             n.markDirty();
+            if (n.semantics) |sem| sem.value = s.text(); // a11y: the value follows edits
             if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
             return true;
         },
@@ -580,6 +585,7 @@ fn textFieldOnKey(n: *Node, ev: input.KeyEvent) bool {
                 }
                 setSentinel(&s.buf);
                 n.markDirty();
+                if (n.semantics) |sem| sem.value = s.text(); // a11y: the value follows edits
                 if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
                 return true;
             },
@@ -937,6 +943,16 @@ fn chipOnPointer(n: *Node, ev: input.PointerEvent) bool {
     }
     return true;
 }
+/// Keyboard: Delete fires on_deleted (the delete zone is pointer-only).
+fn chipOnKey(n: *Node, ev: input.KeyEvent) bool {
+    if (ev.kind != .key_down) return false;
+    const s = stateOf(ChipState, n);
+    if (ev.key == .delete) {
+        if (s.on_deleted) |cb| cb.fn_ptr(cb.userdata);
+        return true;
+    }
+    return false;
+}
 fn chipDeinit(n: *Node) void {
     const s = stateOf(ChipState, n);
     if (s.selected) |sig| sig.unsubscribe(.{ .node = n });
@@ -950,6 +966,7 @@ const chip_vtable = ui.node.VTable{
     .paint = chipPaint,
     .deinit = chipDeinit,
     .on_pointer = chipOnPointer,
+    .on_key = chipOnKey, // Phase 2c: Delete = keyboard deletion
 };
 
 pub fn chip(allocator: std.mem.Allocator, label: []const u8, selected: ?*ui.state.Signal(bool), on_pressed: ?Callback, on_deleted: ?Callback, opts: ChipOptions) !*Node {
@@ -963,7 +980,12 @@ pub fn chip(allocator: std.mem.Allocator, label: []const u8, selected: ?*ui.stat
     buf[label.len] = 0;
     s.* = .{ .label = buf[0..label.len :0], .selected = selected, .on_pressed = on_pressed, .on_deleted = on_deleted, .opts = opts };
     node.state = s;
-    ui.semantics.attach(node, .{ .role = .button, .label = s.label, .focusable = true, .actions = ui.semantics.Actions.initOne(.activate) }); // Phase 2c
+    // Phase 2c: activate always; delete only when the chip is deletable.
+    const acts = if (on_deleted != null)
+        ui.semantics.Actions.init(.{ .activate = true, .delete = true })
+    else
+        ui.semantics.Actions.initOne(.activate);
+    ui.semantics.attach(node, .{ .role = .button, .label = s.label, .focusable = true, .actions = acts });
     if (selected) |sig| ui.state.bindNode(node, sig);
     return node;
 }
@@ -1449,4 +1471,71 @@ test "golden: chip paints selected background when the signal is set" {
     var f2 = try r.readback(std.testing.allocator);
     defer f2.deinit();
     try std.testing.expect(f2.countColor(0x3B5BDBFF) > 100 * 32 - 400);
+}
+
+test "a11y: signal-driven widgets notify the bridge on value change (control_changed)" {
+    const a = std.testing.allocator;
+    const lb = try ui.semantics.LogBridge.init(a);
+    defer lb.deinit();
+    ui.semantics.setBridge(lb.bridge());
+    defer ui.semantics.setBridge(null);
+    const sig = try ui.state.Signal(bool).init(a, false);
+    defer sig.deinit();
+    const t = try toggle(a, sig, null, .{});
+    defer t.deinit();
+    sig.set(true);
+    try std.testing.expectEqual(@as(?bool, true), t.semantics.?.checked); // synced
+    var control_events: u32 = 0;
+    for (lb.events.items) |e| {
+        if (e.kind == .control_changed) control_events += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 1), control_events);
+}
+
+test "a11y: textField semantic value follows edits" {
+    const a = std.testing.allocator;
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const field = try textField(a, .{ .placeholder = "Name" }, null, null);
+    defer field.deinit();
+    try std.testing.expectEqual(ui.semantics.Role.text_field, field.semantics.?.role);
+    try std.testing.expectEqualStrings("Name", field.semantics.?.hint);
+    input.requestFocus(field);
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "ab" });
+    try std.testing.expectEqualStrings("ab", field.semantics.?.value);
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .backspace });
+    try std.testing.expectEqualStrings("a", field.semantics.?.value);
+}
+
+test "a11y: chip Delete key fires on_deleted (keyboard deletion)" {
+    const a = std.testing.allocator;
+    var rec = Rec{};
+    const cb: Callback = .{ .fn_ptr = recCb, .userdata = &rec };
+    const c = try chip(a, "Tag", null, null, cb, .{});
+    defer c.deinit();
+    try std.testing.expect(c.semantics.?.actions.contains(.delete));
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    input.requestFocus(c);
+    try std.testing.expect(router.dispatchKey(.{ .kind = .key_down, .key = .delete }));
+    try std.testing.expectEqual(@as(u32, 1), rec.fired);
+}
+
+test "a11y: slider Enter does not reset the value (no .activate action)" {
+    const a = std.testing.allocator;
+    const sig = try ui.state.Signal(f32).init(a, 0.8);
+    defer sig.deinit();
+    const s = try slider(a, sig, null, .{});
+    defer s.deinit();
+    s.layout(.{ .x = 0, .y = 0, .w = 200, .h = 24 });
+    const fm = try ui.semantics.FocusManager.init(a);
+    defer fm.deinit();
+    ui.semantics.setCurrentFocus(fm);
+    defer ui.semantics.setCurrentFocus(null);
+    fm.setRoot(s);
+    fm.focusNode(s);
+    try std.testing.expect(!fm.handleKey(.{ .kind = .key_down, .key = .enter }));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), sig.peek(), 0.001);
 }

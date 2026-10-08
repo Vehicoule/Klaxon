@@ -59,7 +59,7 @@ pub const Role = enum {
     group,
 };
 
-pub const Action = enum { activate, increment, decrement };
+pub const Action = enum { activate, increment, decrement, delete };
 pub const Actions = std.enums.EnumSet(Action);
 
 pub const LiveRegion = enum { off, polite, assertive };
@@ -123,6 +123,12 @@ fn firstDescendantLabel(n: *Node) ?[]const u8 {
 
 fn flattenInto(allocator: std.mem.Allocator, n: *Node, list: *std.array_list.Managed(SemanticNode)) !void {
     if (n.exclude_semantics or !n.visible) return;
+    // A subtree that cannot be hit-tested is not interactive (e.g. the
+    // navigator's background pages during a transition) — skip it.
+    if (n.vtable.hit_bounds) |hb| {
+        const b = hb(n);
+        if (b.w <= 0 or b.h <= 0) return;
+    }
     if (n.semantics) |sem| {
         var child_list = std.array_list.Managed(SemanticNode).init(allocator);
         errdefer {
@@ -185,7 +191,7 @@ pub fn buildSemanticTree(allocator: std.mem.Allocator, root: *Node) !SemanticNod
 // --- Bridge (ADR-0009 C ABI) + live regions ---
 
 pub const BridgeEvent = struct {
-    pub const Kind = enum { tree_dirty, focus_changed, announce };
+    pub const Kind = enum { tree_dirty, focus_changed, announce, control_changed };
     kind: Kind,
     node: ?*Node = null,
     text: []const u8 = "", // announce payload (borrowed during the call)
@@ -209,6 +215,35 @@ pub fn bridge() ?SemanticsBridge {
 
 fn notifyBridge(ev: BridgeEvent) void {
     if (current_bridge) |b| b.fn_ptr(b.userdata, ev);
+    if (bridge_c) |b| b.fn_ptr(b.userdata, .{
+        .kind = @backingInt(ev.kind),
+        .node_id = if (ev.node) |n| @intFromPtr(n) else 0,
+        .text = ev.text.ptr,
+        .text_len = ev.text.len,
+        .region = @backingInt(ev.region),
+    });
+}
+
+/// The extern event representation (ADR-0009 C boundary) + C-callable
+/// registration for native bridges.
+pub const BridgeEventC = extern struct {
+    kind: u32, // BridgeEvent.Kind
+    node_id: u64,
+    text: [*]const u8,
+    text_len: usize,
+    region: u32, // LiveRegion
+};
+
+const BridgeC = struct {
+    fn_ptr: *const fn (userdata: ?*anyopaque, event: BridgeEventC) callconv(.c) void,
+    userdata: ?*anyopaque,
+};
+
+var bridge_c: ?BridgeC = null;
+
+/// Install a C-callable bridge (extern event representation, ADR-0009).
+pub fn setBridgeC(fn_ptr: ?*const fn (userdata: ?*anyopaque, event: BridgeEventC) callconv(.c) void, userdata: ?*anyopaque) void {
+    bridge_c = if (fn_ptr) |f| .{ .fn_ptr = f, .userdata = userdata } else null;
 }
 
 /// The semantic tree changed (structure/layout) — bridges rebuild their view.
@@ -219,6 +254,12 @@ pub fn notifyTreeDirty() void {
 /// Announce a dynamic change (live region) to the installed bridge.
 pub fn announce(text: []const u8, region: LiveRegion) void {
     notifyBridge(.{ .kind = .announce, .text = text, .region = region });
+}
+
+/// A control's semantic value/checked changed (toggle, slider, ...) — bridges
+/// refresh that node's value without a full tree rebuild.
+pub fn notifyControlChanged(node: *Node) void {
+    notifyBridge(.{ .kind = .control_changed, .node = node });
 }
 
 /// LogBridge: records every event (tests + the a11y demo). Install it with
@@ -319,6 +360,18 @@ pub const FocusManager = struct {
     }
 
     pub fn focusNode(fm: *FocusManager, node: ?*Node) void {
+        fm.setFocused(node);
+        input_mod.requestFocus(node); // the router delivers keys to the focused node
+    }
+
+    /// The input router's focus changed from outside (pointer click on a
+    /// TextField, Escape blur) — sync the ring/signal/bridge without
+    /// re-entering the router.
+    pub fn onRouterFocusChanged(fm: *FocusManager, node: ?*Node) void {
+        fm.setFocused(node);
+    }
+
+    fn setFocused(fm: *FocusManager, node: ?*Node) void {
         if (fm.focused == node) return;
         // Damage the old + new ring regions (mapped to window space) so the
         // host repaints exactly what the ring vacated/occupies.
@@ -327,7 +380,6 @@ pub const FocusManager = struct {
             if (node) |new| r.markDirtyRect(ringRect(new));
         }
         fm.focused = node;
-        input_mod.requestFocus(node); // the router delivers keys to the focused node
         fm.focused_sig.set(node);
         if (node) |n| n.markDirty();
         notifyBridge(.{ .kind = .focus_changed, .node = node });
@@ -373,11 +425,14 @@ pub const FocusManager = struct {
                 return true;
             },
             .enter, .space => {
-                if (fm.focused) |n| {
-                    activateNode(fm, n);
-                    return true;
-                }
-                return false;
+                const n = fm.focused orelse return false;
+                // Only nodes advertising the activate action are activated:
+                // a slider has increment/decrement — a center click would
+                // reset its value to 50%.
+                const sem = n.semantics orelse return false;
+                if (!sem.actions.contains(.activate)) return false;
+                activateNode(fm, n);
+                return true;
             },
             else => return false,
         }
@@ -428,6 +483,19 @@ pub fn setCurrentFocus(fm: ?*FocusManager) void {
 
 pub fn currentFocus() ?*FocusManager {
     return current_focus;
+}
+
+/// A node is being destroyed (virtualization, navigation) — drop it from the
+/// focus if it was focused (the pointer would dangle).
+pub fn focusNodeDestroyed(node: *Node) void {
+    if (current_focus) |fm| {
+        if (fm.focused == node) fm.focusNode(null);
+    }
+}
+
+/// The router's focus moved (pointer) — sync the process-global focus manager.
+pub fn routerFocusChanged(node: ?*Node) void {
+    if (current_focus) |fm| fm.onRouterFocusChanged(node);
 }
 
 // --- tests ---
@@ -600,7 +668,7 @@ test "handleKey: tab moves focus, enter/space activate (synthesized click)" {
 
     const root = try clickNode(a); // the root IS the button (no parent transforms)
     defer root.deinit();
-    attach(root, .{ .role = .button, .focusable = true });
+    attach(root, .{ .role = .button, .focusable = true, .actions = Actions.initOne(.activate) });
     root.layout(.{ .x = 10, .y = 10, .w = 100, .h = 40 });
     const clicks = &@as(*ClickState, @ptrCast(@alignCast(root.state.?))).clicks;
 
@@ -641,6 +709,100 @@ test "announce + LogBridge records live-region events" {
     try std.testing.expectEqualStrings("3 items added", lb.events.items[0].text);
     try std.testing.expectEqual(LiveRegion.polite, lb.events.items[0].region);
     try std.testing.expectEqual(BridgeEvent.Kind.tree_dirty, lb.events.items[1].kind);
+}
+
+test "focusNodeDestroyed: a destroyed focused node is dropped" {
+    const a = std.testing.allocator;
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    const root = try clickNode(a);
+    defer root.deinit();
+    const node = try clickNode(a);
+    attach(node, .{ .role = .button, .focusable = true });
+    root.add(node);
+    const fm = try FocusManager.init(a);
+    defer fm.deinit();
+    setCurrentFocus(fm);
+    defer setCurrentFocus(null);
+    fm.setRoot(root);
+    fm.focusNode(node);
+    try std.testing.expect(fm.focused == node);
+    _ = root.remove(node);
+    node.deinit(); // → focusNodeDestroyed → focus dropped
+    try std.testing.expect(fm.focused == null);
+    try std.testing.expect(router.focused == null);
+}
+
+test "routerFocusChanged: pointer focus syncs the focus manager" {
+    const a = std.testing.allocator;
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    const root = try clickNode(a);
+    defer root.deinit();
+    const node = try clickNode(a);
+    attach(node, .{ .role = .text_field, .focusable = true });
+    root.add(node);
+    const fm = try FocusManager.init(a);
+    defer fm.deinit();
+    setCurrentFocus(fm);
+    defer setCurrentFocus(null);
+    fm.setRoot(root);
+    input_mod.requestFocus(node); // pointer path (TextField click)
+    try std.testing.expect(fm.focused == node);
+    try std.testing.expect(router.focused == node);
+    input_mod.requestFocus(null); // Escape blur
+    try std.testing.expect(fm.focused == null);
+}
+
+test "handleKey: enter/space activate only nodes advertising .activate" {
+    const a = std.testing.allocator;
+    const root = try clickNode(a); // no activate action — like a slider
+    defer root.deinit();
+    attach(root, .{ .role = .slider, .focusable = true, .actions = Actions.init(.{ .increment = true, .decrement = true }) });
+    root.layout(.{ .x = 10, .y = 10, .w = 100, .h = 40 });
+    const clicks = &@as(*ClickState, @ptrCast(@alignCast(root.state.?))).clicks;
+    const fm = try FocusManager.init(a);
+    defer fm.deinit();
+    fm.setRoot(root);
+    fm.focusNode(root);
+    try std.testing.expect(!fm.handleKey(.{ .kind = .key_down, .key = .enter }));
+    try std.testing.expectEqual(@as(u32, 0), clicks.*); // the pointer handler never ran
+    // A node WITH .activate is activated.
+    attach(root, .{ .role = .button, .focusable = true, .actions = Actions.initOne(.activate) });
+    try std.testing.expect(fm.handleKey(.{ .kind = .key_down, .key = .space }));
+    try std.testing.expectEqual(@as(u32, 1), clicks.*);
+}
+
+const CRec = struct {
+    count: u32 = 0,
+    last_kind: u32 = 0,
+    last_region: u32 = 0,
+    last_text: [64]u8 = undefined,
+    last_text_len: usize = 0,
+};
+
+fn cCb(userdata: ?*anyopaque, ev: BridgeEventC) callconv(.c) void {
+    const r: *CRec = @ptrCast(@alignCast(userdata.?));
+    r.count += 1;
+    r.last_kind = ev.kind;
+    r.last_region = ev.region;
+    const n = @min(ev.text_len, r.last_text.len);
+    @memcpy(r.last_text[0..n], ev.text[0..n]);
+    r.last_text_len = n;
+}
+
+test "setBridgeC: the C-callable bridge receives extern events" {
+    var rec = CRec{};
+    setBridgeC(cCb, &rec);
+    defer setBridgeC(null, null);
+    announce("hi", .assertive);
+    try std.testing.expectEqual(@as(u32, 1), rec.count);
+    try std.testing.expectEqual(@backingInt(BridgeEvent.Kind.announce), rec.last_kind);
+    try std.testing.expectEqual(@backingInt(LiveRegion.assertive), rec.last_region);
+    try std.testing.expectEqual(@as(usize, 2), rec.last_text_len);
+    try std.testing.expectEqualStrings("hi", rec.last_text[0..rec.last_text_len]);
 }
 
 test "golden: focus ring paints around the focused node (exact pixels)" {

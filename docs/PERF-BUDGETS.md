@@ -7,7 +7,7 @@
 | Metric | Target | Measured (retail, Adreno 750) | Status |
 |---|---|---|---|
 | **fps p99** (scroll_10k, real scenes) | ≥ 120 | ~135 avg on empty app — **too easy, target real scenes** | 🎯 Target real scenes (gallery, scroll, anim) |
-| **frame p99** | ≤ 3 ms (tightened 2026-10-08 from 4 ms; measured 0.63 hello / 3.31 gallery / 0.98 navigator / 1.19 i18n / 0.71 a11y, raster headless) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
+| **frame p99** | ≤ 3 ms (tightened 2026-10-08 from 4 ms; measured 0.65 hello / 3.31 gallery / 0.98 navigator / 1.15 i18n / 0.85 a11y, raster headless) | 10.6 ms — jank to eliminate | ✅ dirty-rect landed (Phase 1e: retained surface + damage clip + 8.3 ms pacing; low-priority anims pause on overrun) |
 | **RSS hello** | < 40 Mo (measured 24.0 Mo — continuous improvement target) | ~45 Mo estimated (Skia floor ~14 + app ~5 + overhead) | 🎯 Ambitious. Gate v1 = < 40 Mo. May take time. |
 | **TTFF** (time to first frame) | < 20 ms (tightened 2026-10-08 from 50 ms; measured 0.1 hello / 4.2 gallery / 0.0 navigator / 0.0 i18n / 0.0 a11y, run-start → first frame, raster headless) | 126 ms retail | 🔧 Vulkan init one-shot (~80-140 ms) to optimize |
 | **Binary size hello** (arm64 .so / desktop bin) | < 5 Mo (CI gate < 6,8 Mo — tightened 2026-10-08 from 7 Mo; current 6.30 Mo) | 8.59 Mo (libmain.so) | 🔧 ReleaseSmall + strip done; Skia trim (args.gn) to get under 5 Mo |

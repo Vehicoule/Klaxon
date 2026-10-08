@@ -14,6 +14,7 @@
 // Store(T). Widgets call requestFocus/setOpenPopup/releaseNode through it.
 const std = @import("std");
 const node_mod = @import("node.zig");
+const semantics_mod = @import("semantics.zig");
 
 const Node = node_mod.Node;
 
@@ -329,6 +330,7 @@ pub fn current() ?*InputRouter {
 
 pub fn requestFocus(node: ?*Node) void {
     if (current_router) |r| r.focus(node);
+    semantics_mod.routerFocusChanged(node); // keep the focus ring in sync (Phase 2c)
 }
 
 pub fn isFocused(node: *Node) bool {

@@ -331,6 +331,7 @@ pub const Node = struct {
         // Drop router references (capture/hover/focus/popup) BEFORE anything
         // is freed — virtualized lists destroy captured items on scroll.
         input_mod.releaseNode(node);
+        semantics_mod.focusNodeDestroyed(node); // drop the a11y focus if it was focused (Phase 2c)
         for (node.children.items) |child| child.deinit();
         node.children.deinit();
         if (node.semantics) |sem| node.allocator.destroy(sem);

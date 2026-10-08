@@ -210,20 +210,23 @@ pub const Host = struct {
         // frames; GPU backends acquire a fresh drawable each frame (no
         // retained pixels) → full repaint until retained composition lands.
         const raster = kx.c.kx_backend_of(host.ctx) == kx.c.KX_BACKEND_RASTER;
+        const focus = semantics_mod.currentFocus();
         if (raster and root.damage_valid) {
             // Repaint the tree clipped to the damaged region — and clear the
             // clip first (SkCanvas::clear is clip-aware): vacated pixels
-            // (moving widgets) are erased, not trailed.
+            // (moving widgets) are erased, not trailed. The focus ring paints
+            // INSIDE the clip (a focus change damages its ring regions), so
+            // unrelated repaints never redraw it.
             const d = root.damage;
             kx.c.kx_clip_rect(host.ctx, d.x, d.y, d.w, d.h);
             kx.c.kx_clear(host.ctx, 0);
             root.paint(host.ctx);
+            if (focus) |fm| fm.paintRing(host.ctx);
             kx.c.kx_clip_reset(host.ctx);
         } else {
             root.paint(host.ctx);
+            if (focus) |fm| fm.paintRing(host.ctx); // full repaint: ring included
         }
-        // Focus ring (Phase 2c): painted over the tree, around the focused node.
-        if (semantics_mod.currentFocus()) |fm| fm.paintRing(host.ctx);
         kx.c.kx_end_frame(host.ctx);
         const t_paint = sdl.c.SDL_GetTicksNS();
         root.clearDamage();
