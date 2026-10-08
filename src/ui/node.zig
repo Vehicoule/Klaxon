@@ -7,6 +7,7 @@ const paint_mod = @import("paint.zig");
 const layout_mod = @import("layout.zig");
 const input_mod = @import("input.zig");
 const scroll_mod = @import("scroll.zig");
+const semantics_mod = @import("semantics.zig");
 
 pub const Paint = paint_mod.Paint;
 pub const Constraints = layout_mod.Constraints;
@@ -100,6 +101,12 @@ pub const Node = struct {
     flex: u32 = 0,
     vtable: *const VTable,
     state: ?*anyopaque = null,
+    /// Accessibility descriptor (Phase 2c, owned — freed at deinit). Widgets
+    /// attach one in their factory; the semantic tree flattens the widget
+    /// tree for assistive tech.
+    semantics: ?*semantics_mod.Semantics = null,
+    /// Hide this subtree from the semantic tree (decorative, Phase 2c).
+    exclude_semantics: bool = false,
     // Dirty-rect (Phase 1e): the root accumulates the damaged region — the
     // union of every dirty mark's rect — and the host repaints the tree
     // clipped to it (the surface is retained between frames).
@@ -307,12 +314,27 @@ pub const Node = struct {
         return .{ .x = x, .y = y };
     }
 
+    /// Map a rect (in the node's parent space) to window space: applies every
+    /// transformed ancestor's map_paint_rect (the visual position). Used by
+    /// the focus ring and semantic activation (Phase 2c).
+    pub fn mapRectToRoot(node: *Node, rect: Rect) Rect {
+        var r = rect;
+        var n = node;
+        while (n.parent) |p| {
+            if (p.vtable.map_paint_rect) |m| r = m(p, r);
+            n = p;
+        }
+        return r;
+    }
+
     pub fn deinit(node: *Node) void {
         // Drop router references (capture/hover/focus/popup) BEFORE anything
         // is freed — virtualized lists destroy captured items on scroll.
         input_mod.releaseNode(node);
+        semantics_mod.focusNodeDestroyed(node); // drop the a11y focus if it was focused (Phase 2c)
         for (node.children.items) |child| child.deinit();
         node.children.deinit();
+        if (node.semantics) |sem| node.allocator.destroy(sem);
         if (node.vtable.deinit) |d| d(node);
         node.allocator.destroy(node);
     }

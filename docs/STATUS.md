@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-08 (Phase 2b — i18n, DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
+**Last updated**: 2026-10-08 (Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
 
 ## Current phase
 
@@ -36,7 +36,9 @@
 
 - **2b done** — i18n: `ui/i18n.zig` (`I18n` registry: ARB locales, `tr` fallback chain, `{name}` interpolation from a comptime args struct, ARB plural blocks + CLDR rules en/fr/ja/ar, number/date formatting per-locale tables, process-global direction) + RTL auto-mirror in the layout layer (`TextAlign.start/end`, `Alignment.mirrored`, `EdgeInsetsDirectional`, flex main-axis reversal, `paddingDir` widget) + runtime switching (`setLocale` → locale signal → widgets re-resolve + re-measure; direction flip → `on_direction_changed`). Widgets: `l10nText`, `L10nText(Args)`, `l10nPlural`, `l10nPluralSig` (`src/widgets/i18n.zig`). Demo: `src/i18n_main.zig` + `src/locales/{en,fr,ja,ar}.arb` (@embedFile) + `zig build i18n` + CI headless smoke (600 frames, scripted switches). Widgets 34/50. `docs/I18N.md`. 243 tests green (34 golden). Métriques (Mac dev, raster headless, smoke 600 frames): hello TTFF 0,1 ms / frame 0,66 ms / RSS 26 Mo / ReleaseSmall 6,30 Mo; gallery 4,2 / 3,33 / 43 / 6,36; navigator 0,0 / 0,99 / 31 / 6,32; i18n 0,0 / 1,17 / 32 / 6,37. Cibles resserrées renforcées (2b): frame p99 ≤ 3 ms (device), TTFF < 20 ms (device), binaire < 6,8 Mo (gate CI). Merged as PR #12.
 
-**Next: Phase 2c — accessibility (semantics tree, keyboard focus, AT-SPI Linux).**
+- **2c done** — Accessibility core: `ui/semantics.zig` — `Semantics` per-node descriptor (role, label, hint, value, checked, actions) attached by the widget factories (Text .text, Button .button, Toggle .toggle, Checkbox .checkbox, Radio .radio, Slider .slider + on_key arrows, TextField .text_field, Chip .button, Icon/Image .image) + semantic tree flatten (`buildSemanticTree`: transparent containers lifted, label fallback to the first labelled descendant, `exclude_semantics` hides decorative subtrees) + `FocusManager` (Tab/Shift+Tab focus order in semantic-tree order, Enter/Space activation = synthesized click at the node's center, `focused_sig`, router focus + bridge notify) + focus ring painted by the host (4 fillRects, no ABI change) + live regions (`announce`) + `SemanticsBridge` (C ABI, ADR-0009: tree_dirty / focus_changed / announce) with a `LogBridge` default. Host: Tab → focus manager, unhandled keys → semantic activation, ring painted before end_frame, tree-dirty notify. `Node.semantics` (owned) + `Node.exclude_semantics` + `Node.mapRectToRoot`. `input.Key` += up/down/space + `KeyEvent.shift`; `dispatchKey` returns handled. Signal-driven widgets keep `checked`/`value` in sync via subscribe callbacks. Demo: `src/a11y_main.zig` + `zig build a11y` + CI headless smoke (600 frames, scripted keyboard). Widgets 34/50 (the ring is host-painted, not a widget). `docs/A11Y.md`. 260 tests green (35 golden). Métriques (Mac dev, raster headless, smoke 600 frames): hello TTFF 0,1 ms / frame 0,65 ms / RSS 26 Mo / ReleaseSmall 6,30 Mo; gallery 4,2 / 3,31 / 43 / 6,38; navigator 0,0 / 0,98 / 31 / 6,32; i18n 0,0 / 1,15 / 32 / 6,37; a11y 0,0 / 0,85 / 27 / 6,32. Devin review round: dangling focus on destroyed nodes (Node.deinit → focusNodeDestroyed), background pages excluded from the focus order (hit_bounds skip), pointer focus syncs the ring (requestFocus → routerFocusChanged), Enter/Space only activate `.activate` nodes (sliders untouched), control_changed bridge events, TextField value + BoundText label follow their signals, C-callable bridge (BridgeEventC extern + setBridgeC), chip Delete key, ring painted inside the damage clip. Merged as PR #13. **Note**: the AT-SPI/D-Bus bridge (Linux) lands with the Linux target (Phase 3a) — the bridge interface is ready; it needs a session bus + the AT-SPI registry daemon (absent on the dev Mac).
+
+**Next: Phase 2d — widgets P1 (navigation + feedback: AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar).**
 
 ## What exists (code, this repo)
 
@@ -70,6 +72,9 @@
 - ✅ `src/i18n_main.zig` + `src/locales/{en,fr,ja,ar}.arb` — i18n demo app (4 locales, @embedFile, scripted switches) (Phase 2b)
 - ✅ `src/ui/layout.zig` — RTL mirror: TextAlign.start/end, Alignment.mirrored, EdgeInsetsDirectional, flex main-axis reversal (Phase 2b)
 - ✅ `src/widgets/layout.zig` — paddingDir (directional padding) (Phase 2b)
+- ✅ `src/ui/semantics.zig` — Semantics descriptor, semantic tree, FocusManager, live regions, SemanticsBridge + LogBridge (Phase 2c) + `docs/A11Y.md`
+- ✅ `src/a11y_main.zig` — a11y demo app (focus ring, keyboard activation, live regions) (Phase 2c)
+- ✅ `src/ui/node.zig` — `Node.semantics` (owned descriptor), `Node.exclude_semantics`, `Node.mapRectToRoot` (Phase 2c)
 - ✅ `src/ui/input.zig` — back handler (`dispatchBack`: focused chain first, then the navigator pops) + `Key.back` (Phase 2a)
 - ✅ `src/ui/node.zig` — `Node.insert` (re-insert at the original index — hero re-attach) (Phase 2a)
 - ✅ `kx_skia/` — ABI 0.4.0: `kx_layer_alpha` (saveLayerAlphaf — fade transitions) (Phase 2a)
@@ -99,7 +104,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 ## What does NOT exist (greenfield)
 
 - ❌ All 50 widgets (34/50)
-- ❌ A11y bridges (6)
+- ❌ A11y OS bridges (6: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA — the C-ABI bridge interface is ready, Phase 2c; AT-SPI lands with the Linux target, Phase 3a)
 - ❌ DevTools
 - ❌ CLI
 - ❌ Packaging
@@ -141,9 +146,9 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 | Metric | Target |
 |---|---|
 | fps p99 (real scenes, incl. video_playback) | ≥ 120 (device gate, Phase 4 — unchanged) |
-| frame p99 | ≤ 3 ms (tightened 2026-10-08 from 4 ms; measured 0.66 hello / 3.33 gallery / 0.99 navigator / 1.18 i18n, raster headless) |
+| frame p99 | ≤ 3 ms (tightened 2026-10-08 from 4 ms; measured 0.65 hello / 3.31 gallery / 0.98 navigator / 1.15 i18n / 0.85 a11y, raster headless) |
 | RSS hello | < 40 Mo (measured 26 Mo — continuous improvement target) |
-| TTFF | < 20 ms (tightened 2026-10-08 from 50 ms; measured 0.1 hello / 4.2 gallery / 0.0 navigator / 0.0 i18n, run-start → first frame) |
+| TTFF | < 20 ms (tightened 2026-10-08 from 50 ms; measured 0.1 hello / 4.2 gallery / 0.0 navigator / 0.0 i18n / 0.0 a11y, run-start → first frame) |
 | Binary size hello | < 5 Mo (CI gate < 6,8 Mo — tightened 2026-10-08 from 7 Mo; current 6.30 Mo) |
 | Input latency (key/tap → repaint) | ≤ 1 frame |
 | Nav transition duration | ≤ 350 ms (target 300 ms) |
@@ -170,4 +175,5 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 14. ~~Phase 1g: gallery (full showcase: all widgets, themes, animations, gestures, scroll 10k)~~ done (PR #9)
 15. ~~Phase 2a: navigation (`ui/navigator.zig` — page stack, transitions, deep links, back stack)~~ done (PR #11)
 16. ~~Phase 2b: i18n (`ui/i18n.zig` — tr, ARB, RTL, pluralization, number/date formatting)~~ done (PR #12)
-17. **Phase 2c: accessibility (`ui/semantics.zig` — semantic tree, keyboard focus, AT-SPI Linux)**
+17. ~~Phase 2c: accessibility (`ui/semantics.zig` — semantic tree, keyboard focus, live regions, bridge C ABI)~~ done (PR #13; AT-SPI bridge → Phase 3a)
+18. **Phase 2d: widgets P1 (AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar)**

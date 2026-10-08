@@ -9,6 +9,7 @@ const sdl = @import("sdl.zig");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
 const input_mod = @import("ui/input.zig");
+const semantics_mod = @import("ui/semantics.zig");
 const anim = @import("ui/anim.zig");
 
 const Node = ui.node.Node;
@@ -201,6 +202,7 @@ pub const Host = struct {
             root.layout(root.bounds);
             root.dirty = true;
             root.clearDamage();
+            semantics_mod.notifyTreeDirty(); // the semantic tree may have changed
         }
         host.frame_start_ns = sdl.c.SDL_GetTicksNS();
         kx.c.kx_begin_frame(host.ctx);
@@ -208,17 +210,22 @@ pub const Host = struct {
         // frames; GPU backends acquire a fresh drawable each frame (no
         // retained pixels) → full repaint until retained composition lands.
         const raster = kx.c.kx_backend_of(host.ctx) == kx.c.KX_BACKEND_RASTER;
+        const focus = semantics_mod.currentFocus();
         if (raster and root.damage_valid) {
             // Repaint the tree clipped to the damaged region — and clear the
             // clip first (SkCanvas::clear is clip-aware): vacated pixels
-            // (moving widgets) are erased, not trailed.
+            // (moving widgets) are erased, not trailed. The focus ring paints
+            // INSIDE the clip (a focus change damages its ring regions), so
+            // unrelated repaints never redraw it.
             const d = root.damage;
             kx.c.kx_clip_rect(host.ctx, d.x, d.y, d.w, d.h);
             kx.c.kx_clear(host.ctx, 0);
             root.paint(host.ctx);
+            if (focus) |fm| fm.paintRing(host.ctx);
             kx.c.kx_clip_reset(host.ctx);
         } else {
             root.paint(host.ctx);
+            if (focus) |fm| fm.paintRing(host.ctx); // full repaint: ring included
         }
         kx.c.kx_end_frame(host.ctx);
         const t_paint = sdl.c.SDL_GetTicksNS();
@@ -326,10 +333,12 @@ pub const Host = struct {
                 .pointer = event.wheel.which,
                 .time_ms = time_ms,
             }),
-            sdl.c.SDL_EVENT_TEXT_INPUT => host.input.dispatchKey(.{
-                .kind = .text_input,
-                .text = std.mem.span(event.text.text),
-            }),
+            sdl.c.SDL_EVENT_TEXT_INPUT => {
+                _ = host.input.dispatchKey(.{
+                    .kind = .text_input,
+                    .text = std.mem.span(event.text.text),
+                });
+            },
             sdl.c.SDL_EVENT_KEY_DOWN => {
                 // Back (Android hardware button / desktop Escape): the
                 // focused chain gets the key first, then the navigator pops
@@ -337,10 +346,18 @@ pub const Host = struct {
                 if (event.key.key == sdl.c.SDLK_ESCAPE or event.key.key == sdl.c.SDLK_AC_BACK) {
                     _ = host.input.dispatchBack();
                 } else {
-                    host.input.dispatchKey(.{
+                    const ev = input_mod.KeyEvent{
                         .kind = .key_down,
                         .key = sdlKeyToKey(event.key.key),
-                    });
+                        .shift = (event.key.mod & (sdl.c.SDL_KMOD_LSHIFT | sdl.c.SDL_KMOD_RSHIFT)) != 0,
+                    };
+                    // Tab moves the keyboard focus (Phase 2c) — never reaches the tree.
+                    if (ev.key == .tab) {
+                        if (semantics_mod.currentFocus()) |fm| _ = fm.handleKey(ev);
+                    } else if (!host.input.dispatchKey(ev)) {
+                        // Unhandled by the focused node: Enter/Space activate it.
+                        if (semantics_mod.currentFocus()) |fm| _ = fm.handleKey(ev);
+                    }
                 }
             },
             else => {},
@@ -356,6 +373,10 @@ pub const Host = struct {
             sdl.c.SDLK_ESCAPE => .escape,
             sdl.c.SDLK_LEFT => .left,
             sdl.c.SDLK_RIGHT => .right,
+            sdl.c.SDLK_UP => .up,
+            sdl.c.SDLK_DOWN => .down,
+            sdl.c.SDLK_TAB => .tab,
+            sdl.c.SDLK_SPACE => .space,
             else => .unknown,
         };
     }

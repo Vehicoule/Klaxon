@@ -122,15 +122,23 @@ Widgets: `l10nText`, `L10nText(Args)`, `l10nPlural`, `l10nPluralSig`
 `zig build i18n` (4 locales @embedFile, scripted switches, CI headless
 smoke). `docs/I18N.md`. Widgets 34/50.
 
-### 2c. Accessibility (week 2)
+### 2c. Accessibility (week 2) — DONE (PR #13)
 
-| # | Task | Deliverable |
-|---|---|---|
-| 2c.1 | `ui/semantics.zig` — semantic tree (finalize) | Role, label, hint, actions, focus |
-| 2c.2 | Linux: AT-SPI bridge (D-Bus) | TalkBack equivalent on Linux |
-| 2c.3 | Focus keyboard (Tab, arrows, focus ring) | Full keyboard navigation |
-| 2c.4 | Live regions (dynamic announcements) | Screen reader announces changes |
-| 2c.5 | `excludeSemantics` (hide decorative elements) | Clean a11y tree |
+`ui/semantics.zig` — `Semantics` per-node descriptor (role, label, hint,
+value, checked, actions) attached by the widget factories; semantic tree
+flatten (transparent containers lifted, label fallback, `exclude_semantics`
+hides decorative subtrees); `FocusManager` (Tab/Shift+Tab focus order,
+Enter/Space activation, `focused_sig`); focus ring painted by the host;
+live regions (`announce`); `SemanticsBridge` (C ABI, ADR-0009) with a
+`LogBridge` default. Keyboard: `Key.up/down/space` + `KeyEvent.shift`;
+the host routes Tab to the focus manager and falls back to semantic
+activation. Widgets carry roles (Text/Button/Toggle/Checkbox/Radio/Slider/
+TextField/Chip/Icon/Image); signal-driven widgets keep `checked`/`value`
+in sync. Demo: `zig build a11y` (CI headless smoke, scripted keyboard).
+`docs/A11Y.md`. Widgets 34/50.
+**Note**: the AT-SPI/D-Bus bridge (Linux) lands with the Linux target
+(Phase 3a) — the bridge interface is ready; it needs a session bus + the
+AT-SPI registry daemon (absent on the dev Mac).
 
 ### 2d. Widgets P1 — Navigation + Feedback (week 2)
 
@@ -147,7 +155,7 @@ smoke). `docs/I18N.md`. Widgets 34/50.
 | Tooltip | `widgets/tooltip.zig` |
 | SnackBar | `widgets/snackbar.zig` |
 
-**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR) — DONE (2b). A11y on Linux (AT-SPI). 40 widgets total (34 today).
+**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR) — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). 40 widgets total (34 today).
 
 ---
 
@@ -345,7 +353,7 @@ API reference: generated from Zig doc comments (English).
 - [x] Scroll (ListView/GridView virtualized, ScrollView, Scrollbar, wheel + drag) — Phase 1f
 - [x] Navigation (page stack, transitions, hero, deep links, back) — Phase 2a
 - [x] i18n (tr, ARB, RTL, pluralization, number/date formatting) — Phase 2b
-- [ ] A11y (6 bridges: AT-SPI, NSAccessibility, UIAccessibility, UIA, TalkBack, ARIA)
+- [x] A11y core (semantic tree, keyboard focus, live regions, bridge C ABI) — Phase 2c; the 6 OS bridges land per-platform (Phase 3)
 - [ ] DevTools (overlay, inspector, memory ledger, frame timeline)
 - [ ] Testing (unit, widget, golden ×150, integration)
 - [ ] Benchmarks (9 scenes, cross-framework comparison, published)

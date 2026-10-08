@@ -86,6 +86,7 @@ test "widgets" {
     std.testing.refAllDecls(ui.scroll);
     std.testing.refAllDecls(ui.navigator);
     std.testing.refAllDecls(ui.i18n);
+    std.testing.refAllDecls(ui.semantics);
     std.testing.refAllDecls(ui.node);
     std.testing.refAllDecls(ui.state);
     std.testing.refAllDecls(ui.input);
@@ -104,4 +105,8 @@ test "navigator demo" {
 
 test "i18n demo" {
     std.testing.refAllDecls(@import("i18n_main.zig"));
+}
+
+test "a11y demo" {
+    std.testing.refAllDecls(@import("a11y_main.zig"));
 }

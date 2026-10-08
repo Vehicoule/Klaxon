@@ -14,6 +14,7 @@
 // Store(T). Widgets call requestFocus/setOpenPopup/releaseNode through it.
 const std = @import("std");
 const node_mod = @import("node.zig");
+const semantics_mod = @import("semantics.zig");
 
 const Node = node_mod.Node;
 
@@ -44,6 +45,9 @@ pub const Key = enum(u32) {
     left = 0x100, // synthetic (host-mapped)
     right = 0x101,
     back = 0x102, // synthetic: hardware back (Android) / Escape (desktop)
+    up = 0x103, // synthetic (host-mapped)
+    down = 0x104,
+    space = 0x20, // the space bar (key_down, not text input)
     _,
 };
 
@@ -52,6 +56,7 @@ pub const KeyEvent = struct {
     kind: Kind,
     key: Key = .unknown, // key_down
     text: []const u8 = "", // text_input (UTF-8, borrowed from the event source)
+    shift: bool = false, // modifier (Phase 2c: Shift+Tab = focus previous)
 };
 
 /// Scroll (mouse wheel / touchpad) event — Phase 1f.
@@ -196,8 +201,11 @@ pub const InputRouter = struct {
         }
     }
 
-    pub fn dispatchKey(self: *InputRouter, ev: KeyEvent) void {
-        if (self.focused) |f| _ = sendKey(f, ev);
+    /// Dispatch a key event to the focused node's chain. Returns true when a
+    /// node handled it (Phase 2c: the host falls back to semantic activation).
+    pub fn dispatchKey(self: *InputRouter, ev: KeyEvent) bool {
+        if (self.focused) |f| return sendKey(f, ev);
+        return false;
     }
 
     pub fn setBackHandler(self: *InputRouter, h: ?BackHandler) void {
@@ -322,6 +330,7 @@ pub fn current() ?*InputRouter {
 
 pub fn requestFocus(node: ?*Node) void {
     if (current_router) |r| r.focus(node);
+    semantics_mod.routerFocusChanged(node); // keep the focus ring in sync (Phase 2c)
 }
 
 pub fn isFocused(node: *Node) bool {
@@ -481,13 +490,13 @@ test "keyboard goes to the focused node" {
     root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
     child.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
     var router = InputRouter{};
-    router.dispatchKey(.{ .kind = .text_input, .text = "x" }); // nobody focused
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "x" }); // nobody focused
     try std.testing.expectEqual(@as(usize, 0), recState(child).keys.items.len);
     router.focus(child);
-    router.dispatchKey(.{ .kind = .text_input, .text = "x" });
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "x" });
     try std.testing.expectEqual(@as(usize, 1), recState(child).keys.items.len);
     router.focus(null);
-    router.dispatchKey(.{ .kind = .key_down, .key = .enter });
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .enter });
     try std.testing.expectEqual(@as(usize, 1), recState(child).keys.items.len);
 }
 
