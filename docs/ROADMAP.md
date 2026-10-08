@@ -172,14 +172,14 @@ visuals. Refines the P0 Scrollbar (overlay + auto-hide).
 - Purpose: the no-code designer (Phase 2e) manipulates this data model; the framework
   renders it with the real widgets (WYSIWYG by construction).
 
-### 2d.1. Widgets P1 — Navigation + Feedback (batch 1) — IN PROGRESS (PR A done: 4/10)
+### 2d.1. Widgets P1 — Navigation + Feedback (batch 1) — IN PROGRESS (PR A DONE: 4/10, merged PR #16)
 
 | Widget | File | Status |
 |---|---|---|
-| AppBar | `widgets/app_bar.zig` | DONE (PR A) |
-| NavBar | `widgets/nav_bar.zig` | DONE (PR A) |
-| Drawer | `widgets/drawer.zig` | DONE (PR A) |
-| Tabs | `widgets/tabs.zig` | DONE (PR A) |
+| AppBar | `widgets/app_bar.zig` | DONE (PR #16) |
+| NavBar | `widgets/nav_bar.zig` | DONE (PR #16) |
+| Drawer | `widgets/drawer.zig` | DONE (PR #16) |
+| Tabs | `widgets/tabs.zig` | DONE (PR #16) |
 | BottomSheet | `widgets/bottom_sheet.zig` | NEXT (PR B) |
 | Dialog | `widgets/dialog.zig` | NEXT (PR B) |
 | ProgressIndicator (linear/circular) | `widgets/progress.zig` | NEXT (PR B) |
@@ -227,7 +227,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 38 today — 2d.1 PR A landed, PR B next). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 38 today — 2d.1 PR A merged (PR #16), PR B next). No-code designer v1 (2e).
 
 ---
 
