@@ -205,12 +205,12 @@ pub const InputRouter = struct {
     }
 
     /// Hardware back (Android) / Escape (desktop), Phase 2a. The focused
-    /// chain gets the key first (a text field may consume it); then the
-    /// registered back handler (the navigator pops). Returns true when the
-    /// back request was handled.
+    /// chain gets `.escape` first (a text field consumes it: Escape blurs);
+    /// then the registered back handler (the navigator pops). Returns true
+    /// when the back request was handled.
     pub fn dispatchBack(self: *InputRouter) bool {
         if (self.focused) |f| {
-            if (sendKey(f, .{ .kind = .key_down, .key = .back })) return true;
+            if (sendKey(f, .{ .kind = .key_down, .key = .escape })) return true;
         }
         if (self.back_handler) |h| return h.fn_ptr(h.userdata);
         return false;
@@ -341,6 +341,7 @@ pub fn releaseNode(node: *Node) void {
 const RecState = struct {
     log: std.array_list.Managed(PointerPhase),
     keys: std.array_list.Managed(KeyEvent.Kind),
+    last_key: Key = .unknown,
     handled: bool = true,
 };
 
@@ -367,6 +368,7 @@ fn recOnPointer(n: *Node, ev: PointerEvent) bool {
 fn recOnKey(n: *Node, ev: KeyEvent) bool {
     const s: *RecState = @ptrCast(@alignCast(n.state.?));
     s.keys.append(ev.kind) catch @panic("klaxon: out of memory");
+    s.last_key = ev.key;
     return s.handled;
 }
 fn recDeinit(n: *Node) void {
@@ -521,6 +523,19 @@ test "back: focused chain gets the key first, then the back handler" {
     router.setBackHandler(null);
     router.focus(null);
     try std.testing.expect(!router.dispatchBack());
+}
+
+test "back: the focused chain receives .escape (a text field blurs on it)" {
+    const root = try recNode(std.testing.allocator, true); // consumes every key
+    defer root.deinit();
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    var router = InputRouter{};
+    var handled: u32 = 0;
+    router.setBackHandler(.{ .fn_ptr = countBack, .userdata = &handled });
+    router.focus(root);
+    try std.testing.expect(router.dispatchBack());
+    try std.testing.expectEqual(@as(u32, 0), handled); // the focused chain consumed it
+    try std.testing.expectEqual(Key.escape, recState(root).last_key);
 }
 
 test "click outside an open popup closes it and is consumed (barrier)" {

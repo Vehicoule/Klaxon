@@ -37,9 +37,12 @@ const fg_dim: Color = 0xA0A0B0FF;
 const App = struct {
     allocator: std.mem.Allocator,
     nav: *nav_mod.Navigator,
+    /// Button callback contexts (allocated per button, freed at app teardown —
+    /// revisiting a page allocates new buttons, so the app owns the pool).
+    ctxs: std.array_list.Managed(*PushCtx),
 };
 
-// --- button callbacks (the ctx lives for the app's lifetime: page_allocator) ---
+// --- button callbacks ---
 
 const PushCtx = struct {
     nav: *nav_mod.Navigator,
@@ -62,8 +65,9 @@ fn popCb(userdata: ?*anyopaque) void {
 }
 
 fn pushButton(app: *App, label: []const u8, pattern: []const u8, param: ?nav_mod.Param) *Node {
-    const ctx = std.heap.page_allocator.create(PushCtx) catch @panic("klaxon: out of memory");
+    const ctx = app.allocator.create(PushCtx) catch @panic("klaxon: out of memory");
     ctx.* = .{ .nav = app.nav, .pattern = pattern, .param = param };
+    app.ctxs.append(ctx) catch @panic("klaxon: out of memory");
     const btn = widgets.input.button(app.allocator, .{ .fn_ptr = pushCb, .userdata = ctx }, .{}) catch @panic("klaxon: out of memory");
     btn.add(widgets.text.text(app.allocator, label, .{ .color = fg }) catch @panic("klaxon: out of memory"));
     return btn;
@@ -201,7 +205,11 @@ fn optsFromArgs(args: std.process.Args) Options {
 test "demo: the home page lays out" {
     var nav = nav_mod.Navigator.init(std.testing.allocator);
     defer nav.deinit();
-    var app = App{ .allocator = std.testing.allocator, .nav = &nav };
+    var app = App{ .allocator = std.testing.allocator, .nav = &nav, .ctxs = std.array_list.Managed(*PushCtx).init(std.testing.allocator) };
+    defer {
+        for (app.ctxs.items) |c| std.testing.allocator.destroy(c);
+        app.ctxs.deinit();
+    }
     try nav.define("home", .{ .fn_ptr = homePage, .userdata = &app }, .none);
     try nav.define("page_a", .{ .fn_ptr = pageA, .userdata = &app }, .slide);
     try nav.define("detail/{id}", .{ .fn_ptr = detailPage, .userdata = &app }, .slide);
@@ -231,7 +239,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var nav = nav_mod.Navigator.init(allocator);
     defer nav.deinit();
-    var app = App{ .allocator = allocator, .nav = &nav };
+    var app = App{ .allocator = allocator, .nav = &nav, .ctxs = std.array_list.Managed(*PushCtx).init(allocator) };
+    defer {
+        for (app.ctxs.items) |c| allocator.destroy(c);
+        app.ctxs.deinit();
+    }
     try nav.define("home", .{ .fn_ptr = homePage, .userdata = &app }, .none);
     try nav.define("page_a", .{ .fn_ptr = pageA, .userdata = &app }, .slide);
     try nav.define("page_b", .{ .fn_ptr = pageB, .userdata = &app }, .fade);

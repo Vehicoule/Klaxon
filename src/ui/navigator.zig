@@ -251,10 +251,12 @@ pub const Navigator = struct {
     fn buildPageFromSlice(nav: *Navigator, def: *const RouteDef, path: []const u8, params: []const Param) !Page {
         var owned = Params{};
         for (params) |p| {
-            if (!owned.add(try nav.allocator.dupe(u8, p.key), try nav.allocator.dupe(u8, p.value))) {
+            // Check capacity BEFORE duplicating: a rejected pair must not leak.
+            if (owned.len >= MAX_PARAMS) {
                 freeParams(nav.allocator, &owned);
                 return error.TooManyParams;
             }
+            _ = owned.add(try nav.allocator.dupe(u8, p.key), try nav.allocator.dupe(u8, p.value));
         }
         return nav.buildPageOwned(def, path, owned);
     }

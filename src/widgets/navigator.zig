@@ -107,7 +107,10 @@ fn pagePrePaint(n: *Node, ctx: *kx.Ctx) void {
     if (s.alpha < 1) ui.paint.layerAlpha(ctx, s.alpha);
 }
 fn pagePostPaint(n: *Node, ctx: *kx.Ctx) void {
-    _ = n;
+    const s = pageStateOf(n);
+    // layerAlpha pushed a saveLayer (a save + a layer): pop the layer first,
+    // then the wrapper's own save (canvas state stays balanced).
+    if (s.alpha < 1) ui.paint.restore(ctx);
     ui.paint.restore(ctx);
 }
 /// The children paint transformed: the hit area follows. A disabled wrapper
@@ -379,13 +382,24 @@ const NavViewState = struct {
         }
     }
 
-    /// While a transition runs, only the top page is interactive.
+    /// While a transition runs, only the top page is interactive — and
+    /// keyboard focus follows the top page (a focused node in a page that is
+    /// not on top loses focus).
     fn refreshHit(s: *NavViewState) void {
         for (s.pages_ui.items, 0..) |w, i| {
             pageStateOf(w).hit_enabled = (i == s.pages_ui.items.len - 1);
         }
         if (s.transition) |t| {
             if (t.exiting) |ex| pageStateOf(ex).hit_enabled = false;
+        }
+        if (input_mod.current()) |r| {
+            if (r.focused) |f| {
+                const top: ?*Node = if (s.pages_ui.items.len > 0)
+                    s.pages_ui.items[s.pages_ui.items.len - 1]
+                else
+                    null;
+                if (top == null or pageWrapperOf(f) != top) r.focus(null);
+            }
         }
     }
 
@@ -433,11 +447,19 @@ const NavViewState = struct {
             f.hero.add(f.child); // Hero is single-child: back at index 0
             heroStateOf(f.hero).flight_dst = null;
             f.flight.deinit(); // empty: the child was reparented
+            f.out_hero.visible = true; // the source page may stay in the stack
         }
         // The exiting page leaves the tree — unless it is still in the stack
-        // (an interrupted transition snaps it back into place).
+        // (an interrupted transition snaps it back into place). pages_ui is
+        // kept in sync: a retired wrapper is removed from it too.
         if (t.exiting) |ex| {
             if (!s.nav.containsPage(pageStateOf(ex).page_id)) {
+                for (s.pages_ui.items, 0..) |w, i| {
+                    if (w == ex) {
+                        _ = s.pages_ui.orderedRemove(i);
+                        break;
+                    }
+                }
                 _ = s.node.remove(ex);
                 ex.deinit();
             } else {
@@ -577,13 +599,18 @@ fn onChange(userdata: ?*anyopaque, kind: nav_mod.ChangeKind) void {
             const exiting = s.pages_ui.items[s.pages_ui.items.len - 1];
             const page = s.nav.current().?;
             const w = pageWrapper(s.node.allocator, page) catch @panic("klaxon: out of memory");
-            _ = s.node.remove(exiting);
+            // The new wrapper goes on top; the exiting wrapper STAYS in the
+            // tree (painted below) until the transition completes.
             s.node.add(w);
             s.pages_ui.items[s.pages_ui.items.len - 1] = w;
             w.layout(s.node.bounds);
             s.startTransition(page.route.transition, w, exiting, false);
         },
         .reset => {
+            // End any in-flight transition FIRST: it owns the exiting wrapper
+            // (finishTransition retires it — and syncs pages_ui — when its
+            // page left the stack).
+            if (s.transition != null) s.finishTransition();
             const root_w = s.pages_ui.items[0];
             const top_w = s.pages_ui.items[s.pages_ui.items.len - 1];
             // The middle pages (between the root and the top) leave
@@ -1025,6 +1052,149 @@ test "during a transition only the entering page is interactive" {
     try std.testing.expect(hit_left.? != ctx_a.last.?);
     // the entering page's zone (right) hits the entering page
     try std.testing.expectEqual(ctx_b.last.?, view.hitTest(150, 50).?);
+}
+
+test "popToRoot during a push finishes the transition before removing pages" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var nav = nav_mod.Navigator.init(std.testing.allocator);
+    defer nav.deinit();
+    var ctx_a = BuilderCtx{ .color = red };
+    var ctx_b = BuilderCtx{ .color = blue };
+    var ctx_c = BuilderCtx{ .color = green };
+    try defineColor(&nav, "a", &ctx_a, .none);
+    try defineColor(&nav, "b", &ctx_b, .slide);
+    try defineColor(&nav, "c", &ctx_c, .slide);
+    try nav.push("a", &.{});
+    const view = try navigatorView(std.testing.allocator, .{ .navigator = &nav, .duration_ms = 100, .curve = .{ .ease = .linear } });
+    defer view.deinit();
+    view.layout(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+    try nav.push("b", &.{});
+    tl.tick(0);
+    tl.tick(100); // b in place
+    try nav.push("c", &.{});
+    tl.tick(100); // c's tween starts here (lazy)
+    tl.tick(150); // mid-transition (exiting = b)
+    nav.popToRoot(); // interrupts: finishTransition retires b (its page left the stack)
+    const s = stateOf(NavViewState, view);
+    try std.testing.expectEqual(@as(usize, 1), nav.depth());
+    try std.testing.expectEqual(@as(usize, 1), s.pages_ui.items.len);
+    try std.testing.expectEqual(@as(usize, 2), view.children.items.len); // a + c (b retired)
+    try std.testing.expect(s.transition != null); // c animates out
+    tl.tick(200); // the reset tween starts here (lazy)
+    tl.tick(250);
+    tl.tick(300); // completes
+    try std.testing.expect(s.transition == null);
+    try std.testing.expectEqual(@as(usize, 1), view.children.items.len);
+}
+
+test "replace keeps the outgoing page in the tree until the transition completes" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var nav = nav_mod.Navigator.init(std.testing.allocator);
+    defer nav.deinit();
+    var ctx_a = BuilderCtx{ .color = red };
+    var ctx_b = BuilderCtx{ .color = blue };
+    var ctx_c = BuilderCtx{ .color = green };
+    try defineColor(&nav, "a", &ctx_a, .none);
+    try defineColor(&nav, "b", &ctx_b, .slide);
+    try defineColor(&nav, "c", &ctx_c, .slide);
+    try nav.push("a", &.{});
+    try nav.push("b", &.{});
+    const view = try navigatorView(std.testing.allocator, .{ .navigator = &nav, .duration_ms = 100, .curve = .{ .ease = .linear } });
+    defer view.deinit();
+    view.layout(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+
+    try nav.replace("c", &.{});
+    try std.testing.expectEqual(@as(usize, 3), view.children.items.len); // a + b (exiting) + c
+    tl.tick(0);
+    tl.tick(50);
+    try std.testing.expectEqual(@as(usize, 3), view.children.items.len); // b still painted mid-transition
+    tl.tick(100); // completes
+    try std.testing.expectEqual(@as(usize, 2), view.children.items.len); // b retired
+}
+
+test "transition damage covers the swept region (window space, no double transform)" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var nav = nav_mod.Navigator.init(std.testing.allocator);
+    defer nav.deinit();
+    var ctx_a = BuilderCtx{ .color = red };
+    var ctx_b = BuilderCtx{ .color = blue };
+    try defineColor(&nav, "a", &ctx_a, .none);
+    try defineColor(&nav, "b", &ctx_b, .slide);
+    try nav.push("a", &.{});
+    const view = try navigatorView(std.testing.allocator, .{ .navigator = &nav, .duration_ms = 100, .curve = .{ .ease = .linear } });
+    defer view.deinit();
+    view.layout(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+    try nav.push("b", &.{});
+    view.clearDamage();
+    tl.tick(0);
+    tl.tick(50); // entering dx=100, exiting dx=-30
+    try std.testing.expect(view.damage_valid);
+    // The swept region of both pages, in window space: x from -30 (exiting)
+    // to 400 (entering's right edge). markDirtyRect takes the rect in the
+    // node's PARENT space — damageRectUp applies the ANCESTORS' maps only,
+    // so the wrapper's own transform is not applied twice.
+    try std.testing.expectApproxEqAbs(@as(f32, -30), view.damage.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 430), view.damage.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 100), view.damage.h, 0.01);
+}
+
+test "push clears keyboard focus from the page below" {
+    anim.setCurrent(null); // snap transitions
+    var nav = nav_mod.Navigator.init(std.testing.allocator);
+    defer nav.deinit();
+    var ctx_a = BuilderCtx{ .color = red };
+    var ctx_b = BuilderCtx{ .color = blue };
+    try defineColor(&nav, "a", &ctx_a, .none);
+    try defineColor(&nav, "b", &ctx_b, .slide);
+    try nav.push("a", &.{});
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    const view = try navigatorView(std.testing.allocator, .{ .navigator = &nav });
+    defer view.deinit();
+    view.layout(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+    router.focus(ctx_a.last.?);
+    try std.testing.expect(router.focused != null);
+    try nav.push("b", &.{});
+    try std.testing.expect(router.focused == null); // the page below is not interactive
+    // focus inside the top page is kept
+    router.focus(ctx_b.last.?);
+    try std.testing.expect(router.focused != null);
+}
+
+test "hero: the source hero is visible again after the flight" {
+    var tl = testTimeline();
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var nav = nav_mod.Navigator.init(std.testing.allocator);
+    defer nav.deinit();
+    var ctx_a = HeroPageCtx{ .bg = red, .hero_w = 40, .hero_h = 40 };
+    var ctx_b = HeroPageCtx{ .bg = blue, .hero_w = 120, .hero_h = 120 };
+    try nav.define("a", .{ .fn_ptr = heroPageBuilder, .userdata = &ctx_a }, .slide);
+    try nav.define("b", .{ .fn_ptr = heroPageBuilder, .userdata = &ctx_b }, .slide);
+    try nav.push("a", &.{});
+    const view = try navigatorView(std.testing.allocator, .{ .navigator = &nav, .duration_ms = 100, .curve = .{ .ease = .linear } });
+    defer view.deinit();
+    view.layout(.{ .x = 0, .y = 0, .w = 200, .h = 200 });
+    try nav.push("b", &.{}); // flight: hero A hidden
+    try std.testing.expect(!ctx_a.hero_node.?.visible);
+    tl.tick(0);
+    tl.tick(100); // completes
+    try std.testing.expect(ctx_a.hero_node.?.visible); // restored (page A stays in the stack)
+    try std.testing.expect(nav.pop()); // back to A (a hero flight runs b → a)
+    tl.tick(100); // lazy start
+    tl.tick(200); // completes
+    try std.testing.expect(ctx_a.hero_node.?.visible); // the top page's hero, visible
 }
 
 // --- hero tests ---
