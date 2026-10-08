@@ -116,16 +116,6 @@ pub const Locale = struct {
             int_part = all[0..dot];
             frac_part = all[dot + 1 ..];
         }
-        if (opts.decimals) |d| {
-            // Pad or truncate the fraction to exactly d digits.
-            var frac_buf: [32]u8 = undefined;
-            const target: usize = d;
-            var i: usize = 0;
-            while (i < target) : (i += 1) {
-                frac_buf[i] = if (i < frac_part.len) frac_part[i] else '0';
-            }
-            frac_part = frac_buf[0..target];
-        }
         // Group the integer part (groups of 3, from the right).
         if (opts.grouping and int_part.len > 3) {
             const len = int_part.len;
@@ -141,7 +131,17 @@ pub const Locale = struct {
         } else {
             try buf.appendSlice(int_part);
         }
-        if (frac_part.len > 0) {
+        if (opts.decimals) |d| {
+            // Exactly d fraction digits, zero-padded (any precision — the
+            // digits go straight into the output buffer).
+            if (d > 0) {
+                try buf.appendSlice(loc.decimal_sep);
+                var i: usize = 0;
+                while (i < d) : (i += 1) {
+                    try buf.append(if (i < frac_part.len) frac_part[i] else '0');
+                }
+            }
+        } else if (frac_part.len > 0) {
             try buf.appendSlice(loc.decimal_sep);
             try buf.appendSlice(frac_part);
         }
@@ -173,9 +173,16 @@ pub const Locale = struct {
             const n = j - i;
             switch (ch) {
                 'y' => {
-                    // CLDR: y = full year, yy = 2-digit year.
-                    const year_str = try std.fmt.bufPrint(&year_buf, "{d}", .{date.year});
-                    try buf.appendSlice(if (n == 2) year_str[year_str.len - 2 ..] else year_str);
+                    // CLDR: y = full year, yy = 2-digit year (zero-padded,
+                    // correct for years < 10 too).
+                    if (n == 2) {
+                        // @mod is euclidean (always >= 0) — cast to unsigned:
+                        // Zig 0.17 pads signed ints with an explicit sign.
+                        const yy: u32 = @intCast(@mod(date.year, 100));
+                        try buf.appendSlice(try std.fmt.bufPrint(&num_buf, "{d:0>2}", .{yy}));
+                    } else {
+                        try buf.appendSlice(try std.fmt.bufPrint(&year_buf, "{d}", .{date.year}));
+                    }
                 },
                 'M' => {
                     const m = date.month - 1; // 0-based
@@ -353,8 +360,10 @@ pub const PluralBranch = struct {
 };
 
 pub const PluralMsg = struct {
-    branches: [8]PluralBranch = undefined,
+    branches: [16]PluralBranch = undefined, // up to 10 exact selectors + 6 categories
     len: u32 = 0,
+    prefix: []const u8 = "", // text before the block's opening '{'
+    suffix: []const u8 = "", // text after the block's closing '}'
 };
 
 /// Parse an ARB plural block: `{count, plural, =0 {...} one {...} other {...}}`.
@@ -364,12 +373,16 @@ pub fn parsePlural(msg: []const u8) ?PluralMsg {
     // The block opens at the '{' before the count name.
     const open = std.mem.lastIndexOfScalar(u8, msg[0..p], '{') orelse return null;
     var out = PluralMsg{};
+    out.prefix = msg[0..open];
     var i = p + ", plural,".len;
     while (i < msg.len) {
         // skip whitespace
         while (i < msg.len and msg[i] == ' ') i += 1;
         if (i >= msg.len) return null;
-        if (msg[i] == '}') return if (out.len > 0) out else null; // end of block
+        if (msg[i] == '}') {
+            out.suffix = msg[i + 1 ..];
+            return if (out.len > 0) out else null; // end of block
+        }
         var branch = PluralBranch{};
         if (msg[i] == '=') {
             // exact selector: =N
@@ -403,12 +416,10 @@ pub fn parsePlural(msg: []const u8) ?PluralMsg {
         }
         if (depth != 0) return null;
         branch.text = msg[text_start .. i - 1];
-        if (out.len < out.branches.len) {
-            out.branches[out.len] = branch;
-            out.len += 1;
-        }
+        if (out.len >= out.branches.len) return null; // too many branches — reject
+        out.branches[out.len] = branch;
+        out.len += 1;
     }
-    _ = open;
     return if (out.len > 0) out else null;
 }
 
@@ -575,18 +586,36 @@ pub const I18n = struct {
     }
 
     /// Register a locale (the I18n takes ownership). Re-registering a tag
-    /// replaces the locale (hot reload of translations).
+    /// replaces the locale (hot reload of translations): localized widgets
+    /// are invalidated even though the tag is unchanged, and a direction
+    /// flip fires `on_direction_changed`.
     pub fn addLocale(i18n: *I18n, loc: *Locale) !void {
+        var replaced_current: ?Direction = null;
         if (i18n.locales.get(loc.tag)) |old| {
             // Drop the old entry first: the map key aliases old.tag (owned).
             _ = i18n.locales.remove(loc.tag);
-            const was_current = i18n.current == old;
+            if (i18n.current == old) {
+                replaced_current = old.direction;
+                i18n.current = loc;
+            }
             old.deinit();
-            if (was_current) i18n.current = null;
         }
         try i18n.locales.put(loc.tag, loc);
         applyFormatData(loc);
         if (i18n.current == null) i18n.current = loc;
+        if (replaced_current) |old_dir| {
+            // Hot reload of the active locale: force-notify (Signal.set
+            // would suppress an unchanged tag) and fire the direction
+            // callback when the direction flipped.
+            i18n.locale_sig.notify();
+            if (loc.direction != old_dir) {
+                if (i18n.on_direction_changed) |cb| cb.fn_ptr(cb.userdata);
+            }
+        } else if (std.mem.eql(u8, loc.tag, i18n.fallback)) {
+            // Replacing the fallback catalog: displayed fallback
+            // translations may have changed — invalidate the widgets.
+            i18n.locale_sig.notify();
+        }
     }
 
     /// Load a locale from an ARB document (JSON). The direction is explicit
@@ -643,13 +672,41 @@ pub const I18n = struct {
         return interpolate(allocator, i18n.tr(key), args);
     }
 
+    /// Resolve a message and the tag of the locale that provided it (plural
+    /// rules must follow the message's locale, not the active one).
+    fn trTagged(i18n: *const I18n, key: []const u8) struct { msg: []const u8, tag: []const u8 } {
+        if (i18n.current) |cur| {
+            if (cur.messages.get(key)) |msg| return .{ .msg = msg, .tag = cur.tag };
+        }
+        if (i18n.locales.get(i18n.fallback)) |fb| {
+            if (fb.messages.get(key)) |msg| return .{ .msg = msg, .tag = fb.tag };
+        }
+        return .{ .msg = key, .tag = if (i18n.current) |c| c.tag else "" };
+    }
+
     /// Resolve a plural message for a count (ARB plural block + CLDR rules).
+    /// The block may be embedded in a longer message — the surrounding text
+    /// is interpolated around the selected branch.
     pub fn trPlural(i18n: *const I18n, allocator: std.mem.Allocator, key: []const u8, count: i64, args: anytype) ![]u8 {
-        const msg = i18n.tr(key);
+        const t = i18n.trTagged(key);
+        const msg = t.msg;
         if (parsePlural(msg)) |pm| {
-            const tag = if (i18n.current) |c| c.tag else "";
-            const branch = selectPlural(pm, tag, count) orelse return try allocator.dupe(u8, msg);
-            return interpolatePlural(allocator, branch, count, args);
+            const branch = selectPlural(pm, t.tag, count) orelse return try allocator.dupe(u8, msg);
+            if (pm.prefix.len == 0 and pm.suffix.len == 0) {
+                return interpolatePlural(allocator, branch, count, args);
+            }
+            const pre = try interpolate(allocator, pm.prefix, args);
+            defer allocator.free(pre);
+            const mid = try interpolatePlural(allocator, branch, count, args);
+            defer allocator.free(mid);
+            const post = try interpolate(allocator, pm.suffix, args);
+            defer allocator.free(post);
+            var buf = std.array_list.Managed(u8).init(allocator);
+            errdefer buf.deinit();
+            try buf.appendSlice(pre);
+            try buf.appendSlice(mid);
+            try buf.appendSlice(post);
+            return buf.toOwnedSlice();
         }
         return interpolate(allocator, msg, args);
     }
@@ -677,7 +734,7 @@ pub fn direction() Direction {
 
 const en_arb =
     \\{"@@locale": "en", "greeting": "Hello {name}!", "items": "{count, plural, =0 {No items} one {# item} other {# items}}",
-    \\ "plain": "Plain", "@greeting": {"description": "metadata"}, "num": "Number"}
+    \\ "plain": "Plain", "@greeting": {"description": "metadata"}, "num": "Number", "solo": "{count, plural, one {# item} other {# items}}"}
 ;
 const fr_arb =
     \\{"@@locale": "fr", "greeting": "Bonjour {name} !", "items": "{count, plural, =0 {Aucun élément} one {# élément} other {# éléments}}",
@@ -785,6 +842,80 @@ test "plural: branch placeholders interpolate alongside #" {
     const s = try i18n.trPlural(std.testing.allocator, "cart", 3, .{ .who = "Léa" });
     defer std.testing.allocator.free(s);
     try std.testing.expectEqualStrings("3 items in Léa's cart", s);
+}
+
+test "plural: 9+ branches parse (exact selectors + categories) + prefix/suffix captured" {
+    const pm = parsePlural("{count, plural, =0 {none} =1 {one} =2 {two} zero {z} one {o} two {t} few {f} many {m} other {other}}").?;
+    try std.testing.expectEqual(@as(u32, 9), pm.len);
+    try std.testing.expectEqualStrings("none", selectPlural(pm, "ar", 0).?);
+    try std.testing.expectEqualStrings("other", selectPlural(pm, "ar", 100).?);
+    try std.testing.expectEqualStrings("", pm.prefix);
+    try std.testing.expectEqualStrings("", pm.suffix);
+    // Embedded block: the surrounding text is captured.
+    const emb = parsePlural("You have {count, plural, one {# item} other {# items}} left").?;
+    try std.testing.expectEqualStrings("You have ", emb.prefix);
+    try std.testing.expectEqualStrings(" left", emb.suffix);
+}
+
+test "trPlural: embedded plural keeps the surrounding text" {
+    const i18n = try testI18n();
+    defer i18n.deinit();
+    try i18n.addArb("en", "{\"left\": \"You have {count, plural, one {# item} other {# items}} left\"}", .ltr);
+    try expectPlural(i18n, "left", 1, .{}, "You have 1 item left");
+    try expectPlural(i18n, "left", 2, .{}, "You have 2 items left");
+}
+
+test "trPlural: fallback message uses the fallback locale's plural rules" {
+    const i18n = try testI18n();
+    defer i18n.deinit();
+    // "solo" exists only in the fallback (en): en rules apply (one = 1,
+    // zero → other), not the active fr rules (one covers 0).
+    try i18n.setLocale("fr");
+    try expectPlural(i18n, "solo", 0, .{}, "0 items");
+    try expectPlural(i18n, "solo", 1, .{}, "1 item");
+    try expectPlural(i18n, "solo", 5, .{}, "5 items");
+}
+
+test "formatNumber: arbitrary precision (decimals > 32)" {
+    const i18n = try testI18n();
+    defer i18n.deinit();
+    const en = i18n.locales.get("en").?;
+    const s = try en.formatNumber(std.testing.allocator, 1.5, .{ .decimals = 33 });
+    defer std.testing.allocator.free(s);
+    try std.testing.expectEqualStrings("1.", s[0..2]);
+    try std.testing.expectEqual(@as(usize, 35), s.len); // "1." + 33 digits
+    try std.testing.expectEqual(@as(u8, '5'), s[2]);
+    for (s[3..]) |c| try std.testing.expectEqual(@as(u8, '0'), c);
+}
+
+test "formatDate: 2-digit year is zero-padded for years < 10" {
+    const i18n = try testI18n();
+    defer i18n.deinit();
+    const en = i18n.locales.get("en").?;
+    try expectDate(en, .{ .year = 1, .month = 1, .day = 1 }, .short, "1/1/01");
+    try expectDate(en, .{ .year = 9, .month = 12, .day = 31 }, .short, "12/31/09");
+}
+
+test "addLocale: replacing the active locale notifies widgets + direction callback" {
+    const i18n = try testI18n();
+    defer i18n.deinit();
+    var fired: u32 = 0;
+    var dir_flipped: u32 = 0;
+    i18n.locale_sig.subscribe(.{ .callback = .{ .fn_ptr = countFired, .userdata = &fired } });
+    i18n.on_direction_changed = .{ .fn_ptr = countFired, .userdata = &dir_flipped };
+    // Hot reload of the active locale: same tag, new text — force-notify.
+    try i18n.addArb("en", "{\"title\": \"Hi\"}", .ltr);
+    try std.testing.expectEqual(@as(u32, 1), fired);
+    try std.testing.expectEqualStrings("Hi", i18n.tr("title"));
+    try std.testing.expectEqual(@as(u32, 0), dir_flipped); // ltr → ltr
+    // Same tag with a direction flip — the direction callback fires.
+    try i18n.addArb("en", "{\"title\": \"Hi\"}", .rtl);
+    try std.testing.expectEqual(@as(u32, 2), fired);
+    try std.testing.expectEqual(@as(u32, 1), dir_flipped);
+    // Replacing the fallback catalog (current is another locale) notifies too.
+    try i18n.setLocale("fr"); // fired = 3
+    try i18n.addArb("en", "{\"title\": \"Hi\"}", .ltr); // fallback replaced → fired = 4
+    try std.testing.expectEqual(@as(u32, 4), fired);
 }
 
 test "formatNumber: grouping, separators, decimals, percent" {

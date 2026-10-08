@@ -70,14 +70,16 @@ fn copyFmt(s: []const u8, buf: []u8) []const u8 {
 }
 
 /// Recompute the locale-dependent display strings (number, date, direction).
-/// The strings live on the page allocator (app lifetime, bounded: 4 locales).
+/// The signals own their current string: the previous one is released.
 fn recompute(userdata: ?*anyopaque) void {
     const app: *App = @ptrCast(@alignCast(userdata.?));
     const loc = app.i18n.locale() orelse return;
-    const pa = std.heap.page_allocator;
-    const num = loc.formatNumber(pa, 1234567.891, .{ .decimals = 2 }) catch @panic("klaxon: out of memory");
+    const a = app.allocator;
+    const num = loc.formatNumber(a, 1234567.891, .{ .decimals = 2 }) catch @panic("klaxon: out of memory");
+    const date = loc.formatDate(a, demo_date, .medium) catch @panic("klaxon: out of memory");
+    a.free(app.num_sig.peek());
     app.num_sig.set(num);
-    const date = loc.formatDate(pa, demo_date, .medium) catch @panic("klaxon: out of memory");
+    a.free(app.date_sig.peek());
     app.date_sig.set(date);
     app.dir_sig.set(if (loc.direction == .rtl) "RTL" else "LTR");
 }
@@ -210,12 +212,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .allocator = allocator,
         .i18n = i18n,
         .count_sig = try ui.state.Signal(i64).init(allocator, 1),
-        .num_sig = try ui.state.Signal([]const u8).init(allocator, ""),
-        .date_sig = try ui.state.Signal([]const u8).init(allocator, ""),
+        .num_sig = try ui.state.Signal([]const u8).init(allocator, try allocator.dupe(u8, "")),
+        .date_sig = try ui.state.Signal([]const u8).init(allocator, try allocator.dupe(u8, "")),
         .dir_sig = try ui.state.Signal([]const u8).init(allocator, "LTR"),
         .ctxs = std.array_list.Managed(*LocaleCtx).init(allocator),
     };
     defer {
+        allocator.free(app.num_sig.peek());
+        allocator.free(app.date_sig.peek());
         app.count_sig.deinit();
         app.num_sig.deinit();
         app.date_sig.deinit();
@@ -252,12 +256,14 @@ test "demo: the tree lays out and survives locale switches (incl. RTL flip)" {
         .allocator = std.testing.allocator,
         .i18n = i18n,
         .count_sig = try ui.state.Signal(i64).init(std.testing.allocator, 1),
-        .num_sig = try ui.state.Signal([]const u8).init(std.testing.allocator, ""),
-        .date_sig = try ui.state.Signal([]const u8).init(std.testing.allocator, ""),
+        .num_sig = try ui.state.Signal([]const u8).init(std.testing.allocator, try std.testing.allocator.dupe(u8, "")),
+        .date_sig = try ui.state.Signal([]const u8).init(std.testing.allocator, try std.testing.allocator.dupe(u8, "")),
         .dir_sig = try ui.state.Signal([]const u8).init(std.testing.allocator, "LTR"),
         .ctxs = std.array_list.Managed(*LocaleCtx).init(std.testing.allocator),
     };
     defer {
+        std.testing.allocator.free(app.num_sig.peek());
+        std.testing.allocator.free(app.date_sig.peek());
         app.count_sig.deinit();
         app.num_sig.deinit();
         app.date_sig.deinit();

@@ -310,6 +310,17 @@ test "l10nText with args interpolates the placeholders" {
     try std.testing.expectEqualStrings("Bonjour Léa !", baseOf(node).text);
 }
 
+test "l10nText re-resolves on locale hot reload (same tag)" {
+    const i18n = try testI18n();
+    defer i18n_mod.setCurrent(null);
+    defer i18n.deinit();
+    const node = try l10nText(std.testing.allocator, i18n, "title", .{});
+    defer node.deinit();
+    try std.testing.expectEqualStrings("Demo", baseOf(node).text);
+    try i18n.addArb("en", "{\"title\": \"Hi\"}", .ltr); // hot reload, same tag
+    try std.testing.expectEqualStrings("Hi", baseOf(node).text);
+}
+
 test "l10nPlural selects the CLDR branch per locale" {
     const i18n = try testI18n();
     defer i18n_mod.setCurrent(null);
