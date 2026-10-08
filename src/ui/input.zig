@@ -24,6 +24,8 @@ const semantics_mod = @import("semantics.zig");
 
 const Node = node_mod.Node;
 
+pub const PointerCursor = node_mod.PointerCursor;
+
 pub const PointerPhase = enum { down, move, up, enter, leave, outside_down, hover_move };
 
 pub const PointerEvent = struct {
@@ -282,6 +284,11 @@ pub const InputRouter = struct {
         self.focused = node;
     }
 
+    /// The node currently hovered by the primary (mouse) pointer, if any.
+    pub fn hoveredNode(self: *InputRouter) ?*Node {
+        return self.hovered;
+    }
+
     /// Release every reference to a node being destroyed. No GC: widgets with
     /// input handlers call this from their deinit (dangling pointers are fatal).
     pub fn releaseNode(self: *InputRouter, node: *Node) void {
@@ -295,6 +302,24 @@ pub const InputRouter = struct {
         if (self.open_popup == node) self.open_popup = null;
     }
 };
+
+/// The pointer cursor for a hovered node (Phase 2d-0.5, desktop): the
+/// deepest node's VTable.cursor hook wins, then the semantic role
+/// (.button/.link → hand, .text_field → ibeam), else the default arrow.
+pub fn cursorForNode(node: ?*Node) PointerCursor {
+    var n = node;
+    while (n) |cur| : (n = cur.parent) {
+        if (cur.vtable.cursor) |c| return c(cur);
+        if (cur.semantics) |sem| {
+            switch (sem.role) {
+                .button, .link => return .hand,
+                .text_field => return .ibeam,
+                else => {},
+            }
+        }
+    }
+    return .default;
+}
 
 /// Deliver a pointer event to `node`, bubbling up to the root until handled.
 /// Hover phases are notifications: they keep bubbling past handlers that
@@ -559,6 +584,40 @@ test "hover phases bubble past a child that reports them handled" {
     // Interaction phases still stop at the claiming child.
     router.dispatchPointer(parent, .{ .phase = .down, .x = 50, .y = 50 });
     try std.testing.expectEqual(@as(usize, 3), recState(parent).log.items.len);
+}
+
+const cursor_hook_vtable = blk: {
+    var vt = rec_vtable;
+    vt.cursor = struct {
+        fn c(_: *Node) node_mod.PointerCursor {
+            return .move;
+        }
+    }.c;
+    break :blk vt;
+};
+
+test "cursors: cursorForNode maps the vtable hook, then the semantic role" {
+    // null / plain node → the default arrow
+    try std.testing.expectEqual(PointerCursor.default, cursorForNode(null));
+    const plain = try recNode(std.testing.allocator, false);
+    defer plain.deinit();
+    try std.testing.expectEqual(PointerCursor.default, cursorForNode(plain));
+    // a .button semantic on the parent → hand (seen from the child)
+    const parent = try recNode(std.testing.allocator, false);
+    defer parent.deinit();
+    const child = try recNode(std.testing.allocator, false);
+    parent.add(child);
+    semantics_mod.attach(parent, .{ .role = .button, .label = "ok" });
+    try std.testing.expectEqual(PointerCursor.hand, cursorForNode(child));
+    // a .text_field semantic on the child → ibeam
+    semantics_mod.attach(child, .{ .role = .text_field, .label = "name" });
+    try std.testing.expectEqual(PointerCursor.ibeam, cursorForNode(child));
+    // the vtable hook wins over the semantic role
+    const custom = try recNode(std.testing.allocator, false);
+    defer custom.deinit();
+    custom.vtable = &cursor_hook_vtable;
+    semantics_mod.attach(custom, .{ .role = .text_field, .label = "x" });
+    try std.testing.expectEqual(PointerCursor.move, cursorForNode(custom));
 }
 
 test "keyboard goes to the focused node" {

@@ -60,6 +60,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer host.deinit();
     input_mod.setCurrent(&host.input); // the router is process-global (single-window P0)
     ui.anim.setCurrent(&host.timeline); // the animation timeline, same pattern
+    host.cursors = true; // pointer cursors (Phase 2d-0.5): hand/ibeam over controls
 
     const g = try gallery_mod.Gallery.init(allocator);
     defer g.deinit();

@@ -30,6 +30,17 @@ pub const Stats = struct {
 
 pub const OnFrame = *const fn (ctx: ?*anyopaque, frame: u64) void;
 
+fn sdlSystemCursor(c: input_mod.PointerCursor) sdl.c.SDL_SystemCursor {
+    const id: c_int = switch (c) {
+        .default => sdl.c.SDL_SYSTEM_CURSOR_DEFAULT,
+        .hand => sdl.c.SDL_SYSTEM_CURSOR_POINTER,
+        .ibeam => sdl.c.SDL_SYSTEM_CURSOR_TEXT,
+        .move => sdl.c.SDL_SYSTEM_CURSOR_MOVE,
+        .wait => sdl.c.SDL_SYSTEM_CURSOR_WAIT,
+    };
+    return @intCast(id);
+}
+
 pub const Host = struct {
     allocator: std.mem.Allocator,
     window: *sdl.c.SDL_Window,
@@ -44,6 +55,12 @@ pub const Host = struct {
     input: input_mod.InputRouter,
     timeline: anim.Timeline,
     frame_start_ns: u64 = 0,
+    /// Pointer cursors (Phase 2d-0.5, desktop): the app sets this from the
+    /// theme's platform tokens (theme.platform.cursors).
+    cursors: bool = false,
+    cursors_unavailable: bool = false, // headless / no driver: fail-soft
+    current_cursor: input_mod.PointerCursor = .default,
+    cursor_cache: [5]?*sdl.c.SDL_Cursor = .{ null, null, null, null, null },
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -113,8 +130,31 @@ pub const Host = struct {
         };
     }
 
+    /// Pointer cursors (Phase 2d-0.5, desktop): map the hovered node to a
+    /// system cursor. Fail-soft: without a video driver the creation returns
+    /// null and cursors are simply never set.
+    fn updateCursor(host: *Host) void {
+        if (!host.cursors or host.cursors_unavailable) return;
+        const want = input_mod.cursorForNode(host.input.hoveredNode());
+        if (want == host.current_cursor) return;
+        const idx: usize = @backingInt(want);
+        const cur = host.cursor_cache[idx] orelse blk: {
+            const created = sdl.c.SDL_CreateSystemCursor(sdlSystemCursor(want)) orelse {
+                host.cursors_unavailable = true; // headless: no cursors
+                return;
+            };
+            host.cursor_cache[idx] = created;
+            break :blk created;
+        };
+        if (!sdl.c.SDL_SetCursor(cur)) return;
+        host.current_cursor = want;
+    }
+
     pub fn deinit(host: *Host) void {
         host.timeline.deinit();
+        for (host.cursor_cache) |c| {
+            if (c) |cur| sdl.c.SDL_DestroyCursor(cur);
+        }
         if (host.texture) |t| sdl.c.SDL_DestroyTexture(t);
         if (host.renderer) |r| sdl.c.SDL_DestroyRenderer(r);
         kx.c.kx_destroy(host.ctx);
@@ -190,6 +230,8 @@ pub const Host = struct {
             if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
             // Render when the tree is dirty (or the app ticks: continuous).
             if (!quit and (root.dirty or on_frame != null)) host.renderFrame(root);
+            // Pointer cursor follows the hovered node (desktop, Phase 2d-0.5).
+            host.updateCursor();
             // Pace the whole iteration to the frame budget (~120 fps active).
             host.paceIteration(iter_start_ns);
         }
