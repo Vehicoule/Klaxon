@@ -30,28 +30,45 @@ const golden = @import("golden.zig"); // tests
 /// Options type for widgets without options.
 pub const NoOptions = struct {};
 
-pub const BuildFn = *const fn (allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node;
+/// A live, signal-driven value that round-trips through serialization
+/// (toggle/checkbox "checked", slider "value"): initialized from the options
+/// on build, exported as the CURRENT signal value.
+pub const LiveBinding = struct {
+    signal: *anyopaque,
+    field: []const u8, // well-known serialized field name
+    read: *const fn (*anyopaque) Value,
+};
+
+pub const BuildResult = struct {
+    node: *Node,
+    live: ?LiveBinding = null,
+};
+
+pub const BuildFn = *const fn (allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult;
+
+pub const SchemaFn = *const fn (allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema;
 
 pub const WidgetEntry = struct {
     name: []const u8,
     category: []const u8, // "layout" | "display" | "input" | ...
     build: BuildFn,
+    schema: SchemaFn, // options type -> inspector schema (comptime-generated)
 };
 
 /// Registry v1: layout + display + input. Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
-    .{ .name = "column", .category = "layout", .build = buildColumn },
-    .{ .name = "row", .category = "layout", .build = buildRow },
-    .{ .name = "padding", .category = "layout", .build = buildPadding },
-    .{ .name = "center", .category = "layout", .build = buildCenter },
-    .{ .name = "constrained_box", .category = "layout", .build = buildConstrainedBox },
-    .{ .name = "divider", .category = "display", .build = buildDivider },
-    .{ .name = "text", .category = "display", .build = buildText },
-    .{ .name = "icon", .category = "display", .build = buildIcon },
-    .{ .name = "button", .category = "input", .build = buildButton },
-    .{ .name = "toggle", .category = "input", .build = buildToggle },
-    .{ .name = "checkbox", .category = "input", .build = buildCheckbox },
-    .{ .name = "slider", .category = "input", .build = buildSlider },
+    .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
+    .{ .name = "row", .category = "layout", .build = buildRow, .schema = schemaRow },
+    .{ .name = "padding", .category = "layout", .build = buildPadding, .schema = schemaPadding },
+    .{ .name = "center", .category = "layout", .build = buildCenter, .schema = schemaCenter },
+    .{ .name = "constrained_box", .category = "layout", .build = buildConstrainedBox, .schema = schemaConstrainedBox },
+    .{ .name = "divider", .category = "display", .build = buildDivider, .schema = schemaDivider },
+    .{ .name = "text", .category = "display", .build = buildText, .schema = schemaText },
+    .{ .name = "icon", .category = "display", .build = buildIcon, .schema = schemaIcon },
+    .{ .name = "button", .category = "input", .build = buildButton, .schema = schemaButton },
+    .{ .name = "toggle", .category = "input", .build = buildToggle, .schema = schemaToggle },
+    .{ .name = "checkbox", .category = "input", .build = buildCheckbox, .schema = schemaCheckbox },
+    .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
 };
 
 pub fn byName(name: []const u8) ?WidgetEntry {
@@ -65,14 +82,20 @@ pub const BuildCtx = struct {
     allocator: std.mem.Allocator,
     records: std.AutoHashMap(*Node, Record),
     tracked: std.array_list.Managed(Tracked),
+    journal: std.array_list.Managed(JournalEntry), // per-build rollback log
 
     const Record = struct {
         entry_name: []const u8,
         opts: Value, // owned snapshot — nodes borrow strings from it
+        live: ?LiveBinding = null,
     };
     const Tracked = struct {
         ptr: *anyopaque,
         deinit_fn: *const fn (*anyopaque) void, // Signal.deinit frees itself
+    };
+    const JournalEntry = union(enum) {
+        record: *Node,
+        signal: Tracked,
     };
 
     pub fn init(allocator: std.mem.Allocator) BuildCtx {
@@ -80,6 +103,7 @@ pub const BuildCtx = struct {
             .allocator = allocator,
             .records = std.AutoHashMap(*Node, Record).init(allocator),
             .tracked = std.array_list.Managed(Tracked).init(allocator),
+            .journal = std.array_list.Managed(JournalEntry).init(allocator),
         };
     }
 
@@ -87,6 +111,7 @@ pub const BuildCtx = struct {
         ctx.clear();
         ctx.records.deinit();
         ctx.tracked.deinit();
+        ctx.journal.deinit();
     }
 
     /// Free every record + tracked allocation; the ctx stays usable. The tree
@@ -101,21 +126,64 @@ pub const BuildCtx = struct {
         ctx.records.clearRetainingCapacity();
         for (ctx.tracked.items) |t| t.deinit_fn(t.ptr);
         ctx.tracked.clearRetainingCapacity();
+        ctx.journal.clearRetainingCapacity();
+    }
+
+    /// Undo every record/signal created after `mark` — a failed build leaves
+    /// no stale records keyed by dead nodes (their addresses can be reused).
+    fn rollback(ctx: *BuildCtx, mark: usize) void {
+        while (ctx.journal.items.len > mark) {
+            const e = ctx.journal.pop() orelse break;
+            switch (e) {
+                .record => |n| {
+                    if (ctx.records.fetchRemove(n)) |kv| kv.value.opts.deinit(ctx.allocator);
+                },
+                .signal => |t| {
+                    for (ctx.tracked.items, 0..) |tr, i| {
+                        if (tr.ptr == t.ptr) {
+                            _ = ctx.tracked.swapRemove(i);
+                            break;
+                        }
+                    }
+                    t.deinit_fn(t.ptr);
+                },
+            }
+        }
     }
 
     fn track(ctx: *BuildCtx, ptr: *anyopaque, deinit_fn: *const fn (*anyopaque) void) !void {
-        try ctx.tracked.append(.{ .ptr = ptr, .deinit_fn = deinit_fn });
+        const t = Tracked{ .ptr = ptr, .deinit_fn = deinit_fn };
+        try ctx.tracked.append(t);
+        ctx.journal.append(.{ .signal = t }) catch {
+            deinit_fn(ptr);
+            _ = ctx.tracked.pop();
+        };
     }
 
-    /// Stores the snapshot (takes ownership on success).
-    fn recordAdopt(ctx: *BuildCtx, n: *Node, entry_name: []const u8, opts: Value) !void {
-        ctx.records.put(n, .{ .entry_name = entry_name, .opts = opts }) catch |e| return e;
+    /// Stores the snapshot + live binding (owns `opts` — frees it on failure).
+    fn recordAdopt(ctx: *BuildCtx, n: *Node, entry_name: []const u8, opts: Value, live: ?LiveBinding) !void {
+        ctx.records.put(n, .{ .entry_name = entry_name, .opts = opts, .live = live }) catch |e| {
+            opts.deinit(ctx.allocator);
+            return e;
+        };
+        ctx.journal.append(.{ .record = n }) catch |e| {
+            if (ctx.records.fetchRemove(n)) |kv| kv.value.opts.deinit(ctx.allocator);
+            return e;
+        };
     }
 };
 
 // --- tree <-> data ---
 
 pub fn treeFromValue(ctx: *BuildCtx, v: Value) !*Node {
+    const mark = ctx.journal.items.len;
+    return treeFromValueInner(ctx, v) catch |e| {
+        ctx.rollback(mark); // failed build: no stale records/signals
+        return e;
+    };
+}
+
+fn treeFromValueInner(ctx: *BuildCtx, v: Value) !*Node {
     const name_v = v.get("name") orelse return error.MissingName;
     const name = switch (name_v) {
         .string => |s| s,
@@ -127,19 +195,17 @@ pub fn treeFromValue(ctx: *BuildCtx, v: Value) !*Node {
     // The snapshot backs the node's borrowed strings — build from the
     // ctx-owned copy, not from the caller's Value.
     const snapshot = try opts.dupe(ctx.allocator);
-    const node = entry.build(ctx.allocator, snapshot, ctx) catch |e| {
+    const res = entry.build(ctx.allocator, snapshot, ctx) catch |e| {
         snapshot.deinit(ctx.allocator); // build failed: no record yet
         return e;
     };
+    const node = res.node;
     errdefer node.deinit();
-    ctx.recordAdopt(node, entry.name, snapshot) catch |e| {
-        snapshot.deinit(ctx.allocator);
-        return e;
-    };
+    try ctx.recordAdopt(node, entry.name, snapshot, res.live);
     if (v.get("children")) |c| {
         switch (c) {
             .array => |arr| for (arr) |cv| {
-                const child = try treeFromValue(ctx, cv);
+                const child = try treeFromValueInner(ctx, cv);
                 node.add(child);
             },
             else => return error.ExpectedArray,
@@ -159,8 +225,14 @@ pub fn treeToValue(ctx: *BuildCtx, root: *Node, allocator: std.mem.Allocator) !V
         fields.deinit();
     }
     try fields.append(.{ .name = try allocator.dupe(u8, "name"), .value = .{ .string = try allocator.dupe(u8, rec.entry_name) } });
-    // Canonical form: empty options / children are omitted (round-trip exact).
-    if (rec.opts == .object and rec.opts.object.len > 0) {
+    // Canonical form: empty options / children are omitted (round-trip
+    // exact) — unless a live value must round-trip: signal widgets always
+    // carry their current value.
+    if (rec.live) |lb| {
+        var obj = if (rec.opts == .object) try rec.opts.dupe(allocator) else Value{ .object = &.{} };
+        try obj.set(allocator, lb.field, lb.read(lb.signal));
+        try fields.append(.{ .name = try allocator.dupe(u8, "options"), .value = obj });
+    } else if (rec.opts == .object and rec.opts.object.len > 0) {
         try fields.append(.{ .name = try allocator.dupe(u8, "options"), .value = try rec.opts.dupe(allocator) });
     }
     var children = std.array_list.Managed(Value).init(allocator);
@@ -193,48 +265,48 @@ pub fn treeToJson(ctx: *BuildCtx, root: *Node, allocator: std.mem.Allocator) ![]
 
 // --- per-widget build wrappers ---
 
-fn buildColumn(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildColumn(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return layout_w.column(allocator, try value_mod.optionsFromValue(layout_w.FlexOptions, opts, null, null));
+    return .{ .node = try layout_w.column(allocator, try value_mod.optionsFromValue(layout_w.FlexOptions, opts, null, null)) };
 }
 
-fn buildRow(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildRow(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return layout_w.row(allocator, try value_mod.optionsFromValue(layout_w.FlexOptions, opts, null, null));
+    return .{ .node = try layout_w.row(allocator, try value_mod.optionsFromValue(layout_w.FlexOptions, opts, null, null)) };
 }
 
-fn buildPadding(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildPadding(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return layout_w.padding(allocator, try value_mod.optionsFromValue(ui.layout.EdgeInsets, opts, null, null));
+    return .{ .node = try layout_w.padding(allocator, try value_mod.optionsFromValue(ui.layout.EdgeInsets, opts, null, null)) };
 }
 
-fn buildCenter(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildCenter(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = opts;
     _ = ctx;
-    return layout_w.center(allocator);
+    return .{ .node = try layout_w.center(allocator) };
 }
 
-fn buildConstrainedBox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildConstrainedBox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return layout_w.constrainedBox(allocator, try value_mod.optionsFromValue(layout_w.ConstrainedBoxOptions, opts, null, null));
+    return .{ .node = try layout_w.constrainedBox(allocator, try value_mod.optionsFromValue(layout_w.ConstrainedBoxOptions, opts, null, null)) };
 }
 
-fn buildDivider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildDivider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return divider_w.divider(allocator, try value_mod.optionsFromValue(divider_w.DividerOptions, opts, null, null));
+    return .{ .node = try divider_w.divider(allocator, try value_mod.optionsFromValue(divider_w.DividerOptions, opts, null, null)) };
 }
 
-fn buildText(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildText(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
     const topts = try value_mod.optionsFromValue(text_w.TextOptions, opts, null, null);
     const str: []const u8 = if (opts.get("text")) |t| switch (t) {
         .string => |s| s,
         else => "",
     } else "";
-    return text_w.text(allocator, str, topts);
+    return .{ .node = try text_w.text(allocator, str, topts) };
 }
 
-fn buildIcon(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildIcon(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
     const iopts = try value_mod.optionsFromValue(icon_w.IconOptions, opts, null, null);
     const name_str: []const u8 = if (opts.get("icon")) |t| switch (t) {
@@ -242,19 +314,29 @@ fn buildIcon(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror
         else => "star",
     } else "star";
     const iname = std.meta.stringToEnum(icon_w.IconName, name_str) orelse return error.UnknownIcon;
-    return icon_w.icon(allocator, iname, iopts);
+    return .{ .node = try icon_w.icon(allocator, iname, iopts) };
 }
 
-fn buildButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return input_w.button(allocator, null, try value_mod.optionsFromValue(input_w.ButtonOptions, opts, null, null));
+    return .{ .node = try input_w.button(allocator, null, try value_mod.optionsFromValue(input_w.ButtonOptions, opts, null, null)) };
 }
 
-fn buildToggle(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildToggle(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const topts = try value_mod.optionsFromValue(input_w.ToggleOptions, opts, null, null);
-    const sig = try state.Signal(bool).init(allocator, false); // *Signal(bool)
+    const checked: bool = if (opts.get("checked")) |c| switch (c) {
+        .bool => |b| b,
+        else => false,
+    } else false;
+    const sig = try state.Signal(bool).init(allocator, checked); // *Signal(bool)
     try ctx.track(sig, deinitBoolSignal);
-    return input_w.toggle(allocator, sig, null, topts);
+    const n = try input_w.toggle(allocator, sig, null, topts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "checked", .read = readBoolSignal } };
+}
+
+fn readBoolSignal(p: *anyopaque) Value {
+    const s: *state.Signal(bool) = @ptrCast(@alignCast(p));
+    return .{ .bool = s.peek() };
 }
 
 fn deinitBoolSignal(p: *anyopaque) void {
@@ -262,23 +344,97 @@ fn deinitBoolSignal(p: *anyopaque) void {
     s.deinit(); // Signal.deinit frees itself (state.zig)
 }
 
-fn buildCheckbox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildCheckbox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const copts = try value_mod.optionsFromValue(input_w.CheckboxOptions, opts, null, null);
-    const sig = try state.Signal(bool).init(allocator, false); // *Signal(bool)
+    const checked: bool = if (opts.get("checked")) |c| switch (c) {
+        .bool => |b| b,
+        else => false,
+    } else false;
+    const sig = try state.Signal(bool).init(allocator, checked); // *Signal(bool)
     try ctx.track(sig, deinitBoolSignal);
-    return input_w.checkbox(allocator, sig, null, copts);
+    const n = try input_w.checkbox(allocator, sig, null, copts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "checked", .read = readBoolSignal } };
 }
 
-fn buildSlider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!*Node {
+fn buildSlider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const sopts = try value_mod.optionsFromValue(input_w.SliderOptions, opts, null, null);
-    const sig = try state.Signal(f32).init(allocator, 0.5); // *Signal(f32)
+    const val: f32 = if (opts.get("value")) |x| switch (x) {
+        .float => |f| @floatCast(f),
+        .int => |i| @floatFromInt(i),
+        else => 0.5,
+    } else 0.5;
+    const sig = try state.Signal(f32).init(allocator, val); // *Signal(f32)
     try ctx.track(sig, deinitF32Signal);
-    return input_w.slider(allocator, sig, null, sopts);
+    const n = try input_w.slider(allocator, sig, null, sopts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "value", .read = readF32Signal } };
+}
+
+fn readF32Signal(p: *anyopaque) Value {
+    const s: *state.Signal(f32) = @ptrCast(@alignCast(p));
+    return .{ .float = s.peek() };
 }
 
 fn deinitF32Signal(p: *anyopaque) void {
     const s: *state.Signal(f32) = @ptrCast(@alignCast(p));
     s.deinit(); // Signal.deinit frees itself (state.zig)
+}
+
+// --- per-widget inspector schemas (comptime-generated from options types) ---
+
+fn schemaColumn(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(layout_w.FlexOptions, allocator);
+}
+
+fn schemaRow(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(layout_w.FlexOptions, allocator);
+}
+
+fn schemaPadding(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(ui.layout.EdgeInsets, allocator);
+}
+
+fn schemaCenter(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(NoOptions, allocator);
+}
+
+fn schemaConstrainedBox(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(layout_w.ConstrainedBoxOptions, allocator);
+}
+
+fn schemaDivider(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(divider_w.DividerOptions, allocator);
+}
+
+fn schemaText(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(text_w.TextOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "text", .text, &.{}, .{ .string = "" });
+}
+
+fn schemaIcon(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(icon_w.IconOptions, allocator);
+    const ei = @typeInfo(icon_w.IconName).@"enum";
+    var buf: [ei.field_names.len][]const u8 = undefined;
+    inline for (ei.field_names, 0..) |fname, i| buf[i] = fname;
+    return value_mod.appendSchemaProp(base, allocator, "icon", .select, &buf, .{ .string = "star" });
+}
+
+fn schemaButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(input_w.ButtonOptions, allocator);
+}
+
+fn schemaToggle(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(input_w.ToggleOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "checked", .toggle, &.{}, .{ .bool = false });
+}
+
+fn schemaCheckbox(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(input_w.CheckboxOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "checked", .toggle, &.{}, .{ .bool = false });
+}
+
+fn schemaSlider(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(input_w.SliderOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "value", .number, &.{}, .{ .float = 0.5 });
 }
 
 // --- tests ---
@@ -358,10 +514,69 @@ test "registry: errors — unknown widget, missing name, type mismatch, unregist
     try std.testing.expectError(error.UnknownWidget, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"nope\"}"));
     try std.testing.expectError(error.MissingName, treeFromJson(&ctx, std.testing.allocator, "{\"options\":{}}"));
     try std.testing.expectError(error.TypeMismatch, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"text\",\"options\":{\"size\":\"big\"}}"));
+    try std.testing.expectError(error.ValueOutOfRange, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"divider\",\"options\":{\"color\":-1}}"));
     try std.testing.expectError(error.ExpectedArray, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":{}}"));
     const alien = try golden.solidBox(std.testing.allocator, 4, 4, 0xFF);
     defer alien.deinit();
     try std.testing.expectError(error.UnregisteredNode, treeToValue(&ctx, alien, std.testing.allocator));
+}
+
+test "registry: a failed build leaves no stale records or signals" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // column[ text, unknown ] — fails on the second child
+    try std.testing.expectError(error.UnknownWidget, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"ok\"}},{\"name\":\"nope\"}]}"));
+    try std.testing.expectEqual(@as(usize, 0), ctx.records.count());
+    try std.testing.expectEqual(@as(usize, 0), ctx.tracked.items.len);
+    try std.testing.expectEqual(@as(usize, 0), ctx.journal.items.len);
+    // column[ toggle, unknown ] — fails after a signal was created
+    try std.testing.expectError(error.UnknownWidget, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":[{\"name\":\"toggle\"},{\"name\":\"nope\"}]}"));
+    try std.testing.expectEqual(@as(usize, 0), ctx.records.count());
+    try std.testing.expectEqual(@as(usize, 0), ctx.tracked.items.len);
+    // the ctx is still usable afterwards
+    const node = try treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"row\"}");
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("{\"name\":\"row\"}", out);
+}
+
+test "registry: signal widgets round-trip their live value" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"column\",\"children\":[{\"name\":\"toggle\",\"options\":{\"checked\":true}},{\"name\":\"slider\",\"options\":{\"value\":0.25}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+fn findProp(schema: []const value_mod.PropSchema, name: []const u8) ?value_mod.EditorKind {
+    for (schema) |p| if (std.mem.eql(u8, p.name, name)) return p.kind;
+    return null;
+}
+
+test "registry: every entry exposes an inspector schema" {
+    for (widgets) |w| {
+        const schema = try w.schema(std.testing.allocator);
+        for (schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(schema);
+    }
+    const text_schema = try byName("text").?.schema(std.testing.allocator);
+    defer {
+        for (text_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(text_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(text_schema, "text").?);
+    try std.testing.expectEqual(value_mod.EditorKind.color, findProp(text_schema, "color").?);
+    const toggle_schema = try byName("toggle").?.schema(std.testing.allocator);
+    defer {
+        for (toggle_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(toggle_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(toggle_schema, "checked").?);
+    try std.testing.expectEqual(value_mod.EditorKind.color, findProp(toggle_schema, "track_on").?);
 }
 
 test "registry: slot options build subtrees via the slot builder" {

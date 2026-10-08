@@ -103,11 +103,31 @@ pub const Value = union(enum) {
         return null;
     }
 
+    /// Upsert an object field (takes ownership of `new`; names are owned).
+    pub fn set(v: *Value, allocator: std.mem.Allocator, name: []const u8, new: Value) !void {
+        if (v.* != .object) return error.ExpectedObject;
+        for (v.*.object) |*f| {
+            if (std.mem.eql(u8, f.name, name)) {
+                f.value.deinit(allocator);
+                f.value = new;
+                return;
+            }
+        }
+        const duped_name = try allocator.dupe(u8, name);
+        const grown = allocator.realloc(v.*.object, v.*.object.len + 1) catch |e| {
+            allocator.free(duped_name);
+            return e;
+        };
+        grown[grown.len - 1] = .{ .name = duped_name, .value = new };
+        v.*.object = grown;
+    }
+
     /// Deep equality. Numbers compare numerically across int/float (JSON has
-    /// one number type); objects compare order-insensitively.
+    /// one number type) — but two ints compare exactly (f64 would lose
+    /// precision above 2^53); objects compare order-insensitively.
     pub fn eql(a: Value, b: Value) bool {
         if (a == .null or b == .null) return a == .null and b == .null;
-        if (isNum(a) and isNum(b)) return numF(a) == numF(b);
+        if (isNum(a) and isNum(b)) return numEql(a, b);
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         switch (a) {
             .bool => |x| return x == b.bool,
@@ -140,12 +160,30 @@ fn isNum(v: Value) bool {
     };
 }
 
-fn numF(v: Value) f64 {
-    return switch (v) {
-        .int => |i| @floatFromInt(i),
-        .float => |f| f,
+fn numEql(a: Value, b: Value) bool {
+    // called only when both are numeric (isNum)
+    switch (a) {
+        .int => |ai| return switch (b) {
+            .int => |bi| ai == bi, // exact — no f64 round-trip
+            .float => |bf| intFloatEql(ai, bf),
+            else => unreachable,
+        },
+        .float => |af| return switch (b) {
+            .int => |bi| intFloatEql(bi, af),
+            .float => |bf| af == bf,
+            else => unreachable,
+        },
         else => unreachable,
-    };
+    }
+}
+
+/// Exact int/float equality: an integral float equals an int iff it converts
+/// back to that exact int (non-integral floats never equal an int).
+fn intFloatEql(i: i64, f: f64) bool {
+    if (!std.math.isFinite(f)) return false;
+    if (f != @floor(f)) return false;
+    if (f < @as(f64, @floatFromInt(std.math.minInt(i64))) or f >= @as(f64, @floatFromInt(std.math.maxInt(i64)))) return false;
+    return @as(i64, @intFromFloat(f)) == i;
 }
 
 // --- JSON ---
@@ -304,12 +342,19 @@ fn fieldFromValue(comptime FT: type, v: Value, slot_builder: ?SlotBuilder, slot_
             else => error.TypeMismatch,
         },
         .int => return switch (v) {
-            .int => |i| @intCast(i),
-            .float => |f| @intFromFloat(f),
+            // range-checked: never trap on a hostile document
+            .int => |i| std.math.cast(FT, i) orelse return error.ValueOutOfRange,
+            .float => |f| blk: {
+                if (!std.math.isFinite(f)) return error.ValueOutOfRange;
+                const t = @trunc(f);
+                if (t < @as(f64, @floatFromInt(std.math.minInt(FT))) or t > @as(f64, @floatFromInt(std.math.maxInt(FT)))) return error.ValueOutOfRange;
+                const wide = @as(i128, @intFromFloat(t)); // |t| < 2^63: safe
+                break :blk std.math.cast(FT, wide) orelse return error.ValueOutOfRange;
+            },
             else => error.TypeMismatch,
         },
         .float => return switch (v) {
-            .float => |f| @floatCast(f),
+            .float => |f| try floatTo(FT, f),
             .int => |i| @floatFromInt(i),
             else => error.TypeMismatch,
         },
@@ -378,6 +423,13 @@ fn valueOfField(allocator: std.mem.Allocator, comptime FT: type, val: FT, descri
         .@"struct" => return try valueFromOptions(allocator, FT, val, describe_node, userdata),
         else => return error.UnsupportedFieldType,
     }
+}
+
+/// f64 -> float field, range-checked (f32 overflow / non-finite rejected).
+fn floatTo(comptime FT: type, f: f64) !FT {
+    if (!std.math.isFinite(f)) return error.ValueOutOfRange;
+    if (FT == f32 and @abs(f) > std.math.floatMax(f32)) return error.ValueOutOfRange;
+    return @floatCast(f);
 }
 
 fn isNodePtr(comptime T: type) bool {
@@ -468,6 +520,21 @@ fn unwrapOptional(comptime FT: type) type {
         .optional => |o| o.child,
         else => FT,
     };
+}
+
+/// Append a property to a schema list (grows it; `default` is duped/owned,
+/// `enum_tags` is duped when non-empty, `name` stays comptime/not-owned).
+pub fn appendSchemaProp(list: []PropSchema, allocator: std.mem.Allocator, name: []const u8, kind: EditorKind, enum_tags: []const []const u8, default: Value) ![]PropSchema {
+    var duped_tags = enum_tags;
+    if (enum_tags.len > 0) duped_tags = try allocator.dupe([]const u8, enum_tags);
+    const duped_default = try default.dupe(allocator);
+    const grown = allocator.realloc(list, list.len + 1) catch |e| {
+        allocator.free(duped_tags);
+        duped_default.deinit(allocator);
+        return e;
+    };
+    grown[grown.len - 1] = .{ .name = name, .kind = kind, .enum_tags = duped_tags, .default = duped_default };
+    return grown;
 }
 
 /// Color fields are detected by name (Color is a u32 alias — indistinguishable
@@ -575,6 +642,41 @@ test "value: type mismatch errors" {
     defer bad_enum.deinit(std.testing.allocator);
     try std.testing.expectError(error.UnknownEnumTag, optionsFromValue(TestOpts, bad_enum, null, null));
     try std.testing.expectError(error.ExpectedObject, optionsFromValue(TestOpts, Value{ .int = 5 }, null, null));
+}
+
+test "value: eql keeps large integers distinct and mixed numerics exact" {
+    try std.testing.expect(!Value.eql(Value{ .int = 9007199254740992 }, Value{ .int = 9007199254740993 }));
+    try std.testing.expect(Value.eql(Value{ .int = 9007199254740992 }, Value{ .int = 9007199254740992 }));
+    try std.testing.expect(Value.eql(Value{ .int = 2 }, Value{ .float = 2.0 }));
+    try std.testing.expect(!Value.eql(Value{ .int = 2 }, Value{ .float = 2.5 }));
+    try std.testing.expect(!Value.eql(Value{ .int = 9007199254740993 }, Value{ .float = 9007199254740992.0 }));
+}
+
+test "value: out-of-range numbers are rejected, not trapped" {
+    const neg = try parseJson(std.testing.allocator, "{\"bg\":-1}");
+    defer neg.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ValueOutOfRange, optionsFromValue(TestOpts, neg, null, null));
+    const big = try parseJson(std.testing.allocator, "{\"bg\":4294967296}");
+    defer big.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ValueOutOfRange, optionsFromValue(TestOpts, big, null, null));
+    const huge = try parseJson(std.testing.allocator, "{\"radius\":1e300}");
+    defer huge.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ValueOutOfRange, optionsFromValue(TestOpts, huge, null, null));
+    // in-range values still convert (incl. float -> int truncation)
+    const ok = try parseJson(std.testing.allocator, "{\"bg\":4294967295,\"radius\":4.9}");
+    defer ok.deinit(std.testing.allocator);
+    const o = try optionsFromValue(TestOpts, ok, null, null);
+    try std.testing.expectEqual(@as(u32, 4294967295), o.bg);
+    try std.testing.expectEqual(@as(f32, 4.9), o.radius);
+}
+
+test "value: set upserts object fields" {
+    var v = try parseJson(std.testing.allocator, "{\"a\":1}");
+    defer v.deinit(std.testing.allocator);
+    try v.set(std.testing.allocator, "a", .{ .int = 2 });
+    try v.set(std.testing.allocator, "b", .{ .string = try std.testing.allocator.dupe(u8, "x") });
+    try std.testing.expectEqual(@as(i64, 2), v.get("a").?.int);
+    try std.testing.expectEqualStrings("x", v.get("b").?.string);
 }
 
 test "value: schemaOf kinds, enum tags, defaults" {
