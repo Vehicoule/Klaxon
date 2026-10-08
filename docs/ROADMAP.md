@@ -140,6 +140,13 @@ in sync. Demo: `zig build a11y` (CI headless smoke, scripted keyboard).
 (Phase 3a) — the bridge interface is ready; it needs a session bus + the
 AT-SPI registry daemon (absent on the dev Mac).
 
+### 2d-0. Design tokens — Material 3 Expressive (prerequisite) — DONE
+
+- `src/theme.zig` rewritten: full M3E token set (ColorScheme light/dark M3 baselines, TypeScale, Shape, Elevation, Motion with M3E spring presets, StateLayers, Spacing). Decision: ADR-0010; reference + widget → spec mapping: `docs/DESIGN-SYSTEM.md`.
+- `ui/anim.zig`: `Spring.fromDampingRatio` (M3E stiffness + damping-ratio spec parameterization → engine k/c).
+- Gallery migrated to M3 roles; state layers replace hardcoded hover colors.
+- P1 widgets consume tokens (`theme: Theme` in the options struct, default `theme.light`); P0 widgets migrate progressively.
+
 ### 2d. Widgets P1 — Navigation + Feedback (week 2)
 
 | Widget | File |
@@ -155,7 +162,7 @@ AT-SPI registry daemon (absent on the dev Mac).
 | Tooltip | `widgets/tooltip.zig` |
 | SnackBar | `widgets/snackbar.zig` |
 
-**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR) — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). 40 widgets total (34 today).
+**Exit criteria Phase 2**: Navigation works (push/pop/transitions/hero/deep links/back) — DONE (2a). i18n works (FR/EN/JA/AR) — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). Design tokens M3E in place — DONE (2d-0). 40 widgets total (34 today).
 
 ---
 
@@ -354,6 +361,7 @@ API reference: generated from Zig doc comments (English).
 - [x] Navigation (page stack, transitions, hero, deep links, back) — Phase 2a
 - [x] i18n (tr, ARB, RTL, pluralization, number/date formatting) — Phase 2b
 - [x] A11y core (semantic tree, keyboard focus, live regions, bridge C ABI) — Phase 2c; the 6 OS bridges land per-platform (Phase 3)
+- [x] Design system: Material 3 Expressive tokens (ADR-0010, `docs/DESIGN-SYSTEM.md`) — Phase 2d-0
 - [ ] DevTools (overlay, inspector, memory ledger, frame timeline)
 - [ ] Testing (unit, widget, golden ×150, integration)
 - [ ] Benchmarks (9 scenes, cross-framework comparison, published)

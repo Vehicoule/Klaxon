@@ -108,7 +108,7 @@ pub const Gallery = struct {
         g.saved_grid = 0;
         g.dark_mode = try state.Signal(bool).init(allocator, true);
         errdefer g.dark_mode.deinit();
-        g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.bg);
+        g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
         errdefer g.bg_sig.deinit();
         g.press_count = try state.Signal(u32).init(allocator, 0);
         errdefer g.press_count.deinit();
@@ -124,7 +124,7 @@ pub const Gallery = struct {
         errdefer g.chip_sel.deinit();
         g.scale_toggle = try state.Signal(bool).init(allocator, false);
         errdefer g.scale_toggle.deinit();
-        g.pulse_sig = try state.Signal(Color).init(allocator, theme_mod.dark.accent);
+        g.pulse_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.primary);
         errdefer g.pulse_sig.deinit();
         g.offset_sig = try state.Signal(anim_w.Offset).init(allocator, .{});
         errdefer g.offset_sig.deinit();
@@ -171,7 +171,7 @@ pub const Gallery = struct {
         }
         g.root.add(fresh);
         g.tree = fresh;
-        g.bg_sig.set(theme.bg); // animates the root bg to the new theme
+        g.bg_sig.set(theme.colors.surface); // animates the root bg to the new theme
         if (had_tree) {
             // Restore the scroll offsets: lay out first (the scrollables
             // need their viewport/content sizes to clamp correctly).
@@ -235,27 +235,28 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
 fn buildHeader(g: *Gallery, theme: Theme) !*Node {
     const a = g.allocator;
     const header = try container_w.container(a, .{
-        .color = theme.surface,
+        .color = theme.colors.surface_container,
         .radius = 12,
         .padding = EdgeInsets.all(12),
-        .border_color = theme.border,
+        .border_color = theme.colors.outline_variant,
         .border_width = 1,
     });
     const row = try layout.row(a, .{ .gap = 12, .main_align = .space_between, .cross_align = .center });
     header.add(row);
     const titles = try layout.column(a, .{ .gap = 2 });
-    titles.add(try text_w.text(a, "Klaxon Gallery", .{ .size = 24, .bold = true, .color = theme.text }));
-    titles.add(try text_w.text(a, "31 widgets · dark/light themes · gestures · animations · scroll 10k", .{ .size = 12, .color = theme.text_dim }));
+    titles.add(try text_w.text(a, "Klaxon Gallery", .{ .size = 24, .bold = true, .color = theme.colors.on_surface }));
+    titles.add(try text_w.text(a, "31 widgets · dark/light themes · gestures · animations · scroll 10k", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     row.add(titles);
     const right = try layout.row(a, .{ .gap = 8, .cross_align = .center });
     const toggle = try input_w.toggle(a, g.dark_mode, .{ .fn_ptr = themeToggleCb, .userdata = g }, .{
-        .track_on = theme.accent,
-        .track_off = theme.border,
-        .knob = theme.text,
+        .track_on = theme.colors.primary,
+        .track_off = theme.colors.surface_container_highest,
+        .knob_on = theme.colors.on_primary,
+        .knob_off = theme.colors.outline,
     });
     g.refs.theme_toggle = toggle;
     right.add(toggle);
-    right.add(try text_w.BoundText(bool).text(a, g.dark_mode, fmtMode, .{ .size = 13, .color = theme.text_dim }));
+    right.add(try text_w.BoundText(bool).text(a, g.dark_mode, fmtMode, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     row.add(right);
     return header;
 }
@@ -265,29 +266,30 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
     const col = try layout.column(a, .{ .gap = 10 });
     // Button + bound press count
     const r1 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
-    const btn = try input_w.button(a, .{ .fn_ptr = pressCb, .userdata = g }, .{ .bg = theme.accent, .bg_hover = theme.accent_hover });
-    btn.add(try text_w.text(a, "Press me", .{ .size = 14, .color = 0xFFFFFFFF }));
+    const btn = try input_w.button(a, .{ .fn_ptr = pressCb, .userdata = g }, .{ .bg = theme.colors.primary, .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover), .bg_pressed = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.pressed) });
+    btn.add(try text_w.text(a, "Press me", .{ .size = 14, .color = theme.colors.on_primary }));
     g.refs.demo_button = btn;
     r1.add(btn);
-    const press_text = try text_w.BoundText(u32).text(a, g.press_count, fmtPress, .{ .size = 13, .color = theme.text });
+    const press_text = try text_w.BoundText(u32).text(a, g.press_count, fmtPress, .{ .size = 13, .color = theme.colors.on_surface });
     g.refs.press_text = press_text;
     r1.add(press_text);
     col.add(r1);
     // Toggle + Checkbox + Chip
     const r2 = try layout.row(a, .{ .gap = 16, .cross_align = .center });
-    r2.add(try input_w.toggle(a, g.feat_toggle, null, .{ .track_on = theme.accent, .track_off = theme.border, .knob = theme.text }));
-    r2.add(try text_w.text(a, "Toggle", .{ .size = 13, .color = theme.text }));
+    r2.add(try input_w.toggle(a, g.feat_toggle, null, .{ .track_on = theme.colors.primary, .track_off = theme.colors.surface_container_highest, .knob_on = theme.colors.on_primary, .knob_off = theme.colors.outline }));
+    r2.add(try text_w.text(a, "Toggle", .{ .size = 13, .color = theme.colors.on_surface }));
     r2.add(try input_w.checkbox(a, g.feat_check, null, .{
-        .box_color = theme.surface_2,
-        .border = theme.border,
-        .check = theme.text,
-        .accent = theme.accent,
+        .box_color = theme.colors.surface_container_high,
+        .border = theme.colors.outline_variant,
+        .check = theme.colors.on_primary,
+        .accent = theme.colors.primary,
     }));
-    r2.add(try text_w.text(a, "Checkbox", .{ .size = 13, .color = theme.text }));
+    r2.add(try text_w.text(a, "Checkbox", .{ .size = 13, .color = theme.colors.on_surface }));
     const chip = try input_w.chip(a, "Chip", g.chip_sel, .{ .fn_ptr = chipCb, .userdata = g }, null, .{
-        .bg = theme.surface_2,
-        .bg_selected = theme.accent,
-        .color = theme.text,
+        .bg = theme.colors.surface_container_high,
+        .bg_selected = theme.colors.primary_container,
+        .color = theme.colors.on_surface,
+        .color_selected = theme.colors.on_primary_container,
     });
     g.refs.chip = chip;
     r2.add(chip);
@@ -296,48 +298,48 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
     const r3 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
     for (radio_labels, 0..) |label, i| {
         r3.add(try input_w.Radio(u32).radio(a, g.radio_group, @intCast(i), .{
-            .ring = theme.border,
-            .track = theme.surface_2,
-            .dot = theme.accent,
+            .ring = theme.colors.outline_variant,
+            .track = theme.colors.surface_container_high,
+            .dot = theme.colors.primary,
         }));
-        r3.add(try text_w.text(a, label, .{ .size = 13, .color = theme.text }));
+        r3.add(try text_w.text(a, label, .{ .size = 13, .color = theme.colors.on_surface }));
     }
-    r3.add(try text_w.BoundText(u32).text(a, g.radio_group, fmtRadio, .{ .size = 13, .color = theme.text_dim }));
+    r3.add(try text_w.BoundText(u32).text(a, g.radio_group, fmtRadio, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(r3);
     // Slider
     const r4 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
     r4.add(try input_w.slider(a, g.slider_sig, null, .{
-        .track = theme.surface_2,
-        .fill = theme.accent,
-        .knob = theme.text,
+        .track = theme.colors.surface_container_high,
+        .fill = theme.colors.primary,
+        .knob = theme.colors.on_surface,
         .default_width = 160,
     }));
-    r4.add(try text_w.BoundText(f32).text(a, g.slider_sig, fmtSlider, .{ .size = 13, .color = theme.text }));
+    r4.add(try text_w.BoundText(f32).text(a, g.slider_sig, fmtSlider, .{ .size = 13, .color = theme.colors.on_surface }));
     col.add(r4);
     // TextField + echo
     const r5 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
     const tf = try input_w.textField(a, .{
-        .color = theme.text,
-        .hint = theme.text_dim,
-        .bg = theme.surface_2,
+        .color = theme.colors.on_surface,
+        .hint = theme.colors.on_surface_variant,
+        .bg = theme.colors.surface_container_high,
         .placeholder = "Type here...",
         .initial = g.saved_tf[0..g.saved_tf_len], // restored across theme switches
     }, .{ .fn_ptr = echoCb, .userdata = g }, null);
     g.refs.text_field = tf;
     r5.add(tf);
-    r5.add(try text_w.BoundText(StatusBuf).text(a, g.echo_sig, fmtStatus, .{ .size = 13, .color = theme.text_dim }));
+    r5.add(try text_w.BoundText(StatusBuf).text(a, g.echo_sig, fmtStatus, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(r5);
     // Dropdown + picked item
     const r6 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
     const dd = try input_w.dropdown(a, &dropdown_items, .{
-        .bg = theme.surface_2,
-        .menu_bg = theme.surface,
-        .color = theme.text,
+        .bg = theme.colors.surface_container_high,
+        .menu_bg = theme.colors.surface_container,
+        .color = theme.colors.on_surface,
         .initial_selected = g.saved_dd, // restored across theme switches
     }, .{ .fn_ptr = pickCb, .userdata = g });
     g.refs.dropdown = dd;
     r6.add(dd);
-    r6.add(try text_w.BoundText(StatusBuf).text(a, g.pick_sig, fmtStatus, .{ .size = 13, .color = theme.text_dim }));
+    r6.add(try text_w.BoundText(StatusBuf).text(a, g.pick_sig, fmtStatus, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(r6);
     return col;
 }
@@ -356,15 +358,15 @@ fn buildGestureSection(g: *Gallery, theme: Theme) !*Node {
         .on_pinch = .{ .fn_ptr = gPinch, .userdata = g },
         .on_rotate = .{ .fn_ptr = gRotate, .userdata = g },
     } });
-    const pad = try container_w.container(a, .{ .color = theme.surface_2, .radius = 8, .padding = EdgeInsets.all(12) });
+    const pad = try container_w.container(a, .{ .color = theme.colors.surface_container_high, .radius = 8, .padding = EdgeInsets.all(12) });
     const c = try layout.center(a);
-    c.add(try text_w.text(a, "Tap · double-tap · long-press · pan · swipe · pinch · rotate", .{ .size = 13, .color = theme.text_dim }));
+    c.add(try text_w.text(a, "Tap · double-tap · long-press · pan · swipe · pinch · rotate", .{ .size = 13, .color = theme.colors.on_surface_variant }));
     pad.add(c);
     det.add(pad);
     const box = try layout.constrainedBox(a, .{ .min_h = 96 });
     box.add(det);
     col.add(box);
-    col.add(try text_w.BoundText(StatusBuf).text(a, g.status_sig, fmtStatus, .{ .size = 13, .color = theme.text }));
+    col.add(try text_w.BoundText(StatusBuf).text(a, g.status_sig, fmtStatus, .{ .size = 13, .color = theme.colors.on_surface }));
     return col;
 }
 
@@ -377,25 +379,25 @@ fn buildAnimSection(g: *Gallery, theme: Theme) !*Node {
     pulse.add(try layout.constrainedBox(a, .{ .min_w = 96, .min_h = 48, .max_w = 96, .max_h = 48 }));
     const pulse_col = try layout.column(a, .{ .gap = 6, .cross_align = .center });
     pulse_col.add(pulse);
-    pulse_col.add(try text_w.text(a, "AnimatedContainer — color pulses", .{ .size = 12, .color = theme.text_dim }));
+    pulse_col.add(try text_w.text(a, "AnimatedContainer — color pulses", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     row.add(pulse_col);
     // AnimatedOffset: the Slide button moves the box.
     const slide = try anim_w.animatedOffset(a, .{ .offset = g.offset_sig });
-    const slide_box = try container_w.container(a, .{ .color = theme.accent, .radius = 8 });
+    const slide_box = try container_w.container(a, .{ .color = theme.colors.primary, .radius = 8 });
     slide_box.add(try layout.constrainedBox(a, .{ .min_w = 64, .min_h = 44, .max_w = 64, .max_h = 44 }));
     slide.add(slide_box);
-    const slide_btn = try input_w.button(a, .{ .fn_ptr = slideCb, .userdata = g }, .{ .bg = theme.surface_2 });
-    slide_btn.add(try text_w.text(a, "Slide", .{ .size = 13, .color = theme.text }));
+    const slide_btn = try input_w.button(a, .{ .fn_ptr = slideCb, .userdata = g }, .{ .bg = theme.colors.surface_container_high, .bg_hover = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.on_surface, theme.state.hover), .bg_pressed = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.on_surface, theme.state.pressed) });
+    slide_btn.add(try text_w.text(a, "Slide", .{ .size = 13, .color = theme.colors.on_surface }));
     const slide_col = try layout.column(a, .{ .gap = 6, .cross_align = .center });
     slide_col.add(slide);
     slide_col.add(slide_btn);
     row.add(slide_col);
     // AnimatedScale: the toggle grows the box.
     const scale = try anim_w.animatedScale(a, .{ .scale = g.scale_sig });
-    const scale_box = try container_w.container(a, .{ .color = theme.danger, .radius = 8 });
+    const scale_box = try container_w.container(a, .{ .color = theme.colors.@"error", .radius = 8 });
     scale_box.add(try layout.constrainedBox(a, .{ .min_w = 48, .min_h = 48, .max_w = 48, .max_h = 48 }));
     scale.add(scale_box);
-    const big = try input_w.toggle(a, g.scale_toggle, .{ .fn_ptr = bigToggleCb, .userdata = g }, .{ .track_on = theme.accent, .track_off = theme.border, .knob = theme.text });
+    const big = try input_w.toggle(a, g.scale_toggle, .{ .fn_ptr = bigToggleCb, .userdata = g }, .{ .track_on = theme.colors.primary, .track_off = theme.colors.surface_container_highest, .knob_on = theme.colors.on_primary, .knob_off = theme.colors.outline });
     const scale_col = try layout.column(a, .{ .gap = 6, .cross_align = .center });
     scale_col.add(scale);
     scale_col.add(big);
@@ -408,63 +410,63 @@ fn buildLayoutSection(a: std.mem.Allocator, theme: Theme) !*Node {
     const col = try layout.column(a, .{ .gap = 10 });
     // Row + Container
     const r1 = try layout.row(a, .{ .gap = 8, .cross_align = .center });
-    r1.add(try colorBox(a, theme.accent, 72, 40, 8));
-    r1.add(try colorBox(a, theme.surface_2, 72, 40, 8));
-    r1.add(try colorBox(a, theme.danger, 72, 40, 8));
-    r1.add(try text_w.text(a, "Row + Container", .{ .size = 12, .color = theme.text_dim }));
+    r1.add(try colorBox(a, theme.colors.primary, 72, 40, 8));
+    r1.add(try colorBox(a, theme.colors.surface_container_high, 72, 40, 8));
+    r1.add(try colorBox(a, theme.colors.@"error", 72, 40, 8));
+    r1.add(try text_w.text(a, "Row + Container", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     col.add(r1);
-    col.add(try divider_w.divider(a, .{ .color = theme.border }));
+    col.add(try divider_w.divider(a, .{ .color = theme.colors.outline_variant }));
     // Grid (3 columns)
     const grid = try layout.grid(a, .{ .columns = 3, .gap = 8 });
     for (0..6) |i| {
-        const color = if (i % 3 == 0) theme.accent else if (i % 3 == 1) theme.surface_2 else theme.danger;
+        const color = if (i % 3 == 0) theme.colors.primary else if (i % 3 == 1) theme.colors.surface_container_high else theme.colors.@"error";
         grid.add(try colorBox(a, color, 0, 32, 6));
     }
     col.add(grid);
-    col.add(try text_w.text(a, "Grid — 3 columns", .{ .size = 12, .color = theme.text_dim }));
-    col.add(try divider_w.divider(a, .{ .color = theme.border }));
+    col.add(try text_w.text(a, "Grid — 3 columns", .{ .size = 12, .color = theme.colors.on_surface_variant }));
+    col.add(try divider_w.divider(a, .{ .color = theme.colors.outline_variant }));
     // Stack + Center
     const stack = try layout.stack(a, .{ .fit = .loose, .alignment = .center });
-    stack.add(try colorBox(a, theme.surface_2, 160, 72, 8));
+    stack.add(try colorBox(a, theme.colors.surface_container_high, 160, 72, 8));
     const ctr = try layout.center(a);
-    ctr.add(try colorBox(a, theme.accent, 72, 40, 8));
+    ctr.add(try colorBox(a, theme.colors.primary, 72, 40, 8));
     stack.add(ctr);
     col.add(stack);
-    col.add(try text_w.text(a, "Stack + Center", .{ .size = 12, .color = theme.text_dim }));
+    col.add(try text_w.text(a, "Stack + Center", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     // Align + Padding (+ Container border)
     const r3 = try layout.row(a, .{ .gap = 16, .cross_align = .center });
-    const al_box = try container_w.container(a, .{ .border_color = theme.border, .border_width = 1, .radius = 8, .padding = EdgeInsets.all(4) });
+    const al_box = try container_w.container(a, .{ .border_color = theme.colors.outline_variant, .border_width = 1, .radius = 8, .padding = EdgeInsets.all(4) });
     const al = try layout.alignTo(a, .{ .alignment = .bottom_right });
-    al.add(try colorBox(a, theme.danger, 48, 28, 6));
+    al.add(try colorBox(a, theme.colors.@"error", 48, 28, 6));
     al_box.add(al);
     r3.add(al_box);
     const pad = try layout.padding(a, EdgeInsets.all(10));
-    pad.add(try colorBox(a, theme.surface_2, 64, 32, 6));
+    pad.add(try colorBox(a, theme.colors.surface_container_high, 64, 32, 6));
     r3.add(pad);
-    r3.add(try text_w.text(a, "Align · Padding · Container border", .{ .size = 12, .color = theme.text_dim }));
+    r3.add(try text_w.text(a, "Align · Padding · Container border", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     col.add(r3);
     return col;
 }
 
 fn buildTypoSection(a: std.mem.Allocator, theme: Theme) !*Node {
     const col = try layout.column(a, .{ .gap = 8 });
-    col.add(try text_w.text(a, "Heading — Text widget", .{ .size = 20, .bold = true, .color = theme.text }));
-    col.add(try text_w.text(a, "Body text follows the active theme; RichText mixes styled spans:", .{ .size = 13, .color = theme.text_dim }));
+    col.add(try text_w.text(a, "Heading — Text widget", .{ .size = 20, .bold = true, .color = theme.colors.on_surface }));
+    col.add(try text_w.text(a, "Body text follows the active theme; RichText mixes styled spans:", .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(try text_w.richText(a, &.{
-        .{ .text = "Rich", .size = 16, .bold = true, .color = theme.accent },
-        .{ .text = "Text — ", .size = 16, .color = theme.text },
-        .{ .text = "spans", .size = 16, .bold = true, .color = theme.danger },
-        .{ .text = " in ", .size = 16, .color = theme.text_dim },
-        .{ .text = "colors", .size = 16, .bold = true, .color = theme.accent },
+        .{ .text = "Rich", .size = 16, .bold = true, .color = theme.colors.primary },
+        .{ .text = "Text — ", .size = 16, .color = theme.colors.on_surface },
+        .{ .text = "spans", .size = 16, .bold = true, .color = theme.colors.@"error" },
+        .{ .text = " in ", .size = 16, .color = theme.colors.on_surface_variant },
+        .{ .text = "colors", .size = 16, .bold = true, .color = theme.colors.primary },
     }));
     const icons = try layout.row(a, .{ .gap = 10, .cross_align = .center });
     const icon_names = [_]icon_w.IconName{ .play, .pause, .stop, .heart, .star, .home, .search, .menu };
-    for (icon_names) |name| icons.add(try icon_w.icon(a, name, .{ .size = 20, .color = theme.text }));
-    icons.add(try text_w.text(a, "Icon", .{ .size = 12, .color = theme.text_dim }));
+    for (icon_names) |name| icons.add(try icon_w.icon(a, name, .{ .size = 20, .color = theme.colors.on_surface }));
+    icons.add(try text_w.text(a, "Icon", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     col.add(icons);
     const img_row = try layout.row(a, .{ .gap = 12, .cross_align = .center });
     img_row.add(try makeImage(a));
-    img_row.add(try text_w.text(a, "Image — 96×64 RGBA gradient", .{ .size = 12, .color = theme.text_dim }));
+    img_row.add(try text_w.text(a, "Image — 96×64 RGBA gradient", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     col.add(img_row);
     return col;
 }
@@ -472,7 +474,7 @@ fn buildTypoSection(a: std.mem.Allocator, theme: Theme) !*Node {
 fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
     const a = g.allocator;
     const col = try layout.column(a, .{ .gap = 12 });
-    col.add(try text_w.text(a, "ListView — 10 000 items (virtualized: ~7 live nodes) + Scrollbar", .{ .size = 12, .color = theme.text_dim }));
+    col.add(try text_w.text(a, "ListView — 10 000 items (virtualized: ~7 live nodes) + Scrollbar", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     const list = try widgets.list_view.listView(a, .{
         .item_count = 10_000,
         .factory = .{ .fn_ptr = listItem, .userdata = &g.list_ctx },
@@ -485,12 +487,12 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
     list_row.add(list_box);
     // The Scrollbar fills max_h like the lists — bound it (the content
     // Column is vertically unbounded inside the ScrollView).
-    const sb = try widgets.scrollbar.scrollbar(a, .{ .scroll = list, .track_color = theme.border, .thumb_color = theme.text_dim });
+    const sb = try widgets.scrollbar.scrollbar(a, .{ .scroll = list, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
     const sb_box = try layout.constrainedBox(a, .{ .max_h = 260 });
     sb_box.add(sb);
     list_row.add(sb_box);
     col.add(list_row);
-    col.add(try text_w.text(a, "GridView — 500 items, 3 columns + Scrollbar", .{ .size = 12, .color = theme.text_dim }));
+    col.add(try text_w.text(a, "GridView — 500 items, 3 columns + Scrollbar", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     const grid = try widgets.grid_view.gridView(a, .{
         .item_count = 500,
         .factory = .{ .fn_ptr = gridItem, .userdata = &g.list_ctx },
@@ -502,18 +504,18 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
     const grid_box = try layout.constrainedBox(a, .{ .max_w = 880, .max_h = 160 });
     grid_box.add(grid);
     grid_row.add(grid_box);
-    const gsb = try widgets.scrollbar.scrollbar(a, .{ .scroll = grid, .track_color = theme.border, .thumb_color = theme.text_dim });
+    const gsb = try widgets.scrollbar.scrollbar(a, .{ .scroll = grid, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
     const gsb_box = try layout.constrainedBox(a, .{ .max_h = 160 });
     gsb_box.add(gsb);
     grid_row.add(gsb_box);
     col.add(grid_row);
-    col.add(try text_w.text(a, "ScrollView — single child, wheel + drag", .{ .size = 12, .color = theme.text_dim }));
+    col.add(try text_w.text(a, "ScrollView — single child, wheel + drag", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     const sv = try widgets.scroll_view.scrollView(a, .{});
     const sv_col = try layout.column(a, .{ .gap = 4 });
     var i: u32 = 0;
     while (i < 8) : (i += 1) {
         var buf: [48]u8 = undefined;
-        sv_col.add(try text_w.text(a, std.fmt.bufPrint(&buf, "ScrollView line {d} — wheel or drag to scroll", .{i}) catch "line", .{ .size = 13, .color = theme.text }));
+        sv_col.add(try text_w.text(a, std.fmt.bufPrint(&buf, "ScrollView line {d} — wheel or drag to scroll", .{i}) catch "line", .{ .size = 13, .color = theme.colors.on_surface }));
     }
     sv.add(sv_col);
     const sv_box = try layout.constrainedBox(a, .{ .max_w = 880, .max_h = 120 });
@@ -525,12 +527,12 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
 /// A section: dim bold title + a bordered surface card around the body.
 fn section(a: std.mem.Allocator, theme: Theme, title: []const u8, body: *Node) !*Node {
     const col = try layout.column(a, .{ .gap = 8 });
-    col.add(try text_w.text(a, title, .{ .size = 15, .bold = true, .color = theme.text_dim }));
+    col.add(try text_w.text(a, title, .{ .size = 15, .bold = true, .color = theme.colors.on_surface_variant }));
     const card = try container_w.container(a, .{
-        .color = theme.surface,
+        .color = theme.colors.surface_container,
         .radius = 12,
         .padding = EdgeInsets.all(12),
-        .border_color = theme.border,
+        .border_color = theme.colors.outline_variant,
         .border_width = 1,
     });
     card.add(body);
@@ -574,12 +576,12 @@ fn makeImage(a: std.mem.Allocator) !*Node {
 fn listItem(userdata: ?*anyopaque, index: usize) *Node {
     const ctx: *ListItemCtx = @ptrCast(@alignCast(userdata.?));
     const a = ctx.allocator;
-    const card = container_w.container(a, .{ .color = ctx.theme.surface_2, .radius = 6, .padding = .{ .left = 8, .top = 6, .right = 8, .bottom = 6 } }) catch @panic("klaxon: out of memory");
+    const card = container_w.container(a, .{ .color = ctx.theme.colors.surface_container_high, .radius = 6, .padding = .{ .left = 8, .top = 6, .right = 8, .bottom = 6 } }) catch @panic("klaxon: out of memory");
     const row = layout.row(a, .{ .gap = 8, .cross_align = .center }) catch @panic("klaxon: out of memory");
-    row.add(icon_w.icon(a, .star, .{ .size = 14, .color = ctx.theme.accent }) catch @panic("klaxon: out of memory"));
+    row.add(icon_w.icon(a, .star, .{ .size = 14, .color = ctx.theme.colors.primary }) catch @panic("klaxon: out of memory"));
     var buf: [32]u8 = undefined;
     const label = std.fmt.bufPrint(&buf, "Item #{d}", .{index}) catch "Item";
-    row.add(text_w.text(a, label, .{ .size = 14, .color = ctx.theme.text }) catch @panic("klaxon: out of memory"));
+    row.add(text_w.text(a, label, .{ .size = 14, .color = ctx.theme.colors.on_surface }) catch @panic("klaxon: out of memory"));
     card.add(row);
     return card;
 }
@@ -587,11 +589,11 @@ fn listItem(userdata: ?*anyopaque, index: usize) *Node {
 fn gridItem(userdata: ?*anyopaque, index: usize) *Node {
     const ctx: *ListItemCtx = @ptrCast(@alignCast(userdata.?));
     const a = ctx.allocator;
-    const card = container_w.container(a, .{ .color = ctx.theme.surface_2, .radius = 6 }) catch @panic("klaxon: out of memory");
+    const card = container_w.container(a, .{ .color = ctx.theme.colors.surface_container_high, .radius = 6 }) catch @panic("klaxon: out of memory");
     var buf: [24]u8 = undefined;
     const label = std.fmt.bufPrint(&buf, "#{d}", .{index}) catch "#";
     const c = layout.center(a) catch @panic("klaxon: out of memory");
-    c.add(text_w.text(a, label, .{ .size = 13, .color = ctx.theme.text_dim }) catch @panic("klaxon: out of memory"));
+    c.add(text_w.text(a, label, .{ .size = 13, .color = ctx.theme.colors.on_surface_variant }) catch @panic("klaxon: out of memory"));
     card.add(c);
     return card;
 }
@@ -747,7 +749,7 @@ test "gallery: clicking the theme toggle rebuilds the tree in the other theme" {
     try std.testing.expect(!g.dark_mode.peek());
     try std.testing.expect(g.tree.? != old_tree);
     try std.testing.expect(g.refs.demo_button != old_button);
-    try std.testing.expectEqual(theme_mod.light.bg, g.bg_sig.peek());
+    try std.testing.expectEqual(theme_mod.light.colors.surface, g.bg_sig.peek());
     // the fresh tree lays out clean and the list is still virtualized
     g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
     try std.testing.expect(g.refs.list_10k.children.items.len < 20);
@@ -811,13 +813,13 @@ test "golden: gallery paints the themed header over the animated bg" {
     defer f.deinit();
     // window bg (AnimatedContainer) + header card surface (deep inside the
     // card: away from the 1px border and the 12px rounded corners)
-    try std.testing.expectEqual(theme_mod.dark.bg, f.pixelAt(2, 2));
-    try std.testing.expectEqual(theme_mod.dark.surface, f.pixelAt(500, 70));
+    try std.testing.expectEqual(theme_mod.dark.colors.surface, f.pixelAt(2, 2));
+    try std.testing.expectEqual(theme_mod.dark.colors.surface_container, f.pixelAt(500, 70));
     // title ink inside the header card
-    try std.testing.expect(f.countNotIn(.{ .x = 28, .y = 20, .w = 220, .h = 26 }, theme_mod.dark.surface) > 0);
+    try std.testing.expect(f.countNotIn(.{ .x = 28, .y = 20, .w = 220, .h = 26 }, theme_mod.dark.colors.surface_container) > 0);
     // the Input section's accent button is visible below the header
     const b = g.refs.demo_button.bounds;
-    try std.testing.expectEqual(theme_mod.dark.accent, f.pixelAt(@intFromFloat(b.x + 4), @intFromFloat(b.y + b.h / 2)));
+    try std.testing.expectEqual(theme_mod.dark.colors.primary, f.pixelAt(@intFromFloat(b.x + 4), @intFromFloat(b.y + b.h / 2)));
 }
 
 test "gallery: the scroll view fits the window (bottom reachable)" {

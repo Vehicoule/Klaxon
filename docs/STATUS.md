@@ -2,7 +2,7 @@
 
 > Updated at the end of every session. Photo of where we are right now.
 
-**Last updated**: 2026-10-08 (Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
+**Last updated**: 2026-10-08 (Phase 2d-0 — M3E design tokens, DONE; Phase 2c — accessibility, DONE; Phase 2b i18n DONE; Phase 2a navigation DONE; Phase 1 COMPLETE: 1a–1g)
 
 ## Current phase
 
@@ -38,7 +38,9 @@
 
 - **2c done** — Accessibility core: `ui/semantics.zig` — `Semantics` per-node descriptor (role, label, hint, value, checked, actions) attached by the widget factories (Text .text, Button .button, Toggle .toggle, Checkbox .checkbox, Radio .radio, Slider .slider + on_key arrows, TextField .text_field, Chip .button, Icon/Image .image) + semantic tree flatten (`buildSemanticTree`: transparent containers lifted, label fallback to the first labelled descendant, `exclude_semantics` hides decorative subtrees) + `FocusManager` (Tab/Shift+Tab focus order in semantic-tree order, Enter/Space activation = synthesized click at the node's center, `focused_sig`, router focus + bridge notify) + focus ring painted by the host (4 fillRects, no ABI change) + live regions (`announce`) + `SemanticsBridge` (C ABI, ADR-0009: tree_dirty / focus_changed / announce) with a `LogBridge` default. Host: Tab → focus manager, unhandled keys → semantic activation, ring painted before end_frame, tree-dirty notify. `Node.semantics` (owned) + `Node.exclude_semantics` + `Node.mapRectToRoot`. `input.Key` += up/down/space + `KeyEvent.shift`; `dispatchKey` returns handled. Signal-driven widgets keep `checked`/`value` in sync via subscribe callbacks. Demo: `src/a11y_main.zig` + `zig build a11y` + CI headless smoke (600 frames, scripted keyboard). Widgets 34/50 (the ring is host-painted, not a widget). `docs/A11Y.md`. 260 tests green (35 golden). Métriques (Mac dev, raster headless, smoke 600 frames): hello TTFF 0,1 ms / frame 0,65 ms / RSS 26 Mo / ReleaseSmall 6,30 Mo; gallery 4,2 / 3,31 / 43 / 6,38; navigator 0,0 / 0,98 / 31 / 6,32; i18n 0,0 / 1,15 / 32 / 6,37; a11y 0,0 / 0,85 / 27 / 6,32. Devin review round: dangling focus on destroyed nodes (Node.deinit → focusNodeDestroyed), background pages excluded from the focus order (hit_bounds skip), pointer focus syncs the ring (requestFocus → routerFocusChanged), Enter/Space only activate `.activate` nodes (sliders untouched), control_changed bridge events, TextField value + BoundText label follow their signals, C-callable bridge (BridgeEventC extern + setBridgeC), chip Delete key, ring painted inside the damage clip. Merged as PR #13. **Note**: the AT-SPI/D-Bus bridge (Linux) lands with the Linux target (Phase 3a) — the bridge interface is ready; it needs a session bus + the AT-SPI registry daemon (absent on the dev Mac).
 
-**Next: Phase 2d — widgets P1 (navigation + feedback: AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar).**
+- **2d-0 done** — Design system: Material 3 Expressive adopted as the base (ADR-0010, `docs/DESIGN-SYSTEM.md`). `src/theme.zig` rewritten as the full M3E token set: `ColorScheme` (39 roles, M3 baseline light/dark schemes), `TypeScale` (15 styles), `Shape`, `Elevation` (levels 0-5), `Motion` (M3 durations + easings, M3E spring presets default/spatial/effects), `StateLayers` (hover/focus/pressed/drag), `Spacing`, plus helpers `stateLayer` / `relativeLuminance` / `contrastRatio`. The old 10-token placeholder is dropped (no retrocompat — unreleased). `ui/anim.zig`: `Spring.fromDampingRatio` bridges the M3E spec parameterization (stiffness + damping ratio) to the engine's (k, c). Gallery + gallery pulse migrated to M3 roles (state layers replace the hardcoded hover color). 265 tests green (35 golden), incl. WCAG contrast >= 4.5:1 on every on-color/container pair in both schemes. Métriques (Mac dev, raster headless, smoke 600 frames): hello frame 0,67 ms / RSS 27,4 Mo / ReleaseSmall 6,01 Mo; gallery ~3,5 ms (3,49-3,63); a11y RSS 28,5 Mo. Gates: frame p99 <= 3 ms ✓, RSS hello < 40 Mo ✓, binary < 6,8 Mo ✓. TTFF not re-measured (host path untouched). Widgets 34/50 (unchanged — no widget code). Merged as PR #14.
+
+**Next: Phase 2d — widgets P1 (navigation + feedback: AppBar, NavBar, Drawer, Tabs, BottomSheet, Dialog, ProgressIndicator, Badge, Tooltip, SnackBar) on the M3E token base (2d-0 DONE). Widget design review with the product owner before any implementation.**
 
 ## What exists (code, this repo)
 
@@ -52,7 +54,7 @@
 - ✅ `src/host.zig` — window, dirty-flag event loop (0-frame idle), stats, PPM dump
 - ✅ `src/widgets/` — widget library (14 P0 + 8 input + 1 gesture + 3 animated + 4 scroll + BoundText = 31, Phases 1b/1c/1d/1e/1f/1g) + `src/widgets.zig` re-exports
 - ✅ `src/gallery.zig` + `src/gallery_main.zig` — gallery app (full showcase, dark/light themes) (Phase 1g)
-- ✅ `src/theme.zig` — Theme presets (dark/light) (Phase 1g)
+- ✅ `src/theme.zig` — Material 3 Expressive token set: ColorScheme (39 roles, M3 baseline light/dark), TypeScale (15 styles), Shape, Elevation, Motion (M3 durations/easings + M3E spring presets), StateLayers, Spacing + stateLayer/contrastRatio helpers (Phase 2d-0, ADR-0010) + `docs/DESIGN-SYSTEM.md`
 - ✅ `src/test_runner_golden.zig` — golden-only test runner (runtime name filter) (Phase 1g)
 - ✅ `src/ui/input.zig` — input router (pointer/keyboard/popup, Phase 1c; multi-pointer capture, Phase 1d)
 - ✅ `src/ui/gestures.zig` — GestureArena + recognizers (Phase 1d) + `docs/GESTURES.md`

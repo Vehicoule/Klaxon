@@ -44,6 +44,16 @@ pub const Spring = struct {
     pub const gentle: Spring = .{ .stiffness = 180, .damping = 24 };
     pub const bouncy: Spring = .{ .stiffness = 700, .damping = 40 };
 
+    /// From the M3E spec parameterization (stiffness + damping RATIO zeta):
+    /// c = 2 * zeta * sqrt(k * m).
+    pub fn fromDampingRatio(stiffness: f32, damping_ratio: f32, mass: f32) Spring {
+        return .{
+            .stiffness = stiffness,
+            .damping = 2 * damping_ratio * @sqrt(stiffness * mass),
+            .mass = mass,
+        };
+    }
+
     /// Displacement from the target at time t (seconds), given the initial
     /// displacement d0 and velocity v0. Exact closed form.
     pub fn displacement(s: Spring, d0: f32, v0: f32, t: f32) f32 {
@@ -155,7 +165,8 @@ pub const Ease = enum {
     ease_out, // quadratic
     ease_in_out, // quadratic in-out
     standard, // M3 standard: cubic-bezier(0.2, 0, 0, 1)
-    emphasized, // M3 emphasized: cubic-bezier(0.05, 0.7, 0.1, 1)
+    emphasized, // M3 emphasized: cubic-bezier(0.2, 0, 0, 1) — same curve as standard per the M3 spec; the family differs via its accelerate/decelerate variants
+    emphasized_decelerate, // M3 emphasized decelerate: cubic-bezier(0.05, 0.7, 0.1, 1)
 };
 
 /// A tween curve: a fixed easing or a custom fn (no userdata — hot path).
@@ -179,7 +190,8 @@ pub fn sampleEase(e: Ease, t: f32) f32 {
         .ease_out => 1 - (1 - t) * (1 - t),
         .ease_in_out => if (t < 0.5) 2 * t * t else 1 - 2 * (1 - t) * (1 - t),
         .standard => cubicBezier(0.2, 0.0, 0.0, 1.0, t),
-        .emphasized => cubicBezier(0.05, 0.7, 0.1, 1.0, t),
+        .emphasized => cubicBezier(0.2, 0.0, 0.0, 1.0, t),
+        .emphasized_decelerate => cubicBezier(0.05, 0.7, 0.1, 1.0, t),
     };
 }
 
@@ -961,4 +973,27 @@ test "timeline: global setCurrent/timeline" {
     setCurrent(&tl);
     defer setCurrent(null);
     try std.testing.expect(timeline() != null);
+}
+
+test "spring: fromDampingRatio recovers the ratio and settles" {
+    const s = Spring.fromDampingRatio(700, 0.8, 1);
+    const zeta = s.damping / (2 * @sqrt(s.stiffness * s.mass));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), zeta, 1e-4);
+    // underdamped: it overshoots, then settles on target
+    try std.testing.expect(@abs(s.displacement(100, 0, 5.0)) < 0.5);
+}
+
+test "easings: emphasized matches the M3 spec curves" {
+    // M3 spec: emphasized == standard (0.2, 0, 0, 1); emphasized_decelerate is
+    // the distinct (0.05, 0.7, 0.1, 1) curve.
+    inline for (0..101) |i| {
+        const t = @as(f32, @floatFromInt(i)) / 100;
+        try std.testing.expectApproxEqAbs(sampleEase(.standard, t), sampleEase(.emphasized, t), 1e-6);
+    }
+    try std.testing.expect(@abs(sampleEase(.emphasized_decelerate, 0.5) - sampleEase(.standard, 0.5)) > 0.05);
+    // endpoints pinned for every curve
+    inline for (.{ .linear, .ease_in, .ease_out, .ease_in_out, .standard, .emphasized, .emphasized_decelerate }) |e| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0), sampleEase(e, 0), 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, 1), sampleEase(e, 1), 1e-6);
+    }
 }

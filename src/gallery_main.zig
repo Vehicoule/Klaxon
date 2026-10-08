@@ -45,7 +45,8 @@ fn onFrame(ctx: ?*anyopaque, frame: u64) void {
     const t = @as(f32, @floatFromInt(frame % 240)) / 240.0;
     const s = (@sin(t * 2 * std.math.pi) + 1) / 2;
     const theme = g.currentTheme();
-    g.pulse_sig.set(lerpColor(theme.accent, theme.accent_hover, s));
+    // M3 state layer: the pulse rides the hover opacity (0..8% on_primary).
+    g.pulse_sig.set(lerpColor(theme.colors.primary, theme.colors.on_primary, theme.state.hover * s));
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
