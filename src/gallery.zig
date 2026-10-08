@@ -35,6 +35,12 @@ const app_bar_w = widgets.app_bar;
 const nav_bar_w = widgets.nav_bar;
 const drawer_w = widgets.drawer;
 const tabs_w = widgets.tabs;
+const progress_w = widgets.progress;
+const badge_w = widgets.badge;
+const tooltip_w = widgets.tooltip;
+const bottom_sheet_w = widgets.bottom_sheet;
+const dialog_w = widgets.dialog;
+const snackbar_w = widgets.snackbar;
 
 pub const WINDOW_W: i32 = 960;
 pub const WINDOW_H: i32 = 640;
@@ -60,6 +66,13 @@ const Refs = struct {
     tabs: *Node,
     drawer: *Node,
     drawer_btn: *Node,
+    sheet: *Node,
+    sheet_btn: *Node,
+    dialog: *Node,
+    dialog_btn: *Node,
+    snack_btn: *Node,
+    snackbar: *Node,
+    tooltip_btn: *Node,
 };
 
 /// ItemFactory context for the virtualized lists (theme read at build time).
@@ -91,6 +104,9 @@ pub const Gallery = struct {
     nav_selected: *state.Signal(usize),
     tabs_selected: *state.Signal(usize),
     drawer_open: *state.Signal(bool),
+    sheet_open: *state.Signal(bool),
+    dialog_open: *state.Signal(bool),
+    snack_visible: *state.Signal(bool),
     list_ctx: ListItemCtx,
     refs: Refs,
     // Transient widget state captured before a theme rebuild and restored
@@ -153,6 +169,12 @@ pub const Gallery = struct {
         errdefer g.tabs_selected.deinit();
         g.drawer_open = try state.Signal(bool).init(allocator, false);
         errdefer g.drawer_open.deinit();
+        g.sheet_open = try state.Signal(bool).init(allocator, false);
+        errdefer g.sheet_open.deinit();
+        g.dialog_open = try state.Signal(bool).init(allocator, false);
+        errdefer g.dialog_open.deinit();
+        g.snack_visible = try state.Signal(bool).init(allocator, false);
+        errdefer g.snack_visible.deinit();
         g.list_ctx = .{ .allocator = allocator, .theme = theme_mod.dark };
         g.root = try anim_w.animatedContainer(allocator, .{ .color = g.bg_sig });
         errdefer g.root.deinit();
@@ -224,6 +246,9 @@ pub const Gallery = struct {
         g.nav_selected.deinit();
         g.tabs_selected.deinit();
         g.drawer_open.deinit();
+        g.sheet_open.deinit();
+        g.dialog_open.deinit();
+        g.snack_visible.deinit();
         g.allocator.destroy(g);
     }
 };
@@ -239,6 +264,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     const content = try layout.column(a, .{ .gap = 16 });
     content.add(try section(a, theme, "Input", try buildInputSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
+    content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
     content.add(try section(a, theme, "Animations", try buildAnimSection(g, theme)));
     content.add(try section(a, theme, "Layout", try buildLayoutSection(a, theme)));
@@ -250,7 +276,19 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     const ex = try layout.expanded(a, 1);
     ex.add(sv);
     col.add(ex);
-    return col;
+    // The snackbar overlays the window's bottom, above the scroll content —
+    // a Stack (expand: both children get the full window bounds; the snackbar
+    // self-positions at the bottom-center and hit-tests its content rect only).
+    const snack = try snackbar_w.snackBar(a, g.snack_visible, null, null, .{
+        .text = "Item saved",
+        .action_label = "Undo",
+        .theme = theme,
+    });
+    g.refs.snackbar = snack;
+    const stack = try layout.stack(a, .{ .fit = .expand });
+    stack.add(col);
+    stack.add(snack);
+    return stack;
 }
 
 fn buildHeader(g: *Gallery, theme: Theme) !*Node {
@@ -461,6 +499,115 @@ fn buildNavSection(g: *Gallery, theme: Theme) !*Node {
     drawer_box.add(dr);
     col.add(drawer_box);
     return col;
+}
+
+fn buildFeedbackSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    // Progress indicators: linear determinate (25% / 60% / 100%), linear
+    // indeterminate, M3E wavy determinate, circular determinate + indeterminate.
+    const prog_col = try layout.column(a, .{ .gap = 12 });
+    prog_col.add(try progress_w.progressIndicator(a, .{ .progress = 0.25, .theme = theme }));
+    prog_col.add(try progress_w.progressIndicator(a, .{ .progress = 0.6, .theme = theme }));
+    prog_col.add(try progress_w.progressIndicator(a, .{ .progress = 1.0, .theme = theme }));
+    prog_col.add(try progress_w.progressIndicator(a, .{ .theme = theme })); // indeterminate
+    prog_col.add(try progress_w.progressIndicator(a, .{ .progress = 0.6, .wavy = true, .theme = theme }));
+    const circ_row = try layout.row(a, .{ .gap = 24, .cross_align = .center });
+    circ_row.add(try progress_w.progressIndicator(a, .{ .kind = .circular, .progress = 0.75, .theme = theme }));
+    circ_row.add(try progress_w.progressIndicator(a, .{ .kind = .circular, .theme = theme })); // indeterminate
+    prog_col.add(circ_row);
+    col.add(prog_col);
+    // Badges: large count badge, small dot badge, max-count badge.
+    const badge_row = try layout.row(a, .{ .gap = 24, .cross_align = .center });
+    const star = try icon_w.icon(a, .star, .{ .size = 24, .color = theme.colors.on_surface });
+    badge_row.add(try badge_w.badgedBox(a, star, try badge_w.badge(a, .{ .label = "3", .theme = theme }), .{}));
+    const heart = try icon_w.icon(a, .heart, .{ .size = 24, .color = theme.colors.on_surface });
+    badge_row.add(try badge_w.badgedBox(a, heart, try badge_w.badge(a, .{ .theme = theme }), .{})); // dot
+    const menu_ic = try icon_w.icon(a, .menu, .{ .size = 24, .color = theme.colors.on_surface });
+    badge_row.add(try badge_w.badgedBox(a, menu_ic, try badge_w.badge(a, .{ .label = "99+", .theme = theme }), .{}));
+    col.add(badge_row);
+    // Tooltip: hover the button to show the bubble.
+    const tip_btn = try input_w.button(a, null, .{
+        .bg = theme.colors.secondary_container,
+        .bg_hover = theme_mod.stateLayer(theme.colors.secondary_container, theme.colors.on_secondary_container, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.secondary_container, theme.colors.on_secondary_container, theme.state.pressed),
+    });
+    tip_btn.add(try text_w.text(a, "Hover me", .{ .size = 14, .color = theme.colors.on_secondary_container }));
+    g.refs.tooltip_btn = tip_btn;
+    col.add(try tooltip_w.tooltip(a, tip_btn, .{ .text = "Save", .theme = theme }));
+    // Bottom sheet (modal): an open button + the sheet in a bounded box.
+    const sheet_btn = try input_w.button(a, .{ .fn_ptr = sheetOpenCb, .userdata = g }, .{
+        .bg = theme.colors.primary,
+        .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.pressed),
+    });
+    sheet_btn.add(try text_w.text(a, "Open bottom sheet", .{ .size = 14, .color = theme.colors.on_primary }));
+    g.refs.sheet_btn = sheet_btn;
+    col.add(sheet_btn);
+    const sheet_body = try container_w.container(a, .{ .color = theme.colors.surface_container_high, .radius = 8, .padding = EdgeInsets.all(16) });
+    sheet_body.add(try text_w.text(a, "Body — click the scrim (or press Escape) to close", .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    const sheet_content = try layout.column(a, .{ .gap = 8 });
+    sheet_content.add(try text_w.text(a, "Bottom sheet", .{ .size = theme.type_scale.title_large.size, .color = theme.colors.on_surface }));
+    sheet_content.add(try text_w.text(a, "Supplementary content anchored to the bottom.", .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    const sheet_pad = try layout.padding(a, EdgeInsets.all(16));
+    sheet_pad.add(sheet_content);
+    const sh = try bottom_sheet_w.bottomSheet(a, g.sheet_open, null, .{ .theme = theme, .body = sheet_body, .content = sheet_pad });
+    g.refs.sheet = sh;
+    const sheet_box = try layout.constrainedBox(a, .{ .min_h = 240, .max_h = 240 });
+    sheet_box.add(sh);
+    col.add(sheet_box);
+    // Dialog (modal): an open button + the dialog in a bounded box.
+    const dialog_btn = try input_w.button(a, .{ .fn_ptr = dialogOpenCb, .userdata = g }, .{
+        .bg = theme.colors.primary,
+        .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.pressed),
+    });
+    dialog_btn.add(try text_w.text(a, "Open dialog", .{ .size = 14, .color = theme.colors.on_primary }));
+    g.refs.dialog_btn = dialog_btn;
+    col.add(dialog_btn);
+    const dlg = try dialog_w.dialog(a, g.dialog_open, null, .{
+        .theme = theme,
+        .title = try text_w.text(a, "Delete this item?", .{ .size = theme.type_scale.headline_small.size, .color = theme.colors.on_surface }),
+        .content = try text_w.text(a, "This action cannot be undone.", .{ .size = theme.type_scale.body_medium.size, .color = theme.colors.on_surface_variant }),
+        .actions = try dialogActionsRow(a, theme),
+    });
+    g.refs.dialog = dlg;
+    const dialog_box = try layout.constrainedBox(a, .{ .min_w = 360, .max_w = 360, .min_h = 240, .max_h = 240 });
+    dialog_box.add(dlg);
+    col.add(dialog_box);
+    // SnackBar: the show button (the snackbar itself overlays the window).
+    const snack_btn = try input_w.button(a, .{ .fn_ptr = snackShowCb, .userdata = g }, .{
+        .bg = theme.colors.primary,
+        .bg_hover = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.primary, theme.colors.on_primary, theme.state.pressed),
+    });
+    snack_btn.add(try text_w.text(a, "Show snackbar", .{ .size = 14, .color = theme.colors.on_primary }));
+    g.refs.snack_btn = snack_btn;
+    col.add(snack_btn);
+    return col;
+}
+
+/// The dialog's actions row: Cancel / Delete text buttons (M3E: primary
+/// label_large, end-aligned, 8dp gap).
+fn dialogActionsRow(a: std.mem.Allocator, theme: Theme) !*Node {
+    const row = try layout.row(a, .{ .gap = 8 });
+    const cancel = try input_w.button(a, null, .{
+        .bg = 0x00000000,
+        .bg_hover = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.primary, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.primary, theme.state.pressed),
+        .padding = EdgeInsets.symmetric(8, 4),
+    });
+    cancel.add(try text_w.text(a, "Cancel", .{ .size = theme.type_scale.label_large.size, .color = theme.colors.primary }));
+    const del = try input_w.button(a, null, .{
+        .bg = 0x00000000,
+        .bg_hover = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.primary, theme.state.hover),
+        .bg_pressed = theme_mod.stateLayer(theme.colors.surface_container_high, theme.colors.primary, theme.state.pressed),
+        .padding = EdgeInsets.symmetric(8, 4),
+    });
+    del.add(try text_w.text(a, "Delete", .{ .size = theme.type_scale.label_large.size, .color = theme.colors.primary }));
+    row.add(cancel);
+    row.add(del);
+    return row;
 }
 
 fn buildGestureSection(g: *Gallery, theme: Theme) !*Node {
@@ -758,6 +905,18 @@ fn drawerOpenCb(userdata: ?*anyopaque) void {
     galleryOf(userdata).drawer_open.set(true);
 }
 
+fn sheetOpenCb(userdata: ?*anyopaque) void {
+    galleryOf(userdata).sheet_open.set(true);
+}
+
+fn dialogOpenCb(userdata: ?*anyopaque) void {
+    galleryOf(userdata).dialog_open.set(true);
+}
+
+fn snackShowCb(userdata: ?*anyopaque) void {
+    galleryOf(userdata).snack_visible.set(true);
+}
+
 fn bigToggleCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.scale_sig.set(if (g.scale_toggle.peek()) 1.5 else 1.0);
@@ -965,6 +1124,74 @@ test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
     router.dispatchPointer(g.root, .{ .phase = .down, .x = sx, .y = scrim_y });
     router.dispatchPointer(g.root, .{ .phase = .up, .x = sx, .y = scrim_y });
     try std.testing.expect(!g.drawer_open.peek());
+}
+
+test "gallery: feedback — tooltip, bottom sheet, dialog and snackbar are wired" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // The Feedback section sits below the fold. Font metrics are
+    // platform-dependent, so each target is scrolled to the top of the
+    // viewport before interaction (window = content - scroll_y).
+    const scrollTo = struct {
+        fn f(gg: *Gallery, y: f32) f32 {
+            _ = widgets.scroll_view.setScrollOffset(gg.refs.scroll_view, @max(0.0, y - gg.refs.scroll_view.bounds.y));
+            return widgets.scroll_view.scrollOffset(gg.refs.scroll_view);
+        }
+    }.f;
+    // Tooltip: hover shows the bubble (the button is the anchor), leave hides
+    // it. The bubble is the tooltip node's FIRST child (internal chrome).
+    const tb = g.refs.tooltip_btn.bounds;
+    const sy = scrollTo(g, tb.y);
+    const tip = g.refs.tooltip_btn.parent.?; // the tooltip wrapper
+    const bubble = tip.children.items[0];
+    try std.testing.expect(!bubble.visible);
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = tb.x + tb.w / 2, .y = tb.y + tb.h / 2 - sy });
+    try std.testing.expect(bubble.visible);
+    // leave: move off the tree content (the header area)
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = 10, .y = 10 });
+    try std.testing.expect(!bubble.visible);
+    // Bottom sheet: the open button opens it; a scrim click closes it.
+    const shb = g.refs.sheet_btn.bounds;
+    const sy2 = scrollTo(g, shb.y);
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = shb.x + shb.w / 2, .y = shb.y + shb.h / 2 - sy2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = shb.x + shb.w / 2, .y = shb.y + shb.h / 2 - sy2 });
+    try std.testing.expect(g.sheet_open.peek());
+    const sh = g.refs.sheet.bounds;
+    // the sheet is 240 high in the bounded box; the panel is bottom-anchored —
+    // click the scrim near the top of the box
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = sh.x + sh.w / 2, .y = sh.y + 10 - sy2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = sh.x + sh.w / 2, .y = sh.y + 10 - sy2 });
+    try std.testing.expect(!g.sheet_open.peek());
+    // Dialog: the open button opens it; a scrim click (outside the centered
+    // panel) closes it.
+    const dlb = g.refs.dialog_btn.bounds;
+    const sy3 = scrollTo(g, dlb.y);
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = dlb.x + dlb.w / 2, .y = dlb.y + dlb.h / 2 - sy3 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = dlb.x + dlb.w / 2, .y = dlb.y + dlb.h / 2 - sy3 });
+    try std.testing.expect(g.dialog_open.peek());
+    const dg = g.refs.dialog.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = dg.x + 10, .y = dg.y + 10 - sy3 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = dg.x + 10, .y = dg.y + 10 - sy3 });
+    try std.testing.expect(!g.dialog_open.peek());
+    // SnackBar: the show button reveals it (the snackbar overlays the window
+    // bottom — its bounds are window coords, no scroll mapping); the dismiss
+    // icon (last child) hides it.
+    const snb = g.refs.snack_btn.bounds;
+    const sy4 = scrollTo(g, snb.y);
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = snb.x + snb.w / 2, .y = snb.y + snb.h / 2 - sy4 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = snb.x + snb.w / 2, .y = snb.y + snb.h / 2 - sy4 });
+    try std.testing.expect(g.snack_visible.peek());
+    const snack = g.refs.snackbar;
+    try std.testing.expect(snack.visible);
+    const dismiss_btn = snack.children.items[snack.children.items.len - 1];
+    const db = dismiss_btn.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = db.x + db.w / 2, .y = db.y + db.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = db.x + db.w / 2, .y = db.y + db.h / 2 });
+    try std.testing.expect(!g.snack_visible.peek());
 }
 
 test "gallery: the 10k list stays virtualized after a big scroll" {

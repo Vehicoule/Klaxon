@@ -29,6 +29,12 @@ const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
 const tabs_w = @import("widgets/tabs.zig");
+const progress_w = @import("widgets/progress.zig");
+const badge_w = @import("widgets/badge.zig");
+const tooltip_w = @import("widgets/tooltip.zig");
+const bottom_sheet_w = @import("widgets/bottom_sheet.zig");
+const dialog_w = @import("widgets/dialog.zig");
+const snackbar_w = @import("widgets/snackbar.zig");
 const golden = @import("golden.zig"); // tests
 
 /// Options type for widgets without options.
@@ -64,8 +70,9 @@ pub const WidgetEntry = struct {
 };
 
 /// Registry: layout + display + input (v1) + navigation chrome (v2, batch
-/// 2d.1 PR A: app_bar, nav_bar, drawer, tabs — M3E). Batch 1+ widgets
-/// self-register here.
+/// 2d.1 PR A: app_bar, nav_bar, drawer, tabs — M3E) + feedback batch
+/// (2d.1 PR B: bottom_sheet, dialog, progress, badge, badged_box, tooltip,
+/// snackbar — M3E). Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
     .{ .name = "row", .category = "layout", .build = buildRow, .schema = schemaRow },
@@ -83,6 +90,13 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
     .{ .name = "tabs", .category = "navigation", .build = buildTabs, .schema = schemaTabs },
+    .{ .name = "bottom_sheet", .category = "navigation", .build = buildBottomSheet, .schema = schemaBottomSheet },
+    .{ .name = "dialog", .category = "feedback", .build = buildDialog, .schema = schemaDialog },
+    .{ .name = "progress", .category = "feedback", .build = buildProgress, .schema = schemaProgress },
+    .{ .name = "badge", .category = "display", .build = buildBadge, .schema = schemaBadge },
+    .{ .name = "badged_box", .category = "display", .build = buildBadgedBox, .schema = schemaBadgedBox },
+    .{ .name = "tooltip", .category = "feedback", .build = buildTooltip, .schema = schemaTooltip },
+    .{ .name = "snackbar", .category = "feedback", .build = buildSnackBar, .schema = schemaSnackBar },
 };
 
 pub fn byName(name: []const u8) ?WidgetEntry {
@@ -260,7 +274,10 @@ pub fn treeToValue(ctx: *BuildCtx, root: *Node, allocator: std.mem.Allocator) !V
         children.deinit();
     }
     if (!rec.skip_children) {
-        for (root.children.items) |child| try children.append(try treeToValue(ctx, child, allocator));
+        for (root.children.items) |child| {
+            if (child.internal) continue; // widget-owned chrome, not document data
+            try children.append(try treeToValue(ctx, child, allocator));
+        }
     }
     if (children.items.len > 0) {
         const children_slice = try children.toOwnedSlice();
@@ -472,16 +489,98 @@ fn buildTabs(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror
 fn buildDrawer(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const dopts = try value_mod.optionsFromValue(drawer_w.DrawerOptions, opts, buildSlotNode, ctx);
     errdefer deinitSlot2(dopts.content, dopts.body);
-    const is_open: bool = if (opts.get("open")) |x| switch (x) {
-        .bool => |b| b,
-        else => false,
-    } else false;
-    const sig = try state.Signal(bool).init(allocator, is_open);
-    try ctx.track(sig, deinitBoolSignal);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "open");
     const n = try drawer_w.drawer(allocator, sig, null, dopts);
     // the node's children (body slot + internal scrim/panel) are not document
     // children — content passes through the option slots
     return .{ .node = n, .live = .{ .signal = sig, .field = "open", .read = readBoolSignal }, .skip_children = true };
+}
+
+// --- batch 2d.1 PR B: feedback widgets (M3E) ---
+
+/// bool signal (drawer/bottom_sheet/dialog "open", snackbar "visible"):
+/// initialized from the options, exported as the CURRENT state.
+fn buildBoolSignal(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx, field: []const u8) anyerror!*state.Signal(bool) {
+    const initial: bool = if (opts.get(field)) |x| switch (x) {
+        .bool => |b| b,
+        else => false,
+    } else false;
+    const sig = try state.Signal(bool).init(allocator, initial);
+    try ctx.track(sig, deinitBoolSignal);
+    return sig;
+}
+
+fn deinitSlot4(a: ?*Node, b: ?*Node, c: ?*Node, d: ?*Node) void {
+    deinitSlot3(a, b, c);
+    if (d) |n| n.deinit();
+}
+
+fn buildBottomSheet(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const sopts = try value_mod.optionsFromValue(bottom_sheet_w.BottomSheetOptions, opts, buildSlotNode, ctx);
+    errdefer deinitSlot2(sopts.content, sopts.body);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "open");
+    const n = try bottom_sheet_w.bottomSheet(allocator, sig, null, sopts);
+    // the node's children (body slot + internal scrim/panel) are not document
+    // children — content passes through the option slots
+    return .{ .node = n, .live = .{ .signal = sig, .field = "open", .read = readBoolSignal }, .skip_children = true };
+}
+
+fn buildDialog(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const dopts = try value_mod.optionsFromValue(dialog_w.DialogOptions, opts, buildSlotNode, ctx);
+    errdefer deinitSlot4(dopts.icon, dopts.title, dopts.content, dopts.actions);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "open");
+    const n = try dialog_w.dialog(allocator, sig, null, dopts);
+    // the node's children (internal scrim/panel + the slot column) are not
+    // document children — content passes through the option slots
+    return .{ .node = n, .live = .{ .signal = sig, .field = "open", .read = readBoolSignal }, .skip_children = true };
+}
+
+fn buildProgress(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const popts = try value_mod.optionsFromValue(progress_w.ProgressOptions, opts, null, null);
+    // a leaf: no children (document children are rejected — skip_children)
+    return .{ .node = try progress_w.progressIndicator(allocator, popts), .skip_children = true };
+}
+
+fn buildBadge(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const bopts = try value_mod.optionsFromValue(badge_w.BadgeOptions, opts, null, null);
+    // the node's child (the label text) is internal chrome
+    return .{ .node = try badge_w.badge(allocator, bopts), .skip_children = true };
+}
+
+fn buildBadgedBox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const xopts = try value_mod.optionsFromValue(badge_w.BadgedBoxOptions, opts, null, null);
+    // content + badge are factory slots (built from the option values); the
+    // anchor is required
+    const content = buildSlotNode(ctx, opts.get("content") orelse return error.MissingSlot) catch |e| return e;
+    var badge_node: ?*Node = null;
+    if (opts.get("badge")) |bv| badge_node = buildSlotNode(ctx, bv) catch |e| {
+        content.deinit();
+        return e;
+    };
+    const node = badge_w.badgedBox(allocator, content, badge_node, xopts) catch |e| {
+        content.deinit();
+        if (badge_node) |b| b.deinit();
+        return e;
+    };
+    return .{ .node = node, .skip_children = true };
+}
+
+fn buildTooltip(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const topts = try value_mod.optionsFromValue(tooltip_w.TooltipOptions, opts, null, null);
+    // the anchor is a document child (added by treeFromValueInner); the bubble
+    // is internal chrome (skipped by treeToValue via Node.internal)
+    return .{ .node = try tooltip_w.tooltipShell(allocator, topts), .skip_children = false };
+}
+
+fn buildSnackBar(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const sopts = try value_mod.optionsFromValue(snackbar_w.SnackBarOptions, opts, null, null);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "visible");
+    const n = try snackbar_w.snackBar(allocator, sig, null, null, sopts);
+    // the node's children (internal bg + content) are not document children
+    return .{ .node = n, .live = .{ .signal = sig, .field = "visible", .read = readBoolSignal }, .skip_children = true };
 }
 
 // --- per-widget inspector schemas (comptime-generated from options types) ---
@@ -564,6 +663,44 @@ fn schemaDrawer(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
 }
 
+// --- batch 2d.1 PR B schemas ---
+
+fn schemaBottomSheet(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(bottom_sheet_w.BottomSheetOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
+}
+
+fn schemaDialog(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(dialog_w.DialogOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
+}
+
+fn schemaProgress(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // kind (select: linear/circular), progress (number, nullable =
+    // indeterminate), wavy (toggle) — all automatic from the options type
+    return value_mod.schemaOf(progress_w.ProgressOptions, allocator);
+}
+
+fn schemaBadge(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(badge_w.BadgeOptions, allocator); // label (text, nullable = dot)
+}
+
+fn schemaBadgedBox(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // content + badge are factory slots, not option fields — appended manually
+    var base = try value_mod.schemaOf(badge_w.BadgedBoxOptions, allocator);
+    base = try value_mod.appendSchemaProp(base, allocator, "content", .slot, &.{}, .null);
+    return value_mod.appendSchemaProp(base, allocator, "badge", .slot, &.{}, .null);
+}
+
+fn schemaTooltip(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(tooltip_w.TooltipOptions, allocator); // text
+}
+
+fn schemaSnackBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    const base = try value_mod.schemaOf(snackbar_w.SnackBarOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "visible", .toggle, &.{}, .{ .bool = false });
+}
+
 // --- tests ---
 
 fn slotBuilder(userdata: ?*anyopaque, v: Value) anyerror!*Node {
@@ -575,8 +712,9 @@ fn slotBuilder(userdata: ?*anyopaque, v: Value) anyerror!*Node {
 test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("column") != null);
     try std.testing.expect(byName("slider") != null);
+    try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 16), widgets.len);
+    try std.testing.expectEqual(@as(usize, 23), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -736,6 +874,112 @@ test "registry: slot widgets reject document children (they would never serializ
     // same for the drawer
     const doc2 = "{\"name\":\"drawer\",\"options\":{},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
     try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc2));
+    // and for a leaf widget (progress)
+    const doc3 = "{\"name\":\"progress\",\"options\":{},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc3));
+}
+
+test "registry: bottom_sheet round-trips with its open state and slots" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"bottom_sheet\",\"options\":{\"open\":false,\"drag_handle\":true,\"body\":{\"name\":\"text\",\"options\":{\"text\":\"Body\"}},\"content\":{\"name\":\"text\",\"options\":{\"text\":\"Sheet\"}}}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: dialog round-trips with its open state and slots" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"dialog\",\"options\":{\"open\":true,\"title\":{\"name\":\"text\",\"options\":{\"text\":\"Delete?\"}},\"content\":{\"name\":\"text\",\"options\":{\"text\":\"This cannot be undone.\"}}}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: progress round-trips (kind, determinate value, wavy)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"progress\",\"options\":{\"kind\":\"circular\",\"progress\":0.5,\"wavy\":false}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: badge + badged_box round-trip with their slots" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"badge\",\"options\":{\"label\":\"3\"}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    const doc2 = "{\"name\":\"badged_box\",\"options\":{\"content\":{\"name\":\"icon\",\"options\":{\"icon\":\"star\"}},\"badge\":{\"name\":\"badge\",\"options\":{\"label\":\"9\"}}}}";
+    const node2 = try treeFromJson(&ctx, std.testing.allocator, doc2);
+    defer node2.deinit();
+    try std.testing.expectEqual(@as(usize, 2), node2.children.items.len); // content + badge
+    const out2 = try treeToJson(&ctx, node2, std.testing.allocator);
+    defer std.testing.allocator.free(out2);
+    try std.testing.expectEqualStrings(doc2, out2);
+}
+
+test "registry: tooltip round-trips with the anchor child (bubble is internal)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"tooltip\",\"options\":{\"text\":\"Save\"},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"Hi\"}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    // the internal bubble (child 0, from the shell) + the anchor (child 1,
+    // added by treeFromValueInner): serialization keeps only the anchor
+    try std.testing.expectEqual(@as(usize, 2), node.children.items.len);
+    try std.testing.expect(node.children.items[0].internal);
+    try std.testing.expect(!node.children.items[1].internal);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: snackbar round-trips with its visible state" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"snackbar\",\"options\":{\"visible\":true,\"text\":\"Saved\",\"action_label\":\"Undo\",\"timeout_ms\":4000}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: PR B schemas expose the right editor kinds" {
+    const progress_schema = try byName("progress").?.schema(std.testing.allocator);
+    defer {
+        for (progress_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(progress_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(progress_schema, "kind").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(progress_schema, "progress").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(progress_schema, "wavy").?);
+    const snackbar_schema = try byName("snackbar").?.schema(std.testing.allocator);
+    defer {
+        for (snackbar_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(snackbar_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(snackbar_schema, "text").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(snackbar_schema, "visible").?);
+    const box_schema = try byName("badged_box").?.schema(std.testing.allocator);
+    defer {
+        for (box_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(box_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(box_schema, "content").?);
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(box_schema, "badge").?);
 }
 
 test "registry: navigation chrome schemas expose slots and live fields" {

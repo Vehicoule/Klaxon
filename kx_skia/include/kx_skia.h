@@ -85,6 +85,11 @@ void kx_clip_reset(kx_ctx* ctx);
 // composites at `alpha` opacity (fade transitions, Phase 2a). Alpha is
 // clamped to [0,1].
 void kx_layer_alpha(kx_ctx* ctx, float alpha);
+// Stroke a polyline (added in 0.5.0): moveTo/lineTo through the `count`
+// points with a solid color. round_cap selects round line caps (progress
+// indicators). Arcs and wavy indicators are polylines generated in Zig —
+// no path type crosses this boundary.
+void kx_stroke_polyline(kx_ctx* ctx, const float* xs, const float* ys, int count, float stroke_w, bool round_cap, uint32_t rgba);
 
 // Text metrics for widget layout. Ctx-independent: fonts are process-global.
 //   width   — advance width in pixels

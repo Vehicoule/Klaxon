@@ -68,6 +68,12 @@ pub fn fillRRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, radius: f32, colo
     kx.c.kx_fill_rrect(ctx, x, y, w, h, radius, color);
 }
 
+/// Stroke a polyline through (xs, ys) (ABI 0.5.0) — arcs and wavy progress
+/// indicators are polylines generated in Zig; no path type crosses the ABI.
+pub fn strokePolyline(ctx: *kx.Ctx, xs: []const f32, ys: []const f32, stroke_w: f32, round_cap: bool, color: Color) void {
+    kx.c.kx_stroke_polyline(ctx, xs.ptr, ys.ptr, @intCast(xs.len), stroke_w, round_cap, color);
+}
+
 pub fn text(ctx: *kx.Ctx, str: [:0]const u8, x: f32, baseline_y: f32, size: f32, bold: bool, color: Color) void {
     kx.c.kx_draw_text_styled(ctx, str, x, baseline_y, size, bold, color);
 }
