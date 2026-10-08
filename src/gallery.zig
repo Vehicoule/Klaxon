@@ -130,6 +130,7 @@ pub const Gallery = struct {
         g.* = undefined;
         g.allocator = allocator;
         g.tree = null; // no tree yet (undefined would NOT pick up the default)
+        g.on_platform_changed = null; // same: undefined would NOT pick up the default
         g.saved_tf = std.mem.zeroes([128]u8);
         g.saved_tf_len = 0;
         g.saved_dd = 0;
