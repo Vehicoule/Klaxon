@@ -55,6 +55,9 @@ const radio_labels = [_][]const u8{ "One", "Two", "Three" };
 const Refs = struct {
     demo_button: *Node,
     theme_toggle: *Node,
+    desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
+    sb_list: *Node, // the list scrollbar (style follows the platform tokens)
+    sb_grid: *Node,
     press_text: *Node,
     scroll_view: *Node,
     list_10k: *Node,
@@ -90,6 +93,7 @@ pub const Gallery = struct {
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
+    desktop_mode: *state.Signal(bool), // false = mobile presets, true = desktop presets
     bg_sig: *state.Signal(Color),
     press_count: *state.Signal(u32),
     radio_group: *state.Signal(u32),
@@ -139,6 +143,8 @@ pub const Gallery = struct {
         g.saved_grid = 0;
         g.dark_mode = try state.Signal(bool).init(allocator, true);
         errdefer g.dark_mode.deinit();
+        g.desktop_mode = try state.Signal(bool).init(allocator, false);
+        errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
         errdefer g.bg_sig.deinit();
         g.press_count = try state.Signal(u32).init(allocator, 0);
@@ -187,6 +193,9 @@ pub const Gallery = struct {
     }
 
     pub fn currentTheme(g: *Gallery) Theme {
+        if (g.desktop_mode.peek()) {
+            return if (g.dark_mode.peek()) theme_mod.desktop_dark else theme_mod.desktop_light;
+        }
         return if (g.dark_mode.peek()) theme_mod.dark else theme_mod.light;
     }
 
@@ -233,6 +242,7 @@ pub const Gallery = struct {
         }
         g.root.deinit();
         g.dark_mode.deinit();
+        g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
         g.radio_group.deinit();
@@ -320,6 +330,16 @@ fn buildHeader(g: *Gallery, theme: Theme) !*Node {
     g.refs.theme_toggle = toggle;
     right.add(toggle);
     right.add(try text_w.BoundText(bool).text(a, g.dark_mode, fmtMode, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    // Density switch (Phase 2d-0.5): mobile presets ↔ desktop presets.
+    const dtoggle = try input_w.toggle(a, g.desktop_mode, .{ .fn_ptr = themeToggleCb, .userdata = g }, .{
+        .track_on = theme.colors.primary,
+        .track_off = theme.colors.surface_container_highest,
+        .knob_on = theme.colors.on_primary,
+        .knob_off = theme.colors.outline,
+    });
+    g.refs.desktop_toggle = dtoggle;
+    right.add(dtoggle);
+    right.add(try text_w.BoundText(bool).text(a, g.desktop_mode, fmtDensity, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     row.add(right);
     return header;
 }
@@ -757,7 +777,8 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
     list_row.add(list_box);
     // The Scrollbar fills max_h like the lists — bound it (the content
     // Column is vertically unbounded inside the ScrollView).
-    const sb = try widgets.scrollbar.scrollbar(a, .{ .scroll = list, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
+    const sb = try widgets.scrollbar.scrollbar(a, .{ .scroll = list, .theme = theme, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
+    g.refs.sb_list = sb;
     const sb_box = try layout.constrainedBox(a, .{ .max_h = 260 });
     sb_box.add(sb);
     list_row.add(sb_box);
@@ -774,7 +795,8 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
     const grid_box = try layout.constrainedBox(a, .{ .max_w = 880, .max_h = 160 });
     grid_box.add(grid);
     grid_row.add(grid_box);
-    const gsb = try widgets.scrollbar.scrollbar(a, .{ .scroll = grid, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
+    const gsb = try widgets.scrollbar.scrollbar(a, .{ .scroll = grid, .theme = theme, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
+    g.refs.sb_grid = gsb;
     const gsb_box = try layout.constrainedBox(a, .{ .max_h = 160 });
     gsb_box.add(gsb);
     grid_row.add(gsb_box);
@@ -886,8 +908,13 @@ fn chipCb(userdata: ?*anyopaque) void {
 
 fn themeToggleCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
+    // the platform layer may have changed: sync the focus ring tokens
+    if (ui.semantics.currentFocus()) |fm| {
+        fm.ring_width = g.currentTheme().platform.focus_ring_width;
+        fm.ring_offset = g.currentTheme().platform.focus_ring_offset;
+    }
     g.rebuild() catch @panic("klaxon: out of memory");
-    // the platform layer may have changed (density presets): notify the app
+    // notify the app (density presets changed: host.cursors, …)
     if (g.on_platform_changed) |cb| cb.fn_ptr(cb.userdata);
 }
 
@@ -988,6 +1015,9 @@ fn fmtSlider(v: f32, buf: []u8) []const u8 {
 fn fmtMode(v: bool, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s} mode", .{if (v) "Dark" else "Light"}) catch "mode";
 }
+fn fmtDensity(v: bool, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{s} density", .{if (v) "Desktop" else "Mobile"}) catch "density";
+}
 fn fmtNavSel(v: usize, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "NavBar selected: {d}", .{v}) catch "NavBar";
 }
@@ -1055,6 +1085,28 @@ test "gallery: clicking the theme toggle rebuilds the tree in the other theme" {
     try std.testing.expectEqualStrings("hello", input_w.textFieldText(g.refs.text_field));
     try std.testing.expectEqual(@as(f32, 120), widgets.scroll_view.scrollOffset(g.refs.scroll_view));
     try std.testing.expectEqual(@as(f32, 200), widgets.list_view.scrollOffset(g.refs.list_10k));
+}
+
+test "gallery: the density toggle switches to the desktop platform presets" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // mobile default: the scrollbars are classic (8dp of layout space)
+    try std.testing.expectEqual(@as(f32, 8), g.refs.sb_list.measure(.{ .max_w = 400, .max_h = 260 }).w);
+    try std.testing.expectEqual(theme_mod.Density.mobile, g.currentTheme().platform.density);
+    // toggle the density (the header is above the scroll content)
+    const b = g.refs.desktop_toggle.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 });
+    try std.testing.expect(g.desktop_mode.peek());
+    try std.testing.expectEqual(theme_mod.Density.desktop, g.currentTheme().platform.density);
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the rebuilt scrollbars are overlay: no layout space (macOS-style)
+    try std.testing.expectEqual(@as(f32, 0), g.refs.sb_list.measure(.{ .max_w = 400, .max_h = 260 }).w);
+    try std.testing.expectEqual(@as(f32, 0), g.refs.sb_grid.measure(.{ .max_w = 400, .max_h = 160 }).w);
 }
 
 test "gallery: the chip toggles its selection signal" {

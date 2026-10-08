@@ -53,6 +53,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     input_mod.setCurrent(&host.input); // the router is process-global (single-window P0)
     ui.anim.setCurrent(&host.timeline); // the animation timeline, same pattern
     host.cursors = true; // pointer cursors (Phase 2d-0.5): hand over the button
+    // the focus ring follows the theme's platform tokens (Phase 2d-0.5)
+    if (ui.semantics.currentFocus()) |fm| {
+        fm.ring_width = @import("theme.zig").light.platform.focus_ring_width;
+        fm.ring_offset = @import("theme.zig").light.platform.focus_ring_offset;
+    }
 
     var demo = try demo_mod.buildTree(allocator);
     defer demo.deinit();

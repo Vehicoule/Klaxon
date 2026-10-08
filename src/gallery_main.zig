@@ -64,6 +64,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const g = try gallery_mod.Gallery.init(allocator);
     defer g.deinit();
 
+    // the focus ring follows the theme's platform tokens (Phase 2d-0.5);
+    // themeToggleCb re-syncs them on every density/theme switch
+    if (ui.semantics.currentFocus()) |fm| {
+        fm.ring_width = g.currentTheme().platform.focus_ring_width;
+        fm.ring_offset = g.currentTheme().platform.focus_ring_offset;
+    }
     // Pointer cursors follow the theme's platform layer (Phase 2d-0.5):
     // hand/ibeam over controls when the desktop preset is active.
     host.cursors = g.currentTheme().platform.cursors;
