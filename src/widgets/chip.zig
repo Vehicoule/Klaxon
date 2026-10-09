@@ -14,14 +14,17 @@
 //     unselected OnSurfaceVariant; filter-selected/input-selected
 //     OnSecondaryContainer; disabled OnSurface@0.38
 //   - icons: assist/elevated/suggestion/filter-unselected Primary;
-//     filter-selected OnSecondaryContainer (the check mark when no leading
-//     icon is given); input selected leading Primary, trailing
-//     OnSecondaryContainer; input unselected OnSurfaceVariant; disabled
-//     OnSurface@0.38
+//     filter-selected OnSecondaryContainer; input selected leading Primary,
+//     trailing OnSecondaryContainer; input unselected OnSurfaceVariant;
+//     disabled OnSurface@0.38
+//   - the filter chip's check mark (when no leading icon is given) shows only
+//     when selected — its visibility follows the signal (the width changes)
 //   - disabled containers: OnSurface@0.12 (elevated, filter/input selected);
 //     disabled outlines: OnSurface@0.12
 //   - state layer: the label color @ hover 0.08 / focus 0.10 / pressed 0.12
-//   - hit target: 48x48 centered (the a11y floor is the hit area)
+//   - hit target: the painted bounds grown to the 48dp a11y floor per axis
+//   - layout: the content row mirrors in RTL; the children paint clipped to
+//     the chip's bounds (a constrained chip never overflows its neighbors)
 //
 // v1 deviations (documented, fixed later):
 //   - Flat colors (no elevation shadows — Phase 3); no avatar variant (the
@@ -79,6 +82,13 @@ const ChipState = struct {
     /// state); non-null = toggle (filter/input: the click flips it).
     sig: ?*ui.state.Signal(bool),
     on_click: ?Callback = null,
+    /// Explicit child references for the signal-driven recolor: a
+    /// trailing-only chip's first child is its trailing icon (position
+    /// inference would misclassify it). lead_child is the automatic filter
+    /// check when no leading icon is given — its visibility follows the
+    /// selected state (kept as a child: adding/removing would churn layout).
+    lead_child: ?*Node = null,
+    trail_child: ?*Node = null,
     pressed: bool = false,
     hovered: bool = false,
     /// The down position in raw (window) coordinates (drag deltas are
@@ -132,61 +142,84 @@ fn currentColors(s: *ChipState) ChipColors {
 }
 
 fn chipMeasure(n: *Node, c: Constraints) Size {
-    const s = stateOf(n);
     var content_w: f32 = 0;
     var content_h: f32 = 0;
     var first = true;
     for (n.children.items) |child| {
+        if (!child.visible) continue; // the hidden filter check takes no space
         const cs = child.measure(c.deflateEdge(.{ .left = h_padding, .top = 0, .right = h_padding, .bottom = 0 }));
         if (!first) content_w += icon_gap;
         content_w += cs.w;
         content_h = @max(content_h, cs.h);
         first = false;
     }
-    _ = s;
     return c.constrain(.{ .w = content_w + h_padding * 2, .h = chip_h });
 }
 
 fn chipLayout(n: *Node, bounds: Rect) void {
-    const s = stateOf(n);
-    _ = s;
     // the content row [leading?, label, trailing?] centered, gap 8
     var sizes: [3]Size = .{ .{}, .{}, .{} };
     var content_w: f32 = 0;
-    var content_h: f32 = 0;
     var count: usize = 0;
     for (n.children.items) |child| {
+        if (!child.visible) continue; // the hidden filter check takes no space
         const cs = child.measure(.{ .max_w = bounds.w, .max_h = bounds.h });
         sizes[count] = cs;
         content_w += cs.w;
-        content_h = @max(content_h, cs.h);
         count += 1;
     }
     if (count > 1) content_w += icon_gap * @as(f32, @floatFromInt(count - 1));
-    var x = bounds.x + h_padding + @max(0, (bounds.w - h_padding * 2 - content_w) / 2);
-    const inner_h = @max(0, bounds.h);
-    for (n.children.items, 0..) |child, i| {
+    const inner_x = bounds.x + h_padding;
+    const inner_w = @max(0, bounds.w - h_padding * 2);
+    var x = inner_x + @max(0, (inner_w - content_w) / 2);
+    var i: usize = 0;
+    for (n.children.items) |child| {
+        if (!child.visible) continue;
         const cs = sizes[i];
         child.layout(.{
             .x = x,
-            .y = bounds.y + (inner_h - cs.h) / 2,
+            .y = bounds.y + (bounds.h - cs.h) / 2,
             .w = cs.w,
             .h = cs.h,
         });
         x += cs.w;
-        if (i + 1 < count) x += icon_gap;
+        i += 1;
+        if (i < count) x += icon_gap;
+    }
+    // RTL: mirror the row around the inner box — the leading icon moves to
+    // the end side (the gap is preserved)
+    if (ui.i18n.direction() == .rtl) {
+        for (n.children.items) |child| {
+            if (!child.visible) continue;
+            child.bounds.x = inner_x + inner_w - (child.bounds.x - inner_x) - child.bounds.w;
+        }
     }
 }
 
-/// The interactive target: 48x48 centered on the chip.
+/// The interactive target: the painted bounds grown to the 48dp a11y floor
+/// per axis, centered (a wide chip is clickable along its whole width; a
+/// short chip keeps the 48dp floor vertically).
 fn chipHitBounds(n: *Node) Rect {
     const b = n.bounds;
+    const w = @max(b.w, min_target);
+    const h = @max(b.h, min_target);
     return .{
-        .x = b.x + (b.w - min_target) / 2,
-        .y = b.y + (b.h - min_target) / 2,
-        .w = min_target,
-        .h = min_target,
+        .x = b.x + (b.w - w) / 2,
+        .y = b.y + (b.h - h) / 2,
+        .w = w,
+        .h = h,
     };
+}
+
+/// The children (label + icons) paint clipped to the chip's bounds: a
+/// constrained chip never lets its label ink cross the container edge.
+fn chipPreChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
+    ui.paint.clipRect(ctx, n.bounds.x, n.bounds.y, n.bounds.w, n.bounds.h); // saves
+}
+
+fn chipPostChildrenPaint(n: *Node, ctx: *kx.Ctx) void {
+    _ = n;
+    ui.paint.clipReset(ctx); // restores
 }
 
 fn chipPaint(n: *Node, ctx: *kx.Ctx) void {
@@ -299,21 +332,32 @@ fn chipSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     const s = stateOf(n);
     const cc = currentColors(s);
-    // recolor the children (label + icons) to the current state's colors
-    var li: usize = 0;
+    var layout_changed = false;
+    // the automatic filter check follows the selected state (its visibility
+    // changes the measured width → the layout must re-run)
+    if (s.opts.variant == .filter and s.opts.leading_icon == null) {
+        if (s.lead_child) |lc| {
+            const want = isSelected(s);
+            if (lc.visible != want) {
+                lc.visible = want;
+                layout_changed = true;
+            }
+        }
+    }
+    // recolor the children (label + icons) to the current state's colors —
+    // via the explicit child references (a trailing-only chip's first child
+    // is its trailing icon)
     for (n.children.items) |child| {
         // icons carry the .image role, the label the .text role (the icon
         // paint fn is private — the semantics role is the public tell)
         if (child.semantics.?.role == .image) {
-            // leading icon = first child, trailing icon = last child
-            const is_trailing = li == n.children.items.len - 1 and child != n.children.items[0];
-            icon_w.setColor(child, if (is_trailing) cc.trailing_icon else cc.leading_icon);
+            icon_w.setColor(child, if (child == s.trail_child) cc.trailing_icon else cc.leading_icon);
         } else {
             text_w.setColor(child, cc.label);
         }
-        li += 1;
     }
     if (n.semantics) |sem| sem.checked = isSelected(s);
+    if (layout_changed) n.markLayoutDirty();
     n.markDirty();
     ui.semantics.notifyControlChanged(n); // a11y: the value changed
 }
@@ -333,6 +377,8 @@ const chip_vtable = ui.node.VTable{
     .on_pointer = chipOnPointer,
     .on_key = chipOnKey,
     .hit_bounds = chipHitBounds,
+    .pre_children_paint = chipPreChildrenPaint,
+    .post_children_paint = chipPostChildrenPaint,
 };
 
 /// An M3E chip. `sig` = null → an action chip (or a fixed selected state);
@@ -349,9 +395,14 @@ pub fn chip(allocator: std.mem.Allocator, sig: ?*ui.state.Signal(bool), on_click
     node.state = s;
     const cc = currentColors(s);
     const t = opts.theme;
-    // leading icon (filter: a check mark when selected and none provided)
-    const lead_name = if (opts.leading_icon) |i| i else if (opts.variant == .filter and isSelected(s)) icon_w.IconName.check else null;
-    const lead = if (lead_name) |iname| try icon_w.icon(allocator, iname, .{ .size = icon_size, .color = cc.leading_icon }) else null;
+    // leading icon (filter without one: a check mark, shown only when
+    // selected — its visibility follows the signal in chipSyncCb)
+    const lead_name = if (opts.leading_icon) |i| i else if (opts.variant == .filter) icon_w.IconName.check else null;
+    const lead = if (lead_name) |iname| blk: {
+        const ic = try icon_w.icon(allocator, iname, .{ .size = icon_size, .color = cc.leading_icon });
+        ic.visible = if (opts.leading_icon != null) true else isSelected(s);
+        break :blk ic;
+    } else null;
     errdefer if (lead) |ic| ic.deinit();
     const txt = if (opts.label.len > 0) try text_w.text(allocator, opts.label, .{
         .size = t.type_scale.label_large.size,
@@ -362,6 +413,8 @@ pub fn chip(allocator: std.mem.Allocator, sig: ?*ui.state.Signal(bool), on_click
     const trail = if (opts.trailing_icon) |iname| try icon_w.icon(allocator, iname, .{ .size = icon_size, .color = cc.trailing_icon }) else null;
     errdefer if (trail) |ic| ic.deinit();
     // no fallible ops past this point: the errdefers above never double-free
+    s.lead_child = lead; // explicit refs for the signal-driven recolor
+    s.trail_child = trail;
     if (lead) |ic| {
         ic.internal = true; // chrome: not document data (registry)
         ic.exclude_semantics = true; // decorative: the label is the a11y name
@@ -414,8 +467,69 @@ test "chip: measures height 32 + content + 16dp padding; the 48dp floor is the h
     try std.testing.expectEqual(tw + 16, m.w); // label_large (14, 500 -> bold) + 8*2
     b.layout(.{ .x = 100, .y = 100, .w = m.w, .h = 32 });
     const hb = b.vtable.hit_bounds.?(b);
+    try std.testing.expectEqual(@max(m.w, min_target), hb.w);
     try std.testing.expectEqual(min_target, hb.h);
     try std.testing.expectEqual(@as(f32, 100 - 8), hb.y); // (32-48)/2
+    // a wide chip: the hit target covers the full painted width (the edges
+    // are clickable, not only the centered 48dp)
+    const wide = try chip(std.testing.allocator, null, null, .{ .label = "A much longer chip label" });
+    defer wide.deinit();
+    wide.layout(.{ .x = 0, .y = 0, .w = 220, .h = 32 });
+    const hbw = wide.vtable.hit_bounds.?(wide);
+    try std.testing.expectEqual(@as(f32, 220), hbw.w);
+    try std.testing.expectEqual(@as(f32, 0), hbw.x);
+    try std.testing.expectEqual(min_target, hbw.h);
+}
+
+test "chip: the automatic filter check follows the selected state" {
+    const sig = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer sig.deinit();
+    const b = try chip(std.testing.allocator, sig, null, .{ .variant = .filter, .label = "News" });
+    defer b.deinit();
+    // the check child always exists (no layout churn) but is hidden while
+    // unselected — it takes no space
+    try std.testing.expectEqual(@as(usize, 2), b.children.items.len);
+    const check = b.children.items[0];
+    try std.testing.expect(!check.visible);
+    const w0 = b.measure(.{ .max_w = 2000, .max_h = 2000 }).w;
+    b.layout_dirty = false;
+    sig.set(true);
+    try std.testing.expect(check.visible); // the check shows
+    try std.testing.expect(b.layout_dirty); // the width changed → re-layout
+    const w1 = b.measure(.{ .max_w = 2000, .max_h = 2000 }).w;
+    try std.testing.expectApproxEqAbs(w0 + icon_size + icon_gap, w1, 0.001);
+    sig.set(false);
+    try std.testing.expect(!check.visible); // and hides again
+    // starts selected: the check is visible from the start
+    const sig2 = try ui.state.Signal(bool).init(std.testing.allocator, true);
+    defer sig2.deinit();
+    const b2 = try chip(std.testing.allocator, sig2, null, .{ .variant = .filter, .label = "News" });
+    defer b2.deinit();
+    try std.testing.expect(b2.children.items[0].visible);
+    // an explicit leading icon never hides (no automatic check)
+    const b3 = try chip(std.testing.allocator, sig2, null, .{ .variant = .filter, .label = "News", .leading_icon = .star });
+    defer b3.deinit();
+    try std.testing.expect(b3.children.items[0].visible);
+    sig2.set(false);
+    try std.testing.expect(b3.children.items[0].visible); // stays visible
+}
+
+test "chip: RTL mirrors the content row (the leading icon moves to the end side)" {
+    const i18n = try ui.i18n.I18n.init(std.testing.allocator, "en");
+    defer i18n.deinit();
+    try i18n.addArb("ar", "{\"x\":\"y\"}", .rtl);
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    try i18n.setLocale("ar");
+    const b = try chip(std.testing.allocator, null, null, .{ .label = "OK", .leading_icon = .star });
+    defer b.deinit();
+    b.layout(.{ .x = 0, .y = 0, .w = 200, .h = 32 });
+    const ic = b.children.items[0];
+    const lb = b.children.items[1];
+    // mirrored: the label is on the start (left) side, the icon on the end
+    // (right) side, the 8dp gap preserved
+    try std.testing.expect(ic.bounds.x > lb.bounds.x);
+    try std.testing.expectEqual(lb.bounds.x + lb.bounds.w + 8, ic.bounds.x);
 }
 
 test "chip: the content row lays out centered with the 8dp icon gap" {
@@ -544,6 +658,46 @@ test "golden: filter chip selected paints the secondary_container + the check ic
     try std.testing.expectEqual(t.colors.secondary_container, f.pixelAt(23, 24));
     // the automatic check icon (selected, no leading icon): on_secondary_container ink
     try std.testing.expect(f.countColorIn(.{ .x = 20, .y = 8, .w = 80, .h = 32 }, t.colors.on_secondary_container) > 0);
+}
+
+test "golden: a trailing-only input chip recolors its close icon on selection" {
+    const t = theme_mod.light;
+    const sig = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer sig.deinit();
+    const b = try chip(std.testing.allocator, sig, null, .{ .variant = .input, .label = "In", .trailing_icon = .close, .theme = t });
+    defer b.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 160, 48);
+    defer r.deinit();
+    b.layout(.{ .x = 20, .y = 8, .w = 100, .h = 32 });
+    const trail = b.children.items[b.children.items.len - 1]; // the close icon
+    r.paint(b, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    // unselected: the trailing icon ink is OnSurfaceVariant
+    try std.testing.expect(f.countColorIn(trail.bounds, t.colors.on_surface_variant) > 0);
+    // selected: it recolors as TRAILING (OnSecondaryContainer) — a
+    // trailing-only chip's first child is not misclassified as leading
+    sig.set(true);
+    r.paint(b, 0xFFFFFFFF);
+    var f2 = try r.readback(std.testing.allocator);
+    defer f2.deinit();
+    try std.testing.expect(f2.countColorIn(trail.bounds, t.colors.on_secondary_container) > 0);
+}
+
+test "golden: a constrained chip clips its label ink to the bounds" {
+    const t = theme_mod.light;
+    const b = try chip(std.testing.allocator, null, null, .{ .label = "A very long chip label that overflows", .theme = t });
+    defer b.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 120, 48);
+    defer r.deinit();
+    b.layout(.{ .x = 20, .y = 8, .w = 60, .h = 32 }); // narrower than the content
+    r.paint(b, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    // no label ink (on_surface) outside the chip's horizontal bounds — the
+    // outline stroke is a different color and stays inside
+    try std.testing.expectEqual(@as(u64, 0), f.countColorIn(.{ .x = 0, .y = 0, .w = 19, .h = 48 }, t.colors.on_surface));
+    try std.testing.expectEqual(@as(u64, 0), f.countColorIn(.{ .x = 81, .y = 0, .w = 39, .h = 48 }, t.colors.on_surface));
 }
 
 test "golden: disabled chip paints the OnSurface@0.12 outline" {

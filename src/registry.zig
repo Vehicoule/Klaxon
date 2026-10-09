@@ -490,7 +490,9 @@ fn deinitF32Signal(p: *anyopaque) void {
 /// children never serialize.
 fn buildChip(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const copts = try value_mod.optionsFromValue(chip_w.ChipOptions, opts, null, null);
-    if (opts.get("selected") != null) {
+    // a null "selected" means the field default (an action chip), not a toggle
+    const has_selected = if (opts.get("selected")) |v| v != .null else false;
+    if (has_selected) {
         const sig = try buildBoolSignal(allocator, opts, ctx, "selected");
         const n = try chip_w.chip(allocator, sig, null, copts);
         return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readBoolSignal }, .skip_children = true };
@@ -1107,6 +1109,16 @@ test "registry: chip (M3E) round-trips (toggle with its selected state, and plai
     try std.testing.expectEqualStrings(plain_doc, plain_out);
     try std.testing.expectEqual(ui.semantics.Role.button, plain.semantics.?.role);
     try std.testing.expect(plain.semantics.?.checked == null);
+    // null = the field default: no signal (an action chip), and the null
+    // round-trips verbatim
+    const null_doc = "{\"name\":\"chip\",\"options\":{\"label\":\"Add\",\"selected\":null}}";
+    const nullnode = try treeFromJson(&ctx, std.testing.allocator, null_doc);
+    defer nullnode.deinit();
+    const null_out = try treeToJson(&ctx, nullnode, std.testing.allocator);
+    defer std.testing.allocator.free(null_out);
+    try std.testing.expectEqualStrings(null_doc, null_out);
+    try std.testing.expectEqual(ui.semantics.Role.button, nullnode.semantics.?.role);
+    try std.testing.expect(nullnode.semantics.?.checked == null);
 }
 
 test "registry: chip (M3E) schema exposes the right editor kinds" {
