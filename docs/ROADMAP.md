@@ -208,7 +208,7 @@ minimized at the top or in the outline cutout), edge icons, supporting text, the
 active indicator / outline per state, real text entry with caret + semantics) —
 replacing the P0 fixtures. Self-register.
 
-### 2d.3. Widgets — Surfaces & display (batch 3) — IN PROGRESS (PR D1 DONE — PR #27; PR D2 DONE — PR #28; PR D3 DONE — PR #29; PR D4 DONE — PR #30, 68 widgets today; PR D5: side sheets + pull-to-refresh next)
+### 2d.3. Widgets — Surfaces & display (batch 3) — DONE (PR D1 — PR #27; PR D2 — PR #28; PR D3 — PR #29; PR D4 — PR #30; PR D5 — PR #31, 70 widgets today; 2d.4 next)
 
 Cards ×3 (elevated / filled / outlined) — DONE (PR #27, M3E: CornerMedium 12dp,
 SurfaceContainerHighest/Low + OutlineVariant stroke, state layer, container
@@ -224,12 +224,24 @@ SurfaceContainerHigh pill with a leading search icon, single-line text entry,
 placeholder, trailing clear button, caret, live text signal), navigation rail
 — DONE (PR #30: collapsed 96dp rail with 56x56 circle active indicator,
 expanded 220-360dp rail with 56dp-tall pill indicators, live selection
-signal, tab-group keyboard nav), side sheets, pull-to-refresh.
+signal, tab-group keyboard nav), side sheets — DONE (PR #31: a panel docked to
+the start/end edge (logical sides flip with RTL), full height, width option
+(256); standard = coplanar (Surface, CornerNone, no scrim), modal = scrim
+@32% + SurfaceContainerLow panel with content-side CornerLarge 16dp; a scrim
+click, Escape or back closes it; horizontal spatial-spring slide), pull-to-
+refresh — DONE (PR #31: a drag down at scroll top pulls (adjusted = pull ×
+0.5), the 40dp SurfaceContainerHigh circle + 16dp arc indicator rides the
+content's top edge; release past 80dp fires on_refresh + the live refreshing
+signal; the gesture steals the pointer capture at the first move past the
+top — a clickable child cannot strand the indicator).
 
-### 2d.4. Widgets — Pickers + M3E extras (batch 4) — PLANNED
+### 2d.4. Widgets — Pickers + M3E extras (batch 4) — IN PROGRESS (PR #32: the M3E loading indicator)
 
-Date/time pickers, the M3E shape-morphing loading indicator (reference: m3e-canvas ports
-it from material-components-android), color picker.
+The M3E shape-morphing loading indicator (reference: m3e-canvas ports it from
+material-components-android) — IN PROGRESS (PR #32: the 48dp container, the
+38dp active shape, the 7-polygon indeterminate morph loop (650ms morphs +
+4666ms global rotation) / determinate via a progress signal, the contained
+variant). Date/time pickers, color picker — next (PR #33).
 
 ### 2e. Designer — no-code UI builder — PLANNED (v1 after 2d.2)
 
@@ -250,7 +262,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 68 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26), 2d.3 PR D1 DONE (cards x3, list items x3 — PR #27), 2d.3 PR D2 DONE (dropdown menu — PR #28), 2d.3 PR D3 DONE (segmented button + split button — PR #29), 2d.3 PR D4 DONE (search bar + navigation rail — PR #30); the catalog continues: 2d.3 (side sheets, pull-to-refresh) then 2d.4). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 70 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26), 2d.3 DONE (cards x3, list items x3 — PR #27; dropdown menu — PR #28; segmented button + split button — PR #29; search bar + navigation rail — PR #30; side sheet + pull-to-refresh — PR #31); the catalog continues: 2d.4 (loading indicator, pickers, color picker)). No-code designer v1 (2e).
 
 ---
 
