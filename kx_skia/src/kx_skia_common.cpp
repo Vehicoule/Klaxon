@@ -236,6 +236,19 @@ void kx_stroke_polyline(kx_ctx* ctx, const float* xs, const float* ys, int count
     ctx->canvas->drawPath(builder.snapshot(), paint);
 }
 
+void kx_fill_polygon(kx_ctx* ctx, const float* xs, const float* ys, int count, uint32_t rgba) {
+    if (!ctx || !ctx->canvas || !xs || !ys || count < 3) return;
+    SkPaint paint;
+    paint.setColor(kx_to_skcolor(rgba));
+    paint.setAntiAlias(true);
+    paint.setStyle(SkPaint::kFill_Style);
+    SkPathBuilder builder;
+    builder.moveTo(xs[0], ys[0]);
+    for (int i = 1; i < count; i++) builder.lineTo(xs[i], ys[i]);
+    builder.close();
+    ctx->canvas->drawPath(builder.snapshot(), paint);
+}
+
 void kx_save(kx_ctx* ctx) {
     if (ctx && ctx->canvas) ctx->canvas->save();
 }
@@ -287,7 +300,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.8.0";
+    return "0.9.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {
