@@ -47,7 +47,11 @@
 // button) — Phase 2d.3 PR D4.
 // NavigationRail (1): the M3E navigation rail (collapsed circle indicator /
 // expanded pill, signal-driven selection) — Phase 2d.3 PR D4.
-// ~67 widgets at v1 (see docs/ROADMAP.md).
+// SideSheet (1): the M3E side sheet (standard coplanar / modal + scrim,
+// start/end anchored) — Phase 2d.3 PR D5.
+// PullToRefresh (1): the M3E pull-to-refresh container (pull gesture +
+// arc indicator, live refreshing signal) — Phase 2d.3 PR D5.
+// ~69 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
 pub const icon = @import("widgets/icon.zig");
@@ -70,6 +74,8 @@ pub const segmented_button = @import("widgets/segmented_button.zig");
 pub const split_button = @import("widgets/split_button.zig");
 pub const search_bar = @import("widgets/search_bar.zig");
 pub const navigation_rail = @import("widgets/navigation_rail.zig");
+pub const side_sheet = @import("widgets/side_sheet.zig");
+pub const pull_to_refresh = @import("widgets/pull_to_refresh.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");

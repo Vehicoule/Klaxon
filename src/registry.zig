@@ -40,6 +40,8 @@ const segmented_button_w = @import("widgets/segmented_button.zig");
 const split_button_w = @import("widgets/split_button.zig");
 const search_bar_w = @import("widgets/search_bar.zig");
 const navigation_rail_w = @import("widgets/navigation_rail.zig");
+const side_sheet_w = @import("widgets/side_sheet.zig");
+const pull_to_refresh_w = @import("widgets/pull_to_refresh.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -102,7 +104,10 @@ pub const WidgetEntry = struct {
 /// row) + split button (2d.3 PR D3: the M3E split button, filled, 5 sizes) +
 /// search bar (2d.3 PR D4: the M3E collapsed search bar — pill, text entry,
 /// clear button) + navigation rail (2d.3 PR D4: the M3E navigation rail —
-/// collapsed circle indicator / expanded pill, live selection).
+/// collapsed circle indicator / expanded pill, live selection) + side sheet
+/// (2d.3 PR D5: the M3E side sheet — standard coplanar / modal + scrim,
+/// start/end anchored) + pull-to-refresh (2d.3 PR D5: the M3E PTR container
+/// — pull gesture + arc indicator, live refreshing signal).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -128,6 +133,8 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "split_button", .category = "input", .build = buildSplitButton, .schema = schemaSplitButton },
     .{ .name = "search_bar", .category = "input", .build = buildSearchBar, .schema = schemaSearchBar },
     .{ .name = "navigation_rail", .category = "navigation", .build = buildNavigationRail, .schema = schemaNavigationRail },
+    .{ .name = "side_sheet", .category = "navigation", .build = buildSideSheet, .schema = schemaSideSheet },
+    .{ .name = "pull_to_refresh", .category = "input", .build = buildPullToRefresh, .schema = schemaPullToRefresh },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -758,6 +765,30 @@ fn buildNavigationRail(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx
     return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal }, .skip_children = true };
 }
 
+/// M3E side sheet (2d.3 PR D5): like the bottom sheet — the body/content
+/// are factory slots (subtree documents); the node's children (body slot +
+/// internal scrim/panel) are not document children. "open" is ALWAYS live
+/// (round-trips, like bottom_sheet).
+fn buildSideSheet(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const sopts = try value_mod.optionsFromValue(side_sheet_w.SideSheetOptions, opts, buildSlotNode, ctx);
+    errdefer deinitSlot2(sopts.content, sopts.body);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "open");
+    const n = try side_sheet_w.sideSheet(allocator, sig, null, sopts);
+    // the node's children (body slot + internal scrim/panel) are not document
+    // children — content passes through the option slots
+    return .{ .node = n, .live = .{ .signal = sig, .field = "open", .read = readBoolSignal }, .skip_children = true };
+}
+
+/// M3E pull-to-refresh (2d.3 PR D5): a container — the content IS a document
+/// child (attached by the framework after the build, like nav_bar's items).
+/// "refreshing" is ALWAYS live (round-trips).
+fn buildPullToRefresh(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const popts = try value_mod.optionsFromValue(pull_to_refresh_w.PullToRefreshOptions, opts, null, null);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "refreshing");
+    const n = try pull_to_refresh_w.pullToRefresh(allocator, sig, null, popts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "refreshing", .read = readBoolSignal } };
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1106,6 +1137,19 @@ fn schemaNavigationRail(allocator: std.mem.Allocator) anyerror![]value_mod.PropS
     return value_mod.appendSchemaProp(base, allocator, "items", .unsupported, &.{}, .null);
 }
 
+fn schemaSideSheet(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // body/content (slot), side (select), modal (toggle), width (number),
+    // label (text) — automatic; "open" is live
+    const base = try value_mod.schemaOf(side_sheet_w.SideSheetOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
+}
+
+fn schemaPullToRefresh(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // label (text) — automatic; "refreshing" is live; theme is unsupported
+    const base = try value_mod.schemaOf(pull_to_refresh_w.PullToRefreshOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "refreshing", .toggle, &.{}, .{ .bool = false });
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -1179,7 +1223,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 34), widgets.len);
+    try std.testing.expectEqual(@as(usize, 36), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1726,6 +1770,61 @@ test "registry: navigation_rail (M3E) round-trips (items + live selection, and p
     const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
     defer std.testing.allocator.free(plain_out);
     try std.testing.expectEqualStrings("{\"name\":\"navigation_rail\",\"options\":{\"items\":[{\"label\":\"Home\",\"icon\":\"home\"}],\"selected\":0}}", plain_out);
+}
+
+test "registry: side_sheet (M3E) round-trips with its open state and slots" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"side_sheet\",\"options\":{\"side\":\"start\",\"modal\":true,\"width\":320,\"open\":true,\"body\":{\"name\":\"text\",\"options\":{\"text\":\"Body\"}},\"content\":{\"name\":\"text\",\"options\":{\"text\":\"Filters\"}}}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    try std.testing.expectEqual(ui.semantics.Role.group, node.children.items[2].semantics.?.role); // the panel
+}
+
+test "registry: pull_to_refresh (M3E) round-trips (live refreshing + the content child)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // the content is a document child (not a slot): it serializes as a child
+    const doc = "{\"name\":\"pull_to_refresh\",\"options\":{\"refreshing\":true},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"List\"}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(@as(usize, 1), node.children.items.len); // the content child
+    try std.testing.expectEqual(ui.semantics.Role.group, node.semantics.?.role);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // plain: no "refreshing" option -> the default false is live and round-trips
+    const plain_doc = "{\"name\":\"pull_to_refresh\",\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"List\"}}]}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings("{\"name\":\"pull_to_refresh\",\"options\":{\"refreshing\":false},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"List\"}}]}", plain_out);
+}
+
+test "registry: side_sheet + pull_to_refresh (M3E) schemas expose the right editor kinds" {
+    const ss_schema = try byName("side_sheet").?.schema(std.testing.allocator);
+    defer {
+        for (ss_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(ss_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(ss_schema, "body").?);
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(ss_schema, "content").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(ss_schema, "side").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(ss_schema, "modal").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(ss_schema, "width").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(ss_schema, "open").?);
+    try std.testing.expect(findProp(ss_schema, "theme") == null); // global token set
+    const ptr_schema = try byName("pull_to_refresh").?.schema(std.testing.allocator);
+    defer {
+        for (ptr_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(ptr_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(ptr_schema, "refreshing").?);
+    try std.testing.expect(findProp(ptr_schema, "theme") == null); // global token set
 }
 
 test "registry: search_bar + navigation_rail (M3E) schemas expose the right editor kinds" {

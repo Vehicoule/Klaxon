@@ -136,6 +136,11 @@ pub fn scrollView(allocator: std.mem.Allocator, opts: ScrollViewOptions) !*Node 
 
 // --- scroll API (programmatic + Scrollbar) ---
 
+/// Whether the node is a scroll view (pull-to-refresh's at-scroll-top check).
+pub fn isScrollView(n: *Node) bool {
+    return n.vtable == &scroll_view_vtable;
+}
+
 pub fn scrollOffset(n: *Node) f32 {
     return stateOf(ScrollViewState, n).scroll.offset;
 }

@@ -43,6 +43,8 @@ const menu_w = widgets.menu;
 const segmented_button_w = widgets.segmented_button;
 const search_bar_w = widgets.search_bar;
 const navigation_rail_w = widgets.navigation_rail;
+const side_sheet_w = widgets.side_sheet;
+const pull_to_refresh_w = widgets.pull_to_refresh;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -83,6 +85,9 @@ const Refs = struct {
     sb_m3e: *Node, // the M3E search bar (Search bar section)
     nr_m3e: *Node, // the M3E navigation rail, collapsed (Navigation rail section)
     nr_exp_m3e: *Node, // the M3E navigation rail, expanded (Navigation rail section)
+    ss_m3e: *Node, // the M3E side sheet (Side sheet section)
+    ss_btn: *Node, // the side sheet's toggle button (Side sheet section)
+    ptr_m3e: *Node, // the M3E pull-to-refresh container (Pull to refresh section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -154,6 +159,11 @@ pub const Gallery = struct {
     nr_change: *state.Signal(u32), // the collapsed rail's change counter
     nr_exp_selected: *state.Signal(usize), // the expanded rail's selection
     nr_exp_change: *state.Signal(u32), // the expanded rail's change counter
+    // the side sheet + pull-to-refresh's signals (M3E sections, 2d.3 PR D5)
+    ss_open: *state.Signal(bool), // the side sheet's open state (toggled)
+    ss_closed: *state.Signal(u32), // the side sheet's close counter
+    ptr_refreshing: *state.Signal(bool), // the PTR's refreshing state
+    ptr_refresh: *state.Signal(u32), // the PTR's refresh counter
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -284,6 +294,14 @@ pub const Gallery = struct {
         errdefer g.nr_exp_selected.deinit();
         g.nr_exp_change = try state.Signal(u32).init(allocator, 0);
         errdefer g.nr_exp_change.deinit();
+        g.ss_open = try state.Signal(bool).init(allocator, false);
+        errdefer g.ss_open.deinit();
+        g.ss_closed = try state.Signal(u32).init(allocator, 0);
+        errdefer g.ss_closed.deinit();
+        g.ptr_refreshing = try state.Signal(bool).init(allocator, false);
+        errdefer g.ptr_refreshing.deinit();
+        g.ptr_refresh = try state.Signal(u32).init(allocator, 0);
+        errdefer g.ptr_refresh.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -421,6 +439,10 @@ pub const Gallery = struct {
         g.nr_change.deinit();
         g.nr_exp_selected.deinit();
         g.nr_exp_change.deinit();
+        g.ss_open.deinit();
+        g.ss_closed.deinit();
+        g.ptr_refreshing.deinit();
+        g.ptr_refresh.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -468,6 +490,8 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Split buttons (M3E)", try buildSplitSection(g, theme)));
     content.add(try section(a, theme, "Search bar (M3E)", try buildSearchBarSection(g, theme)));
     content.add(try section(a, theme, "Navigation rail (M3E)", try buildNavRailSection(g, theme)));
+    content.add(try section(a, theme, "Side sheet (M3E)", try buildSideSheetSection(g, theme)));
+    content.add(try section(a, theme, "Pull to refresh (M3E)", try buildPullToRefreshSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -924,6 +948,63 @@ fn buildNavRailSection(g: *Gallery, theme: Theme) !*Node {
     const box = try layout.constrainedBox(a, .{ .min_h = 320, .max_h = 320 });
     box.add(row);
     return box;
+}
+
+/// Side sheet (M3E, batch 2d.3 PR D5): a modal side sheet (scrim +
+/// SurfaceContainerLow panel) toggled by a button; the close counter fires
+/// on a scrim click / Escape.
+fn buildSideSheetSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    const btn = try button_w.button(a, .{ .fn_ptr = ssToggleCb, .userdata = g }, .{ .label = "Toggle side sheet", .theme = theme });
+    g.refs.ss_btn = btn;
+    row.add(btn);
+    row.add(try text_w.BoundText(u32).text(a, g.ss_closed, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(row);
+    const body = try text_w.text(a, "Page body behind the sheet", .{ .size = 14, .color = theme.colors.on_surface_variant });
+    const content = try layout.column(a, .{ .gap = 8, .padding = 16 });
+    content.add(try text_w.text(a, "Filters", .{ .size = 16, .bold = true, .color = theme.colors.on_surface }));
+    content.add(try text_w.text(a, "Recent", .{ .size = 14, .color = theme.colors.on_surface_variant }));
+    content.add(try text_w.text(a, "Favorites", .{ .size = 14, .color = theme.colors.on_surface_variant }));
+    const ss = try side_sheet_w.sideSheet(a, g.ss_open, .{ .fn_ptr = ssClosedCb, .userdata = g }, .{
+        .modal = true,
+        .body = body,
+        .content = content,
+        .theme = theme,
+    });
+    g.refs.ss_m3e = ss;
+    // the sheet fills finite constraints (a sheet is screen-height — bound it)
+    const box = try layout.constrainedBox(a, .{ .min_h = 240, .max_h = 240 });
+    box.add(ss);
+    col.add(box);
+    return col;
+}
+
+/// Pull to refresh (M3E, batch 2d.3 PR D5): a scrollable list wrapped in a
+/// PTR container — pull down at the top past 80dp to trigger a refresh (the
+/// counter fires; the refreshing state shows until the app clears it).
+fn buildPullToRefreshSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const sv = try widgets.scroll_view.scrollView(a, .{});
+    const list = try layout.column(a, .{ .gap = 8, .padding = 8 });
+    var i: usize = 0;
+    while (i < 24) : (i += 1) {
+        list.add(try text_w.text(a, "Pull me down — list item", .{ .size = 14, .color = theme.colors.on_surface }));
+    }
+    sv.add(list);
+    const ptr = try pull_to_refresh_w.pullToRefresh(a, g.ptr_refreshing, .{ .fn_ptr = ptrRefreshCb, .userdata = g }, .{ .theme = theme });
+    ptr.add(sv);
+    g.refs.ptr_m3e = ptr;
+    const box = try layout.constrainedBox(a, .{ .min_h = 240, .max_h = 240 });
+    box.add(ptr);
+    col.add(box);
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    row.add(try text_w.BoundText(u32).text(a, g.ptr_refresh, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(bool).text(a, g.ptr_refreshing, fmtRefreshing, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(row);
+    return col;
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.
@@ -1457,6 +1538,21 @@ fn nrExpChangeCb(userdata: ?*anyopaque) void {
     g.nr_exp_change.set(g.nr_exp_change.peek() + 1);
 }
 
+fn ssToggleCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.ss_open.set(!g.ss_open.peek());
+}
+
+fn ssClosedCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.ss_closed.set(g.ss_closed.peek() + 1);
+}
+
+fn ptrRefreshCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.ptr_refresh.set(g.ptr_refresh.peek() + 1);
+}
+
 fn chipCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.chip_sel.set(!g.chip_sel.peek()); // the Chip widget only fires callbacks
@@ -1582,6 +1678,10 @@ fn fmtTabsSel(v: usize, buf: []u8) []const u8 {
 }
 fn fmtDrawerOpen(v: bool, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "Drawer {s}", .{if (v) "open" else "closed"}) catch "Drawer";
+}
+
+fn fmtRefreshing(v: bool, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Refreshing {s}", .{if (v) "yes" else "no"}) catch "Refreshing";
 }
 fn fmtStatus(v: StatusBuf, buf: []u8) []const u8 {
     const s = std.mem.sliceTo(&v, 0);
@@ -2056,6 +2156,61 @@ test "gallery: the M3E split button fires the leading + trailing callbacks" {
     router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w - 10, .y = b.y + b.h / 2 - sy });
     try std.testing.expectEqual(@as(u32, 1), g.split_press.peek());
     try std.testing.expectEqual(@as(u32, 1), g.split_trail.peek());
+}
+
+test "gallery: the M3E side sheet toggles via the button and closes on a scrim click" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Side sheet section sits below the Navigation rail section — scroll
+    // to its toggle button (the sheet sits below it; both fit the viewport)
+    const ss = g.refs.ss_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, g.refs.ss_btn.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = ss.bounds;
+    try std.testing.expect(!g.ss_open.peek());
+    // click the toggle button (the section's first row)
+    const btn = g.refs.ss_btn.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = btn.x + btn.w / 2, .y = btn.y + btn.h / 2 - sy, .raw_x = btn.x + btn.w / 2, .raw_y = btn.y + btn.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = btn.x + btn.w / 2, .y = btn.y + btn.h / 2 - sy, .raw_x = btn.x + btn.w / 2, .raw_y = btn.y + btn.h / 2 - sy });
+    try std.testing.expect(g.ss_open.peek()); // opened via the button
+    // a scrim click (left of the panel, which docks to the right edge)
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + 20, .y = b.y + b.h / 2 - sy, .raw_x = b.x + 20, .raw_y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + 20, .y = b.y + b.h / 2 - sy, .raw_x = b.x + 20, .raw_y = b.y + b.h / 2 - sy });
+    try std.testing.expect(!g.ss_open.peek()); // closed via the scrim
+    try std.testing.expectEqual(@as(u32, 1), g.ss_closed.peek()); // on_closed fired
+}
+
+test "gallery: the M3E pull-to-refresh triggers on a pull past the threshold" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Pull to refresh section sits below the Side sheet section
+    const ptr = g.refs.ptr_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, ptr.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = ptr.bounds;
+    try std.testing.expect(!g.ptr_refreshing.peek());
+    // pull down 100 at the top (past the 80dp threshold)
+    const x = b.x + b.w / 2;
+    const y0 = b.y + 40;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x, .y = y0 - sy, .raw_x = x, .raw_y = y0 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = x, .y = y0 + 100 - sy, .raw_x = x, .raw_y = y0 + 100 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x, .y = y0 + 100 - sy, .raw_x = x, .raw_y = y0 + 100 - sy });
+    try std.testing.expectEqual(@as(u32, 1), g.ptr_refresh.peek()); // on_refresh fired
+    try std.testing.expect(g.ptr_refreshing.peek()); // the signal round-trips
+    try std.testing.expect(pull_to_refresh_w.adjusted(ptr) > 0); // the indicator holds at rest
+    // the app clears the refreshing state → the indicator hides
+    g.ptr_refreshing.set(false);
+    try std.testing.expectEqual(@as(f32, 0), pull_to_refresh_w.adjusted(ptr));
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
