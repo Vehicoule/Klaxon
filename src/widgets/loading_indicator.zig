@@ -91,6 +91,10 @@ const LiState = struct {
     loop_running: bool = false, // the indeterminate loop launched
     anim_channel: u8 = 0, // morph channel marker (stable address)
     rot_channel: u8 = 0, // global rotation channel marker (stable address)
+    /// The determinate semantic value ("35%") — a11y (Phase 2c); the
+    /// indeterminate indicator announces no value (like progress.zig).
+    value_buf: [16]u8 = std.mem.zeroes([16]u8),
+    value_len: usize = 0,
 };
 
 fn stateOf(n: *Node) *LiState {
@@ -132,8 +136,38 @@ fn paintShape(ctx: *kx.Ctx, shape: ShapeDef, cx: f32, cy: f32, r: f32, rotation:
             ui.paint.fillRRect(ctx, cx - r, cy - r, r * 2, r * 2, r, color);
         },
         .pill => {
-            // a horizontal stadium: 2r wide, r tall, centered
-            ui.paint.fillRRect(ctx, cx - r, cy - r / 2, r * 2, r, r / 2, color);
+            // a stadium (2r wide, r tall) rotated by `rotation`: sample the
+            // capsule outline (two semicircular caps + tangent lines) and
+            // fill the polygon — a rotated rrect cannot express the angle
+            const rot = rotation * std.math.pi / 180;
+            const cr = r / 2; // the cap radius
+            const co = r - cr; // the cap centers' offset from the center
+            const cos_r = @cos(rot);
+            const sin_r = @sin(rot);
+            var xs: [25]f32 = undefined;
+            var ys: [25]f32 = undefined;
+            var k: usize = 0;
+            var i: usize = 0;
+            while (i <= 12) : (i += 1) {
+                // the left cap arc: 90°..270° around (-co, 0)
+                const a = std.math.pi / 2.0 + std.math.pi * @as(f32, @floatFromInt(i)) / 12.0;
+                const px = -co + @cos(a) * cr;
+                const py = @sin(a) * cr;
+                xs[k] = cx + px * cos_r - py * sin_r;
+                ys[k] = cy + px * sin_r + py * cos_r;
+                k += 1;
+            }
+            i = 1;
+            while (i <= 12) : (i += 1) {
+                // the right cap arc: 270°..450° around (+co, 0)
+                const a = std.math.pi * 1.5 + std.math.pi * @as(f32, @floatFromInt(i)) / 12.0;
+                const px = co + @cos(a) * cr;
+                const py = @sin(a) * cr;
+                xs[k] = cx + px * cos_r - py * sin_r;
+                ys[k] = cy + px * sin_r + py * cos_r;
+                k += 1;
+            }
+            ui.paint.fillPolygon(ctx, xs[0..k], ys[0..k], color);
         },
         .ngon => {
             const n: usize = shape.n;
@@ -254,9 +288,17 @@ fn liRotCompleteCb(userdata: ?*anyopaque) void {
     }
 }
 
-/// The determinate progress changed (the app): repaint.
+/// The determinate progress changed (the app): repaint + keep the semantic
+/// value in sync (Phase 2c). The announced value is clamped.
 fn liSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
+    const s = stateOf(n);
+    if (s.sig) |sig| {
+        const str = std.fmt.bufPrint(&s.value_buf, "{d:.0}%", .{std.math.clamp(sig.peek(), 0, 1) * 100}) catch return;
+        s.value_len = str.len;
+        if (n.semantics) |sem| sem.value = s.value_buf[0..s.value_len];
+        ui.semantics.notifyControlChanged(n); // a11y: the value changed
+    }
     n.markDirty();
 }
 
@@ -289,8 +331,16 @@ pub fn loadingIndicator(allocator: std.mem.Allocator, progress: ?*ui.state.Signa
     errdefer allocator.destroy(s);
     s.* = .{ .opts = opts, .sig = progress };
     node.state = s;
-    ui.semantics.attach(node, .{ .role = .progress, .label = "Loading indicator" }); // Phase 2c
-    if (progress) |sig| sig.subscribe(.{ .callback = .{ .fn_ptr = liSyncCb, .userdata = node } });
+    // Phase 2c: indeterminate announces no value; determinate announces the
+    // clamped progress percentage (the same pattern as the slider).
+    if (progress) |sig| {
+        const str = std.fmt.bufPrint(&s.value_buf, "{d:.0}%", .{std.math.clamp(sig.peek(), 0, 1) * 100}) catch "";
+        s.value_len = str.len;
+        ui.semantics.attach(node, .{ .role = .progress, .label = "Loading indicator", .value = s.value_buf[0..s.value_len] });
+        sig.subscribe(.{ .callback = .{ .fn_ptr = liSyncCb, .userdata = node } });
+    } else {
+        ui.semantics.attach(node, .{ .role = .progress, .label = "Loading indicator" });
+    }
     return node;
 }
 
@@ -415,4 +465,47 @@ test "golden: the plain variant paints no container — the Primary shape over t
     // a 12-gon has gaps between its points near the bounding radius: the
     // corner of the 38dp box (13, 13) is outside the polygon (rotated)
     try std.testing.expect(f2.countColorIn(.{ .x = 13, .y = 13, .w = 6, .h = 6 }, t.colors.primary) == 0);
+}
+
+test "golden: the pill rotates with the shape rotation (a rotated capsule)" {
+    const t = theme_mod.light;
+    const n = try loadingIndicator(std.testing.allocator, null, .{ .theme = t });
+    defer n.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 64, 64);
+    defer r.deinit();
+    n.layout(.{ .x = 8, .y = 8, .w = 48, .h = 48 });
+    // force the pill shape (index 3) at 0°: a horizontal stadium (38 wide,
+    // 19 tall, centered at (32, 32))
+    stateOf(n).morph_index = 3;
+    stateOf(n).morph_rotation = 0;
+    r.paint(n, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    try std.testing.expectEqual(t.colors.primary, f.pixelAt(17, 32)); // the left cap
+    try std.testing.expectEqual(t.colors.primary, f.pixelAt(47, 32)); // the right cap
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(32, 17)); // no ink above (thin)
+    // at 90° the same stadium is vertical: ink moves to the top/bottom caps
+    stateOf(n).morph_rotation = 90;
+    r.paint(n, 0xFFFFFFFF);
+    var f2 = try r.readback(std.testing.allocator);
+    defer f2.deinit();
+    try std.testing.expectEqual(t.colors.primary, f2.pixelAt(32, 17)); // the top cap
+    try std.testing.expectEqual(t.colors.primary, f2.pixelAt(32, 47)); // the bottom cap
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f2.pixelAt(17, 32)); // no ink at the side
+}
+
+test "loading_indicator: determinate announces its progress value (a11y); indeterminate announces none" {
+    const sig = try ui.state.Signal(f32).init(std.testing.allocator, 0.35);
+    defer sig.deinit();
+    const n = try loadingIndicator(std.testing.allocator, sig, .{});
+    defer n.deinit();
+    try std.testing.expectEqualStrings("35%", n.semantics.?.value);
+    sig.set(0.75);
+    try std.testing.expectEqualStrings("75%", n.semantics.?.value);
+    sig.set(2); // clamped
+    try std.testing.expectEqualStrings("100%", n.semantics.?.value);
+    // the indeterminate indicator announces no value (like progress.zig)
+    const ind = try loadingIndicator(std.testing.allocator, null, .{});
+    defer ind.deinit();
+    try std.testing.expectEqualStrings("", ind.semantics.?.value);
 }

@@ -791,12 +791,18 @@ fn buildPullToRefresh(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx)
     return .{ .node = n, .live = .{ .signal = sig, .field = "refreshing", .read = readBoolSignal } };
 }
 
-/// M3E loading indicator (2d.4 PR #32): a leaf. "progress" (0..1) present →
-/// determinate (a ctx-owned f32 signal, ALWAYS live — round-trips); absent →
-/// the indeterminate morph loop (no live field).
+/// M3E loading indicator (2d.4 PR #32): a LEAF (skip_children — a document
+/// child would be accepted but never laid out). "progress" (0..1) present AND
+/// non-null → determinate (a ctx-owned f32 signal, ALWAYS live — round-trips);
+/// absent or explicit null → the indeterminate morph loop (no live field; an
+/// explicit null round-trips unchanged).
 fn buildLoadingIndicator(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const lopts = try value_mod.optionsFromValue(loading_indicator_w.LoadingIndicatorOptions, opts, null, null);
-    if (opts.get("progress")) |_| {
+    const determinate = if (opts.get("progress")) |v| switch (v) {
+        .null => false, // explicit null = indeterminate (kept in the snapshot)
+        else => true,
+    } else false;
+    if (determinate) {
         const val: f32 = switch (opts.get("progress").?) {
             .float => |f| @floatCast(f),
             .int => |i| @floatFromInt(i),
@@ -805,10 +811,10 @@ fn buildLoadingIndicator(allocator: std.mem.Allocator, opts: Value, ctx: *BuildC
         const sig = try state.Signal(f32).init(allocator, val); // *Signal(f32)
         try ctx.track(sig, deinitF32Signal);
         const n = try loading_indicator_w.loadingIndicator(allocator, sig, lopts);
-        return .{ .node = n, .live = .{ .signal = sig, .field = "progress", .read = readF32Signal } };
+        return .{ .node = n, .live = .{ .signal = sig, .field = "progress", .read = readF32Signal }, .skip_children = true };
     }
     const n = try loading_indicator_w.loadingIndicator(allocator, null, lopts);
-    return .{ .node = n };
+    return .{ .node = n, .skip_children = true };
 }
 
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
@@ -1874,6 +1880,22 @@ test "registry: loading_indicator (M3E) round-trips (determinate progress + plai
     const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
     defer std.testing.allocator.free(plain_out);
     try std.testing.expectEqualStrings(plain_doc, plain_out);
+    // an EXPLICIT null progress stays indeterminate and round-trips unchanged
+    const null_doc = "{\"name\":\"loading_indicator\",\"options\":{\"progress\":null}}";
+    const nullnode = try treeFromJson(&ctx, std.testing.allocator, null_doc);
+    defer nullnode.deinit();
+    const null_out = try treeToJson(&ctx, nullnode, std.testing.allocator);
+    defer std.testing.allocator.free(null_out);
+    try std.testing.expectEqualStrings(null_doc, null_out);
+}
+
+test "registry: loading_indicator (a leaf) rejects document children in both modes" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"loading_indicator\",\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc));
+    const det_doc = "{\"name\":\"loading_indicator\",\"options\":{\"progress\":0.5},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, det_doc));
 }
 
 test "registry: loading_indicator (M3E) schema exposes the right editor kinds" {
