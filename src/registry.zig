@@ -642,24 +642,18 @@ fn parseMenuItems(allocator: std.mem.Allocator, v: Value) ![]menu_w.MenuItem {
 }
 
 /// M3E segmented button (2d.3 PR D3): the segments are internal chrome —
-/// document children never serialize. A non-null "selected" option drives a
-/// ctx-owned usize signal (the live selection round-trips). "items" is an
-/// option array parsed manually (optionsFromValue cannot map
-/// []SegmentedItem).
+/// document children never serialize. The selection is ALWAYS live (like
+/// the text field, PR #26): a plain document keeps the default 0 and clicks
+/// round-trip. "items" is an option array parsed manually (optionsFromValue
+/// cannot map []SegmentedItem).
 fn buildSegmentedButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const sopts = try value_mod.optionsFromValue(segmented_button_w.SegmentedButtonOptions, opts, null, null);
     const items = try parseSegmentedItems(allocator, opts.get("items") orelse Value.null);
     errdefer allocator.free(items);
-    const has_selected = if (opts.get("selected")) |v| v != .null else false;
-    if (has_selected) {
-        const sig = try buildUsizeSignal(allocator, opts, ctx); // "selected"
-        const n = try segmented_button_w.segmentedButton(allocator, items, sig, null, sopts);
-        allocator.free(items); // the factory copies the labels
-        return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal }, .skip_children = true };
-    }
-    const n = try segmented_button_w.segmentedButton(allocator, items, null, null, sopts);
+    const sig = try buildUsizeSignal(allocator, opts, ctx); // "selected" (default 0)
+    const n = try segmented_button_w.segmentedButton(allocator, items, sig, null, sopts);
     allocator.free(items); // the factory copies the labels
-    return .{ .node = n, .skip_children = true };
+    return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal }, .skip_children = true };
 }
 
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
@@ -1537,14 +1531,15 @@ test "registry: segmented_button + split_button (M3E) round-trip (items + live s
     const out = try treeToJson(&ctx, node, std.testing.allocator);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings(doc, out);
-    // plain: no "selected" option -> fixed selection, nothing live to serialize
+    // plain: no "selected" option -> the default 0 is live and round-trips
+    // (the export carries the current selection, like the text field)
     const plain_doc = "{\"name\":\"segmented_button\",\"options\":{\"items\":[{\"label\":\"Day\"}]}}";
     const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
     defer plain.deinit();
     try std.testing.expectEqual(@as(usize, 0), segmented_button_w.selectedIndex(plain));
     const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
     defer std.testing.allocator.free(plain_out);
-    try std.testing.expectEqualStrings(plain_doc, plain_out);
+    try std.testing.expectEqualStrings("{\"name\":\"segmented_button\",\"options\":{\"items\":[{\"label\":\"Day\"}],\"selected\":0}}", plain_out);
     // split_button: every field is options data (no live state)
     const sdoc = "{\"name\":\"split_button\",\"options\":{\"size\":\"medium\",\"enabled\":false,\"label\":\"Save\",\"leading_icon\":\"star\",\"trailing_icon\":\"arrow_down\"}}";
     const snode = try treeFromJson(&ctx, std.testing.allocator, sdoc);

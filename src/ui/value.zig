@@ -453,9 +453,11 @@ fn valueOfField(allocator: std.mem.Allocator, comptime FT: type, val: FT, descri
     switch (@typeInfo(FT)) {
         .bool => return .{ .bool = val },
         .int => |info| {
-            // Value.int is i64: unsigned fields are narrowed (a widget index
-            // is always well within i64)
-            if (info.signedness == .unsigned) return .{ .int = @intCast(val) };
+            // Value.int is i64: unsigned fields are narrowed with a range
+            // check (a usize above maxInt(i64) is a data error, not a trap)
+            if (info.signedness == .unsigned) {
+                return .{ .int = std.math.cast(i64, val) orelse return error.ValueOutOfRange };
+            }
             return .{ .int = val };
         },
         .float => return .{ .float = val },
@@ -745,6 +747,16 @@ test "value: out-of-range numbers are rejected, not trapped" {
     const o = try optionsFromValue(TestOpts, ok, null, null);
     try std.testing.expectEqual(@as(u32, 4294967295), o.bg);
     try std.testing.expectEqual(@as(f32, 4.9), o.radius);
+}
+
+test "value: unsigned option fields serialize with a range check (no trap)" {
+    const T = struct { selected: usize = 0 };
+    // a normal usize round-trips
+    const v = try valueFromOptions(std.testing.allocator, T, .{ .selected = 2 }, null, null);
+    defer v.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 2), v.get("selected").?.int);
+    // a usize above maxInt(i64) is a data error, not a trap
+    try std.testing.expectError(error.ValueOutOfRange, valueFromOptions(std.testing.allocator, T, .{ .selected = std.math.maxInt(usize) }, null, null));
 }
 
 test "value: set upserts object fields" {

@@ -131,16 +131,63 @@ fn mirrorX(b: Rect, r: Rect) Rect {
     return .{ .x = b.x + b.w - (r.x - b.x) - r.w, .y = r.y, .w = r.w, .h = r.h };
 }
 
+/// The segment width FIT to the assigned bounds: the intrinsic width when
+/// the node is wide enough, otherwise the segments shrink so the row fills
+/// exactly the assigned width (a constrained parent never gets paint
+/// outside the node, and hit-testing matches the paint).
+fn segWidthFit(s: *SegState, t: Theme, b: Rect) f32 {
+    const count = s.items.items.len;
+    if (count == 0) return 0;
+    const w = segWidth(s, t);
+    const total = @as(f32, @floatFromInt(count)) * w - @as(f32, @floatFromInt(count - 1)) * border_w;
+    if (total <= b.w) return w;
+    return @max((b.w + @as(f32, @floatFromInt(count - 1)) * border_w) / @as(f32, @floatFromInt(count)), 0);
+}
+
+/// A segment's rect + per-corner radii (itemShape on CornerFull, mirrored in
+/// RTL): first = start half, last = end half, middle = square, single = full.
+const SegShape = struct { sr: Rect, tl: f32, tr: f32, br: f32, bl: f32 };
+
+fn segShape(b: Rect, i: usize, count: usize, w: f32) SegShape {
+    const rtl = ui.i18n.direction() == .rtl;
+    var sr = segRectLtr(b, i, w);
+    if (rtl) sr = mirrorX(b, sr);
+    const half = b.h / 2;
+    var tl: f32 = 0;
+    var tr: f32 = 0;
+    var br: f32 = 0;
+    var bl: f32 = 0;
+    if (count == 1) {
+        tl = half;
+        tr = half;
+        br = half;
+        bl = half;
+    } else if (i == 0) {
+        tl = half;
+        bl = half;
+    } else if (i == count - 1) {
+        tr = half;
+        br = half;
+    }
+    if (rtl) { // the start side flips to the right
+        const t2 = tl;
+        tl = tr;
+        tr = t2;
+        const b2 = bl;
+        bl = br;
+        br = b2;
+    }
+    return .{ .sr = sr, .tl = tl, .tr = tr, .br = br, .bl = bl };
+}
+
 /// The segment under the point (-1 = none), in the widget's parent space.
 fn segAt(s: *SegState, t: Theme, b: Rect, x: f32, y: f32) i32 {
     const count = s.items.items.len;
     if (count == 0) return -1;
     if (y < b.y or y >= b.y + b.h) return -1;
-    const w = segWidth(s, t);
-    const rtl = ui.i18n.direction() == .rtl;
+    const w = segWidthFit(s, t, b);
     for (0..count) |i| {
-        var sr = segRectLtr(b, i, w);
-        if (rtl) sr = mirrorX(b, sr);
+        const sr = segShape(b, i, count, w).sr;
         if (x >= sr.x and x < sr.x + sr.w) return @intCast(i);
     }
     return -1;
@@ -169,7 +216,10 @@ fn segSyncCb(userdata: ?*anyopaque) void {
     const v = s.sig.?.peek();
     if (v < s.items.items.len and v != s.selected) {
         s.selected = v;
-        if (n.semantics) |sem| sem.value = s.items.items[v].label;
+        if (n.semantics) |sem| {
+            sem.value = s.items.items[v].label;
+            ui.semantics.notifyControlChanged(n); // a11y follows external changes
+        }
         n.markDirty();
     }
 }
@@ -212,47 +262,26 @@ fn segPaint(n: *Node, ctx: *kx.Ctx) void {
     const cs = t.colors;
     const count: usize = s.items.items.len;
     if (count == 0) return;
-    const w = segWidth(s, t);
+    const w = segWidthFit(s, t, b);
     const ls = t.type_scale.label_large;
     const bold = ls.weight >= 500;
-    const rtl = ui.i18n.direction() == .rtl;
     const focused = input.isFocused(n);
-    const half = b.h / 2; // CornerFull
+    // One pass per segment, in order (Compose z-order: a later segment's
+    // fill covers the previous segment's border in the 1dp overlap). The
+    // fill + state layer + content are clipped to the segment (a shrunken
+    // segment never bleeds into its neighbours); the border is painted
+    // after the reset (unclipped per segment — like the M3E button's
+    // outline, a stroke is centered on the edge).
     for (0..count) |i| {
         const def = s.items.items[i];
         const idx: i32 = @intCast(i);
-        var sr = segRectLtr(b, i, w);
-        if (rtl) sr = mirrorX(b, sr);
+        const sh = segShape(b, i, count, w);
+        const sr = sh.sr;
         const selected = i == s.selected;
-        // itemShape(index, count) on CornerFull: first = start half, last =
-        // end half, middle = square, single = full
-        var tl: f32 = 0;
-        var tr: f32 = 0;
-        var br: f32 = 0;
-        var bl: f32 = 0;
-        if (count == 1) {
-            tl = half;
-            tr = half;
-            br = half;
-            bl = half;
-        } else if (i == 0) {
-            tl = half;
-            bl = half;
-        } else if (i == count - 1) {
-            tr = half;
-            br = half;
-        }
-        if (rtl) { // the start side flips to the right
-            const t2 = tl;
-            tl = tr;
-            tr = t2;
-            const b2 = bl;
-            bl = br;
-            br = b2;
-        }
+        ui.paint.clipRect(ctx, sr.x, sr.y, sr.w, sr.h); // saves
         // container (a disabled+selected segment keeps the fill)
         if (selected) {
-            ui.paint.fillRRectCorners(ctx, sr.x, sr.y, sr.w, sr.h, tl, tr, br, bl, cs.secondary_container);
+            ui.paint.fillRRectCorners(ctx, sr.x, sr.y, sr.w, sr.h, sh.tl, sh.tr, sh.br, sh.bl, cs.secondary_container);
         }
         // state layer (enabled only): the content color over the container
         if (def.enabled) {
@@ -270,12 +299,9 @@ fn segPaint(n: *Node, ctx: *kx.Ctx) void {
                     theme_mod.stateLayer(cs.secondary_container, on, alpha)
                 else
                     ui.paint.withAlphaScaled(on, alpha); // transparent container
-                ui.paint.fillRRectCorners(ctx, sr.x, sr.y, sr.w, sr.h, tl, tr, br, bl, layer);
+                ui.paint.fillRRectCorners(ctx, sr.x, sr.y, sr.w, sr.h, sh.tl, sh.tr, sh.br, sh.bl, layer);
             }
         }
-        // border
-        const oc: Color = if (def.enabled) cs.outline else ui.paint.withAlphaScaled(cs.on_surface, 0.12);
-        ui.paint.strokeRRectCorners(ctx, sr.x, sr.y, sr.w, sr.h, tl, tr, br, bl, border_w, oc);
         // content: [icon, gap, label] centered
         const fg: Color = if (!def.enabled)
             ui.paint.withAlphaScaled(cs.on_surface, 0.38)
@@ -294,6 +320,10 @@ fn segPaint(n: *Node, ctx: *kx.Ctx) void {
             tx += icon_size + icon_gap;
         }
         ui.paint.text(ctx, def.label, tx, baseline, ls.size, bold, fg);
+        ui.paint.clipReset(ctx); // restores
+        // border
+        const oc: Color = if (def.enabled) cs.outline else ui.paint.withAlphaScaled(cs.on_surface, 0.12);
+        ui.paint.strokeRRectCorners(ctx, sr.x, sr.y, sr.w, sr.h, sh.tl, sh.tr, sh.br, sh.bl, border_w, oc);
     }
 }
 
@@ -341,12 +371,21 @@ fn segOnPointer(n: *Node, ev: input.PointerEvent) bool {
             n.markDirty();
             return true;
         },
+        // moving across segments within the leaf emits hover_move (not
+        // enter/leave): re-resolve the segment under the pointer
+        .hover_move => {
+            const h = segAt(s, s.opts.theme, n.bounds, ev.x, ev.y);
+            if (h != s.hovered) {
+                s.hovered = h;
+                n.markDirty();
+            }
+            return true;
+        },
         .leave => {
             s.hovered = -1;
             n.markDirty();
             return true;
         },
-        else => {},
     }
     return false;
 }
@@ -586,6 +625,51 @@ test "golden: a disabled segment paints the OnSurface@0.38 label + the @0.12 bor
     // first segment's straight top edge)
     const boc = golden.blendOver(ui.paint.withAlphaScaled(t.colors.on_surface, 0.12), 0xFFFFFFFF);
     try golden.expectPixelApprox(f, 50, 20, boc);
+}
+
+test "segmented_button: hover_move re-resolves the segment under the pointer" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    const n = try segmentedButton(a, &.{ .{ .label = "Day" }, .{ .label = "Week" }, .{ .label = "Month" } }, null, null, .{});
+    defer n.deinit();
+    n.layout(.{ .x = 0, .y = 0, .w = 200, .h = 40 });
+    const w = segWidth(stateOf(n), theme_mod.light);
+    // hover the 1st segment, then move across to the 3rd within the leaf
+    // (the router emits hover_move, not enter/leave)
+    router.dispatchPointer(n, .{ .phase = .move, .x = 10, .y = 20 });
+    try std.testing.expectEqual(@as(i32, 0), stateOf(n).hovered);
+    router.dispatchPointer(n, .{ .phase = .move, .x = 2 * (w - border_w) + 10, .y = 20 });
+    try std.testing.expectEqual(@as(i32, 2), stateOf(n).hovered);
+    // moving outside the row clears the highlight (leave)
+    router.dispatchPointer(n, .{ .phase = .move, .x = 10, .y = 100 });
+    try std.testing.expectEqual(@as(i32, -1), stateOf(n).hovered);
+}
+
+test "golden: a constrained width shrinks the segments (no paint outside the node)" {
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    const n = try segmentedButton(a, &.{ .{ .label = "Day" }, .{ .label = "Week" }, .{ .label = "Month" } }, null, null, .{ .selected = 1, .theme = t });
+    defer n.deinit();
+    // intrinsic ~3*67-2 = 199; assign 120 — the segments shrink to fit
+    n.layout(.{ .x = 20, .y = 20, .w = 120, .h = 40 });
+    var r = try golden.Renderer.init(std.testing.allocator, 200, 80);
+    defer r.deinit();
+    r.paint(n, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    // the shrunken middle (selected) segment still paints its fill
+    const w = segWidthFit(stateOf(n), t, n.bounds);
+    const mid_lx = 20 + (w - border_w);
+    try std.testing.expectEqual(t.colors.secondary_container, f.pixelAt(@as(i32, @intFromFloat(mid_lx)) + 2, 23));
+    // nothing paints beyond the node's right edge (x = 140): the strip
+    // 141..150 is pure background
+    var x: i32 = 141;
+    while (x < 151) : (x += 1) {
+        try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(x, 40));
+        try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(x, 25));
+    }
 }
 
 test "segmented_button: RTL mirrors the row (the first segment sits at the end side)" {

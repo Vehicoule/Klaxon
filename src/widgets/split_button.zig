@@ -119,15 +119,18 @@ fn trailWidth(s: *SplitState) f32 {
     return @max(min_w, d.trail_pad * 2 + d.trail_icon);
 }
 
-/// The press zone under the point: 0 = none, 1 = leading, 2 = trailing.
+/// The press zone under the point: 0 = none (outside the button or in the
+/// gap), 1 = leading, 2 = trailing.
 fn zoneAt(s: *SplitState, b: Rect, x: f32, y: f32) u8 {
     if (y < b.y or y >= b.y + b.h) return 0;
     const rtl = ui.i18n.direction() == .rtl;
     const lx = if (rtl) b.x + b.w - (x - b.x) else x; // the point in LTR space
+    if (lx < b.x or lx >= b.x + b.w) return 0; // outside horizontally
     const tw = trailWidth(s);
-    const lead_w = b.w - between - tw;
-    if (lx < b.x + lead_w) return 1;
-    return 2;
+    const lead_w = @max(b.w - between - tw, 0);
+    if (lx < b.x + lead_w) return 1; // the leading half
+    if (lx < b.x + lead_w + between) return 0; // the 2dp gap: no zone
+    return 2; // the trailing half
 }
 
 fn splitMeasure(n: *Node, c: Constraints) Size {
@@ -170,7 +173,7 @@ fn splitPaint(n: *Node, ctx: *kx.Ctx) void {
     const focused = input.isFocused(n);
     const half = b.h / 2; // CornerFull on the outer corners
     const tw = trailWidth(s);
-    const lead_w = b.w - between - tw;
+    const lead_w = @max(b.w - between - tw, 0); // never negative (constrained)
     // LTR: leading [0, lead_w), gap, trailing [lead_w + between, w)
     const lead_x = b.x;
     const trail_x = b.x + lead_w + between;
@@ -185,8 +188,10 @@ fn splitPaint(n: *Node, ctx: *kx.Ctx) void {
     const fg: Color = if (s.opts.enabled) cs.on_primary else ui.paint.withAlphaScaled(cs.on_surface_variant, 0.38);
     const ls = t.type_scale.label_large;
     const bold = ls.weight >= 500;
-    // --- the leading half: pill on the start side, ExtraSmall on the end
-    {
+    // --- the leading half: pill on the start side, ExtraSmall on the end.
+    // Its content is clipped to the half (a constrained width never bleeds
+    // into the trailing half or outside the node).
+    if (lead_w > 0) {
         var tl: f32 = half;
         var tr: f32 = inner_corner;
         var br: f32 = inner_corner;
@@ -199,6 +204,7 @@ fn splitPaint(n: *Node, ctx: *kx.Ctx) void {
             bl = br;
             br = b2;
         }
+        ui.paint.clipRect(ctx, lx, b.y, lead_w, b.h); // saves
         if (container & 0xFF != 0) ui.paint.fillRRectCorners(ctx, lx, b.y, lead_w, b.h, tl, tr, br, bl, container);
         if (s.opts.enabled) {
             const alpha: f32 = if (s.pressed == 1)
@@ -213,20 +219,30 @@ fn splitPaint(n: *Node, ctx: *kx.Ctx) void {
                 ui.paint.fillRRectCorners(ctx, lx, b.y, lead_w, b.h, tl, tr, br, bl, theme_mod.stateLayer(container, cs.on_primary, alpha));
             }
         }
-        // content: [icon, gap, label] centered
+        // content: [icon, gap, label] centered (mirrored in RTL: the leading
+        // icon moves to the end side)
         const lm = ui.paint.measureText(s.label, ls.size, bold);
         var content_w = lm.width;
         if (s.opts.leading_icon != null) content_w += lead_icon_size + lead_icon_gap;
-        var cx = lx + (lead_w - content_w) / 2;
+        var icon_x = lx + (lead_w - content_w) / 2;
+        var label_x = icon_x;
+        if (s.opts.leading_icon != null) label_x += lead_icon_size + lead_icon_gap;
+        if (rtl) {
+            icon_x = mirror(lx, lead_w, icon_x, lead_icon_size, true);
+            label_x = mirror(lx, lead_w, label_x, lm.width, true);
+        }
         const baseline = b.y + (b.h - lm.height) / 2 + lm.ascent;
         if (s.opts.leading_icon) |iname| {
-            paintIcon(ctx, iname, cx, b.y + (b.h - lead_icon_size) / 2, lead_icon_size, fg);
-            cx += lead_icon_size + lead_icon_gap;
+            paintIcon(ctx, iname, icon_x, b.y + (b.h - lead_icon_size) / 2, lead_icon_size, fg);
         }
-        ui.paint.text(ctx, s.label, cx, baseline, ls.size, bold, fg);
+        ui.paint.text(ctx, s.label, label_x, baseline, ls.size, bold, fg);
+        ui.paint.clipReset(ctx); // restores
     }
-    // --- the trailing half: ExtraSmall on the start side, pill on the end
-    {
+    // --- the trailing half: ExtraSmall on the start side, pill on the end,
+    // clipped to the node's right edge (a width below the halves' minimum
+    // never paints outside the node)
+    const tclip_w = @max(@min(tw, b.x + b.w - tx), 0);
+    if (tclip_w > 0) {
         var tl: f32 = inner_corner;
         var tr: f32 = half;
         var br: f32 = half;
@@ -239,6 +255,7 @@ fn splitPaint(n: *Node, ctx: *kx.Ctx) void {
             bl = br;
             br = b2;
         }
+        ui.paint.clipRect(ctx, tx, b.y, tclip_w, b.h); // saves
         if (container & 0xFF != 0) ui.paint.fillRRectCorners(ctx, tx, b.y, tw, b.h, tl, tr, br, bl, container);
         if (s.opts.enabled) {
             const alpha: f32 = if (s.pressed == 2)
@@ -254,6 +271,7 @@ fn splitPaint(n: *Node, ctx: *kx.Ctx) void {
             }
         }
         paintIcon(ctx, s.opts.trailing_icon, tx + (tw - d.trail_icon) / 2, b.y + (b.h - d.trail_icon) / 2, d.trail_icon, fg);
+        ui.paint.clipReset(ctx); // restores
     }
 }
 
@@ -308,12 +326,21 @@ fn splitOnPointer(n: *Node, ev: input.PointerEvent) bool {
             n.markDirty();
             return true;
         },
+        // moving across the halves within the leaf emits hover_move (not
+        // enter/leave): re-resolve the zone under the pointer
+        .hover_move => {
+            const z = zoneAt(s, n.bounds, ev.x, ev.y);
+            if (z != s.hovered) {
+                s.hovered = z;
+                n.markDirty();
+            }
+            return true;
+        },
         .leave => {
             s.hovered = 0;
             n.markDirty();
             return true;
         },
-        else => {},
     }
     return false;
 }
@@ -500,6 +527,101 @@ test "golden: a hovered trailing half paints the on_primary state layer" {
     var f = try r.readback(std.testing.allocator);
     defer f.deinit();
     try golden.expectPixelApprox(f, 20 + @as(i32, @intFromFloat(tx)), 40, golden.blendOver(ui.paint.withAlphaScaled(t.colors.on_primary, t.state.hover), t.colors.primary));
+}
+
+test "split_button: releases outside the button or in the gap fire nothing" {
+    var lead: u32 = 0;
+    var trail: u32 = 0;
+    const cb_lead = Callback{ .fn_ptr = pressCounterCb, .userdata = &lead };
+    const cb_trail = Callback{ .fn_ptr = pressCounterCb, .userdata = &trail };
+    const a = std.testing.allocator;
+    const n = try splitButton(a, cb_lead, cb_trail, .{ .label = "Save" });
+    defer n.deinit();
+    const sz = n.measure(.{ .max_w = 2000, .max_h = 2000 });
+    n.layout(.{ .x = 100, .y = 20, .w = @round(sz.w), .h = sz.h });
+    const tw = trailWidth(stateOf(n));
+    const lead_w = @round(sz.w) - between - tw;
+    // a release beyond the LEFT edge (down on the leading half, up outside)
+    _ = n.vtable.on_pointer.?(n, .{ .phase = .down, .x = 110, .y = 40, .raw_x = 110, .raw_y = 40 });
+    _ = n.vtable.on_pointer.?(n, .{ .phase = .up, .x = 90, .y = 40, .raw_x = 90, .raw_y = 40 });
+    try std.testing.expectEqual(@as(u32, 0), lead);
+    // a release beyond the RIGHT edge (down on the trailing half, up outside)
+    const tx = 100 + lead_w + between + tw / 2;
+    _ = n.vtable.on_pointer.?(n, .{ .phase = .down, .x = tx, .y = 40, .raw_x = tx, .raw_y = 40 });
+    _ = n.vtable.on_pointer.?(n, .{ .phase = .up, .x = 100 + @as(f32, @floatFromInt(@as(i32, @intFromFloat(@round(sz.w))))) + 30, .y = 40, .raw_x = 130, .raw_y = 40 });
+    try std.testing.expectEqual(@as(u32, 0), trail);
+    // a click in the 2dp GAP fires nothing
+    const gx = 100 + lead_w + 1;
+    _ = n.vtable.on_pointer.?(n, .{ .phase = .down, .x = gx, .y = 40, .raw_x = gx, .raw_y = 40 });
+    _ = n.vtable.on_pointer.?(n, .{ .phase = .up, .x = gx, .y = 40, .raw_x = gx, .raw_y = 40 });
+    try std.testing.expectEqual(@as(u32, 0), lead);
+    try std.testing.expectEqual(@as(u32, 0), trail);
+    // hover_move re-resolves the half under the pointer
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    router.dispatchPointer(n, .{ .phase = .move, .x = 110, .y = 40 });
+    try std.testing.expectEqual(@as(u8, 1), stateOf(n).hovered);
+    router.dispatchPointer(n, .{ .phase = .move, .x = tx, .y = 40 });
+    try std.testing.expectEqual(@as(u8, 2), stateOf(n).hovered);
+    router.dispatchPointer(n, .{ .phase = .move, .x = gx, .y = 40 });
+    try std.testing.expectEqual(@as(u8, 0), stateOf(n).hovered); // the gap: no zone
+}
+
+test "golden: a width below the halves' minimum clips (no paint outside the node)" {
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    const n = try splitButton(a, null, null, .{ .label = "Save", .theme = t });
+    defer n.deinit();
+    // 30 < between(2) + trail_w(48): the trailing half is clipped at the edge
+    n.layout(.{ .x = 20, .y = 20, .w = 30, .h = 40 });
+    var r = try golden.Renderer.init(std.testing.allocator, 200, 80);
+    defer r.deinit();
+    r.paint(n, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    // the trailing half's fill shows (clipped): primary inside the node
+    try std.testing.expectEqual(t.colors.primary, f.pixelAt(30, 40));
+    // nothing beyond the node's right edge (x = 50)
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(51, 40));
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(51, 25));
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(60, 40));
+}
+
+test "split_button: RTL mirrors the content row (the leading icon moves to the end side)" {
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    const i18n = try ui.i18n.I18n.init(a, "en");
+    defer i18n.deinit();
+    try i18n.addArb("ar", "{\"x\":\"y\"}", .rtl);
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    try i18n.setLocale("ar");
+    const n = try splitButton(a, null, null, .{ .label = "Save", .leading_icon = .star, .theme = t });
+    defer n.deinit();
+    const sz = n.measure(.{ .max_w = 2000, .max_h = 2000 });
+    const bw = @round(sz.w);
+    n.layout(.{ .x = 20, .y = 20, .w = bw, .h = sz.h });
+    var r = try golden.Renderer.init(a, 220, 80);
+    defer r.deinit();
+    r.paint(n, 0xFFFFFFFF);
+    var f = try r.readback(a);
+    defer f.deinit();
+    // the content row's geometry as the widget computes it (LTR), then the
+    // widget-mirrored positions the RTL paint must use
+    const ls = t.type_scale.label_large;
+    const lm = ui.paint.measureText("Save", ls.size, true);
+    const tw = trailWidth(stateOf(n));
+    const lead_w = bw - between - tw;
+    const content_w = lead_icon_size + lead_icon_gap + lm.width;
+    const cx = 20 + (lead_w - content_w) / 2; // the icon's LTR x
+    // the icon lands at the mirrored position (the end side of the content row)
+    const icon_x = 2 * 20 + bw - cx - lead_icon_size;
+    try std.testing.expect(f.countColorIn(.{ .x = icon_x, .y = 20 + (sz.h - lead_icon_size) / 2, .w = lead_icon_size, .h = lead_icon_size }, t.colors.on_primary) > 0);
+    // the label lands at its mirrored position (before the icon)
+    const label_x = 2 * 20 + bw - (cx + lead_icon_size + lead_icon_gap) - lm.width;
+    try std.testing.expect(label_x < icon_x); // the icon is at the end side
+    try std.testing.expect(f.countColorIn(.{ .x = label_x, .y = 30, .w = lm.width, .h = 14 }, t.colors.on_primary) > 0);
 }
 
 test "golden: a disabled split button paints the OnSurface@0.10 container + @0.38 content" {
