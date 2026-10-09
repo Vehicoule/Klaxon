@@ -43,7 +43,11 @@
 // segments, outlined, signal-driven selection) — Phase 2d.3 PR D3.
 // SplitButton (1): the M3E split button (leading action + trailing toggle,
 // filled style, 5 sizes) — Phase 2d.3 PR D3.
-// ~65 widgets at v1 (see docs/ROADMAP.md).
+// SearchBar (1): the M3E collapsed search bar (56dp pill, text entry, clear
+// button) — Phase 2d.3 PR D4.
+// NavigationRail (1): the M3E navigation rail (collapsed circle indicator /
+// expanded pill, signal-driven selection) — Phase 2d.3 PR D4.
+// ~67 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
 pub const icon = @import("widgets/icon.zig");
@@ -64,6 +68,8 @@ pub const list_item = @import("widgets/list_item.zig");
 pub const menu = @import("widgets/menu.zig");
 pub const segmented_button = @import("widgets/segmented_button.zig");
 pub const split_button = @import("widgets/split_button.zig");
+pub const search_bar = @import("widgets/search_bar.zig");
+pub const navigation_rail = @import("widgets/navigation_rail.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");

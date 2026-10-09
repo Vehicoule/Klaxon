@@ -41,6 +41,8 @@ const card_w = widgets.card;
 const list_item_w = widgets.list_item;
 const menu_w = widgets.menu;
 const segmented_button_w = widgets.segmented_button;
+const search_bar_w = widgets.search_bar;
+const navigation_rail_w = widgets.navigation_rail;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -78,6 +80,9 @@ const Refs = struct {
     menu_m3e: *Node, // the M3E dropdown menu (Menus section)
     seg_m3e: *Node, // the M3E segmented button (Segmented buttons section)
     split_m3e: *Node, // the M3E split button (Split buttons section)
+    sb_m3e: *Node, // the M3E search bar (Search bar section)
+    nr_m3e: *Node, // the M3E navigation rail, collapsed (Navigation rail section)
+    nr_exp_m3e: *Node, // the M3E navigation rail, expanded (Navigation rail section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -141,6 +146,14 @@ pub const Gallery = struct {
     seg_change: *state.Signal(u32), // the segmented button's change counter
     split_press: *state.Signal(u32), // the split button's leading counter
     split_trail: *state.Signal(u32), // the split button's trailing counter
+    // the search bar + navigation rails' signals (M3E sections, 2d.3 PR D4)
+    sb_text: *state.Signal(search_bar_w.TextBuf), // the search bar's text
+    sb_change: *state.Signal(u32), // the search bar's change counter
+    sb_submit: *state.Signal(u32), // the search bar's submit (Enter) counter
+    nr_selected: *state.Signal(usize), // the collapsed rail's selection
+    nr_change: *state.Signal(u32), // the collapsed rail's change counter
+    nr_exp_selected: *state.Signal(usize), // the expanded rail's selection
+    nr_exp_change: *state.Signal(u32), // the expanded rail's change counter
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -251,6 +264,20 @@ pub const Gallery = struct {
         errdefer g.split_press.deinit();
         g.split_trail = try state.Signal(u32).init(allocator, 0);
         errdefer g.split_trail.deinit();
+        g.sb_text = try state.Signal(search_bar_w.TextBuf).init(allocator, search_bar_w.bufFromText(""));
+        errdefer g.sb_text.deinit();
+        g.sb_change = try state.Signal(u32).init(allocator, 0);
+        errdefer g.sb_change.deinit();
+        g.sb_submit = try state.Signal(u32).init(allocator, 0);
+        errdefer g.sb_submit.deinit();
+        g.nr_selected = try state.Signal(usize).init(allocator, 0);
+        errdefer g.nr_selected.deinit();
+        g.nr_change = try state.Signal(u32).init(allocator, 0);
+        errdefer g.nr_change.deinit();
+        g.nr_exp_selected = try state.Signal(usize).init(allocator, 0);
+        errdefer g.nr_exp_selected.deinit();
+        g.nr_exp_change = try state.Signal(u32).init(allocator, 0);
+        errdefer g.nr_exp_change.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -377,6 +404,13 @@ pub const Gallery = struct {
         g.seg_change.deinit();
         g.split_press.deinit();
         g.split_trail.deinit();
+        g.sb_text.deinit();
+        g.sb_change.deinit();
+        g.sb_submit.deinit();
+        g.nr_selected.deinit();
+        g.nr_change.deinit();
+        g.nr_exp_selected.deinit();
+        g.nr_exp_change.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -422,6 +456,8 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Menus (M3E)", try buildMenusSection(g, theme)));
     content.add(try section(a, theme, "Segmented buttons (M3E)", try buildSegmentedSection(g, theme)));
     content.add(try section(a, theme, "Split buttons (M3E)", try buildSplitSection(g, theme)));
+    content.add(try section(a, theme, "Search bar (M3E)", try buildSearchBarSection(g, theme)));
+    content.add(try section(a, theme, "Navigation rail (M3E)", try buildNavRailSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -832,6 +868,49 @@ fn buildSplitSection(g: *Gallery, theme: Theme) !*Node {
     row.add(try text_w.BoundText(u32).text(a, g.split_press, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     row.add(try text_w.BoundText(u32).text(a, g.split_trail, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     return row;
+}
+
+/// Search bar (M3E, batch 2d.3 PR D4): the collapsed pill — click to focus,
+/// type (the text mirrors the signal), Enter submits, the trailing clear
+/// button clears.
+fn buildSearchBarSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const sb = try search_bar_w.searchBar(a, g.sb_text, .{ .fn_ptr = sbChangeCb, .userdata = g }, .{ .fn_ptr = sbSubmitCb, .userdata = g }, .{ .placeholder = "Search songs, videos, books…", .theme = theme });
+    g.refs.sb_m3e = sb;
+    col.add(sb);
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    row.add(try text_w.BoundText(u32).text(a, g.sb_change, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(u32).text(a, g.sb_submit, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(row);
+    return col;
+}
+
+/// Navigation rail (M3E, batch 2d.3 PR D4): the collapsed rail (96dp,
+/// circle indicator) next to the expanded rail (icon+label rows, pill
+/// indicator) — a click selects (the signal round-trips) and the change
+/// counter fires.
+fn buildNavRailSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const items = [_]navigation_rail_w.NavRailItem{
+        .{ .label = "Home", .icon = .home },
+        .{ .label = "Music", .icon = .play },
+        .{ .label = "Video", .icon = .square },
+        .{ .label = "Books", .icon = .star },
+    };
+    const row = try layout.row(a, .{ .gap = 16, .cross_align = .start });
+    const nr = try navigation_rail_w.navigationRail(a, &items, g.nr_selected, .{ .fn_ptr = nrChangeCb, .userdata = g }, .{ .theme = theme });
+    g.refs.nr_m3e = nr;
+    row.add(nr);
+    const nr_exp = try navigation_rail_w.navigationRail(a, &items, g.nr_exp_selected, .{ .fn_ptr = nrExpChangeCb, .userdata = g }, .{ .expanded = true, .theme = theme });
+    g.refs.nr_exp_m3e = nr_exp;
+    row.add(nr_exp);
+    row.add(try text_w.BoundText(u32).text(a, g.nr_change, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(u32).text(a, g.nr_exp_change, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    // the rails fill a fixed-height box (fillMaxHeight semantics)
+    const box = try layout.constrainedBox(a, .{ .min_h = 320, .max_h = 320 });
+    box.add(row);
+    return box;
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.
@@ -1345,6 +1424,26 @@ fn splitTrailCb(userdata: ?*anyopaque) void {
     g.split_trail.set(g.split_trail.peek() + 1);
 }
 
+fn sbChangeCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.sb_change.set(g.sb_change.peek() + 1);
+}
+
+fn sbSubmitCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.sb_submit.set(g.sb_submit.peek() + 1);
+}
+
+fn nrChangeCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.nr_change.set(g.nr_change.peek() + 1);
+}
+
+fn nrExpChangeCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.nr_exp_change.set(g.nr_exp_change.peek() + 1);
+}
+
 fn chipCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.chip_sel.set(!g.chip_sel.peek()); // the Chip widget only fires callbacks
@@ -1813,6 +1912,82 @@ test "gallery: the M3E segmented button selects on click and follows the signal"
     g.seg_selected.set(0);
     try std.testing.expectEqual(@as(usize, 0), segmented_button_w.selectedIndex(m));
     try std.testing.expectEqualStrings("Day", m.semantics.?.value);
+}
+
+test "gallery: the M3E search bar takes focus, accepts text, submits and clears" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Search bar section sits below the Split buttons section
+    const sb = g.refs.sb_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, sb.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = sb.bounds;
+    try std.testing.expect(!input_mod.isFocused(sb));
+    // click the pill → focus
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + 100, .y = b.y + b.h / 2 - sy, .raw_x = b.x + 100, .raw_y = b.y + b.h / 2 - sy });
+    try std.testing.expect(input_mod.isFocused(sb));
+    // type: the text mirrors the signal, the change counter fires
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "Hi" });
+    try std.testing.expectEqualStrings("Hi", search_bar_w.text(sb));
+    const v = g.sb_text.peek();
+    try std.testing.expectEqualStrings("Hi", v[0..(std.mem.indexOfScalar(u8, &v, 0).?)]); // the signal round-trips
+    try std.testing.expectEqual(@as(u32, 1), g.sb_change.peek());
+    // Enter submits
+    _ = router.dispatchKey(.{ .kind = .key_down, .key = .enter });
+    try std.testing.expectEqual(@as(u32, 1), g.sb_submit.peek());
+    // the clear button (the trailing 48dp box) clears the text, keeps focus
+    const cz = b.x + b.w - 48;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = cz + 24, .y = b.y + b.h / 2 - sy, .raw_x = cz + 24, .raw_y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = cz + 24, .y = b.y + b.h / 2 - sy, .raw_x = cz + 24, .raw_y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqualStrings("", search_bar_w.text(sb));
+    try std.testing.expectEqual(@as(u32, 2), g.sb_change.peek());
+    try std.testing.expect(input_mod.isFocused(sb)); // the focus is kept
+    // the external signal replaces the text
+    g.sb_text.set(search_bar_w.bufFromText("Ada"));
+    try std.testing.expectEqualStrings("Ada", search_bar_w.text(sb));
+    try std.testing.expectEqualStrings("Ada", sb.semantics.?.value);
+}
+
+test "gallery: the M3E navigation rails select on click and follow the signal" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Navigation rail section sits below the Search bar section
+    const nr = g.refs.nr_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, nr.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = nr.bounds;
+    try std.testing.expectEqual(@as(usize, 0), g.nr_selected.peek());
+    // click the 3rd item (y = bounds.y + 44 + 2*60 + 28, x = center)
+    const y3 = b.y + 44 + 2 * 60 + 28 - sy;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + 48, .y = y3, .raw_x = b.x + 48, .raw_y = y3 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + 48, .y = y3, .raw_x = b.x + 48, .raw_y = y3 });
+    try std.testing.expectEqual(@as(usize, 2), g.nr_selected.peek()); // the signal round-trips
+    try std.testing.expectEqual(@as(usize, 2), navigation_rail_w.selectedIndex(nr));
+    try std.testing.expectEqual(@as(u32, 1), g.nr_change.peek()); // on_change fired
+    try std.testing.expectEqualStrings("Video", nr.semantics.?.value); // a11y follows
+    // the external signal moves the selection
+    g.nr_selected.set(0);
+    try std.testing.expectEqual(@as(usize, 0), navigation_rail_w.selectedIndex(nr));
+    // the expanded rail: click its 2nd item (same item rows)
+    const ne = g.refs.nr_exp_m3e;
+    const be = ne.bounds;
+    const y2 = be.y + 44 + 60 + 28 - sy;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = be.x + 40, .y = y2, .raw_x = be.x + 40, .raw_y = y2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = be.x + 40, .y = y2, .raw_x = be.x + 40, .raw_y = y2 });
+    try std.testing.expectEqual(@as(usize, 1), g.nr_exp_selected.peek());
+    try std.testing.expectEqual(@as(usize, 1), navigation_rail_w.selectedIndex(ne));
+    try std.testing.expectEqual(@as(u32, 1), g.nr_exp_change.peek());
+    try std.testing.expectEqualStrings("Music", ne.semantics.?.value);
 }
 
 test "gallery: the M3E split button fires the leading + trailing callbacks" {
