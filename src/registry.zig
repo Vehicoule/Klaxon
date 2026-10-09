@@ -38,6 +38,8 @@ const list_item_w = @import("widgets/list_item.zig");
 const menu_w = @import("widgets/menu.zig");
 const segmented_button_w = @import("widgets/segmented_button.zig");
 const split_button_w = @import("widgets/split_button.zig");
+const search_bar_w = @import("widgets/search_bar.zig");
+const navigation_rail_w = @import("widgets/navigation_rail.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -97,7 +99,10 @@ pub const WidgetEntry = struct {
 /// variants) + list item (2d.3 PR D1: the M3E list item, 1-3 lines) +
 /// menu (2d.3 PR D2: the M3E dropdown menu — anchor slot + item rows) +
 /// segmented button (2d.3 PR D3: the M3E single-choice segmented button
-/// row) + split button (2d.3 PR D3: the M3E split button, filled, 5 sizes).
+/// row) + split button (2d.3 PR D3: the M3E split button, filled, 5 sizes) +
+/// search bar (2d.3 PR D4: the M3E collapsed search bar — pill, text entry,
+/// clear button) + navigation rail (2d.3 PR D4: the M3E navigation rail —
+/// collapsed circle indicator / expanded pill, live selection).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -121,6 +126,8 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "menu", .category = "display", .build = buildMenu, .schema = schemaMenu },
     .{ .name = "segmented_button", .category = "input", .build = buildSegmentedButton, .schema = schemaSegmentedButton },
     .{ .name = "split_button", .category = "input", .build = buildSplitButton, .schema = schemaSplitButton },
+    .{ .name = "search_bar", .category = "input", .build = buildSearchBar, .schema = schemaSearchBar },
+    .{ .name = "navigation_rail", .category = "navigation", .build = buildNavigationRail, .schema = schemaNavigationRail },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -561,6 +568,46 @@ fn readTextFieldNode(allocator: std.mem.Allocator, p: *anyopaque) anyerror!Value
     return .{ .string = try allocator.dupe(u8, text_field_w.text(n)) }; // owned (Value.set takes ownership)
 }
 
+/// M3E search bar (2d.3 PR D4): a leaf — the pill is internal chrome. The
+/// text is ALWAYS live (like the text field, PR #26): the "value" (or
+/// "initial") option seeds a TextBuf signal mirrored both ways; the current
+/// text round-trips. The live read is the widget's buffer (lossless — the
+/// signal mirror caps at 255 bytes, TextBuf = [256]u8).
+fn buildSearchBar(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const sopts = try value_mod.optionsFromValue(search_bar_w.SearchBarOptions, opts, null, null);
+    const value_v = opts.get("value");
+    const initial_v = opts.get("initial");
+    const has_value = value_v != null and value_v.? != .null;
+    const has_initial = initial_v != null and initial_v.? != .null;
+    const field: []const u8 = if (has_value) "value" else if (has_initial) "initial" else "value";
+    const initial: []const u8 = if (has_value)
+        switch (value_v.?) {
+            .string => |s| s,
+            else => "",
+        }
+    else if (has_initial)
+        switch (initial_v.?) {
+            .string => |s| s,
+            else => "",
+        }
+    else
+        "";
+    const sig = try state.Signal(search_bar_w.TextBuf).init(allocator, search_bar_w.bufFromText(initial));
+    try ctx.track(sig, deinitTextSignal);
+    const n = try search_bar_w.searchBar(allocator, sig, null, null, sopts);
+    // The signal mirror caps at 255 bytes (TextBuf = [256]u8, the two-way
+    // channel); the buffer is lossless — re-seed it when the initial text
+    // exceeds the mirror.
+    if (initial.len >= 256) search_bar_w.setText(n, initial);
+    return .{ .node = n, .live = .{ .signal = @ptrCast(n), .field = field, .read = readSearchBarNode } };
+}
+
+/// The live search bar text: the widget's CURRENT buffer (lossless).
+fn readSearchBarNode(allocator: std.mem.Allocator, p: *anyopaque) anyerror!Value {
+    const n: *Node = @ptrCast(@alignCast(p));
+    return .{ .string = try allocator.dupe(u8, search_bar_w.text(n)) }; // owned (Value.set takes ownership)
+}
+
 /// M3E card (2d.3 PR D1): a container — the children ARE document data.
 fn buildCard(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
@@ -694,6 +741,52 @@ fn buildSplitButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) a
     _ = ctx;
     const sopts = try value_mod.optionsFromValue(split_button_w.SplitButtonOptions, opts, null, null);
     return .{ .node = try split_button_w.splitButton(allocator, null, null, sopts), .skip_children = true };
+}
+
+/// M3E navigation rail (2d.3 PR D4): the items are internal chrome —
+/// document children never serialize. The selection is ALWAYS live (like
+/// the segmented button, PR #29): a plain document keeps the default 0 and
+/// clicks round-trip. "items" is an option array parsed manually
+/// (optionsFromValue cannot map []NavRailItem).
+fn buildNavigationRail(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const ropts = try value_mod.optionsFromValue(navigation_rail_w.NavigationRailOptions, opts, null, null);
+    const items = try parseNavRailItems(allocator, opts.get("items") orelse Value.null);
+    errdefer allocator.free(items);
+    const sig = try buildUsizeSignal(allocator, opts, ctx); // "selected" (default 0)
+    const n = try navigation_rail_w.navigationRail(allocator, items, sig, null, ropts);
+    allocator.free(items); // the factory copies the labels
+    return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal }, .skip_children = true };
+}
+
+/// Parse the "items" option: an array of {label, icon?, enabled?} objects.
+/// The strings are BORROWED from the options snapshot (the rail factory
+/// copies them).
+fn parseNavRailItems(allocator: std.mem.Allocator, v: Value) ![]navigation_rail_w.NavRailItem {
+    switch (v) {
+        .null => return allocator.alloc(navigation_rail_w.NavRailItem, 0),
+        .array => |arr| {
+            const items = try allocator.alloc(navigation_rail_w.NavRailItem, arr.len);
+            errdefer allocator.free(items);
+            for (arr, 0..) |iv, i| {
+                if (iv != .object) return error.ExpectedObject;
+                const label: []const u8 = if (iv.get("label")) |lv| switch (lv) {
+                    .string => |s| s,
+                    else => "",
+                } else "";
+                const icon: icon_w.IconName = if (iv.get("icon")) |lv| switch (lv) {
+                    .string => |s| std.meta.stringToEnum(icon_w.IconName, s) orelse return error.UnknownIcon,
+                    else => .home,
+                } else .home;
+                const enabled: bool = if (iv.get("enabled")) |ev| switch (ev) {
+                    .bool => |b| b,
+                    else => true,
+                } else true;
+                items[i] = .{ .label = label, .icon = icon, .enabled = enabled };
+            }
+            return items;
+        },
+        else => return error.ExpectedArray,
+    }
 }
 
 fn deinitTextSignal(p: *anyopaque) void {
@@ -998,6 +1091,21 @@ fn schemaSplitButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSche
     return value_mod.schemaOf(split_button_w.SplitButtonOptions, allocator);
 }
 
+fn schemaSearchBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // enabled (toggle), placeholder/initial (text) — automatic;
+    // "value" is the live text
+    const base = try value_mod.schemaOf(search_bar_w.SearchBarOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "value", .text, &.{}, .{ .string = "" });
+}
+
+fn schemaNavigationRail(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // expanded (toggle), selected (number) — automatic; "items" is a
+    // structured array the inspector cannot edit generically yet
+    // (unsupported); theme is unsupported (global token set)
+    const base = try value_mod.schemaOf(navigation_rail_w.NavigationRailOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "items", .unsupported, &.{}, .null);
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -1071,7 +1179,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 32), widgets.len);
+    try std.testing.expectEqual(@as(usize, 34), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1440,6 +1548,51 @@ test "registry: text_field (M3E) round-trips (live value, and plain initial)" {
     try std.testing.expectEqualStrings(long_doc, long_out);
 }
 
+test "registry: search_bar (M3E) round-trips (live value, and plain initial)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // live: the "value" option drives a text signal; the current text round-trips
+    const doc = "{\"name\":\"search_bar\",\"options\":{\"placeholder\":\"Search\",\"value\":\"query\"}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    try std.testing.expectEqual(ui.semantics.Role.text_field, node.semantics.?.role);
+    try std.testing.expectEqualStrings("query", node.semantics.?.value);
+    try std.testing.expectEqualStrings("query", search_bar_w.text(node));
+    // the live value follows edits (type → the serialized value changes)
+    var router = ui.input.InputRouter{};
+    ui.input.setCurrent(&router);
+    defer ui.input.setCurrent(null);
+    router.focus(node);
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "!" });
+    const out2 = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "\"value\":\"query!\"") != null);
+    // plain: "initial" is the live field — it round-trips AND edits are saved
+    const plain_doc = "{\"name\":\"search_bar\",\"options\":{\"initial\":\"Hi\"}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings(plain_doc, plain_out);
+    try std.testing.expectEqualStrings("Hi", plain.semantics.?.value);
+    router.focus(plain);
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "!" });
+    const plain_out2 = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out2);
+    try std.testing.expect(std.mem.indexOf(u8, plain_out2, "\"initial\":\"Hi!\"") != null);
+    // no value/initial: the live "value" materializes on save (the text
+    // field convention: state fields appear once the tree is serialized)
+    const bare_doc = "{\"name\":\"search_bar\",\"options\":{\"placeholder\":\"Search\"}}";
+    const bare = try treeFromJson(&ctx, std.testing.allocator, bare_doc);
+    defer bare.deinit();
+    const bare_out = try treeToJson(&ctx, bare, std.testing.allocator);
+    defer std.testing.allocator.free(bare_out);
+    try std.testing.expectEqualStrings("{\"name\":\"search_bar\",\"options\":{\"placeholder\":\"Search\",\"value\":\"\"}}", bare_out);
+}
+
 test "registry: text_field (M3E) schema exposes the right editor kinds" {
     const schema = try byName("text_field").?.schema(std.testing.allocator);
     defer {
@@ -1549,6 +1702,52 @@ test "registry: segmented_button + split_button (M3E) round-trip (items + live s
     const sout = try treeToJson(&ctx, snode, std.testing.allocator);
     defer std.testing.allocator.free(sout);
     try std.testing.expectEqualStrings(sdoc, sout);
+}
+
+test "registry: navigation_rail (M3E) round-trips (items + live selection, and plain)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // the "selected" option drives a live usize signal; the current
+    // selection round-trips; the items are preserved verbatim
+    const doc = "{\"name\":\"navigation_rail\",\"options\":{\"expanded\":true,\"items\":[{\"label\":\"Home\",\"icon\":\"home\"},{\"label\":\"Music\",\"icon\":\"play\",\"enabled\":false}],\"selected\":1}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(@as(usize, 1), navigation_rail_w.selectedIndex(node));
+    try std.testing.expectEqual(ui.semantics.Role.group, node.semantics.?.role);
+    try std.testing.expectEqualStrings("Music", node.semantics.?.value);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // plain: no "selected" option -> the default 0 is live and round-trips
+    const plain_doc = "{\"name\":\"navigation_rail\",\"options\":{\"items\":[{\"label\":\"Home\",\"icon\":\"home\"}]}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    try std.testing.expectEqual(@as(usize, 0), navigation_rail_w.selectedIndex(plain));
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings("{\"name\":\"navigation_rail\",\"options\":{\"items\":[{\"label\":\"Home\",\"icon\":\"home\"}],\"selected\":0}}", plain_out);
+}
+
+test "registry: search_bar + navigation_rail (M3E) schemas expose the right editor kinds" {
+    const sb_schema = try byName("search_bar").?.schema(std.testing.allocator);
+    defer {
+        for (sb_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(sb_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(sb_schema, "enabled").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(sb_schema, "placeholder").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(sb_schema, "initial").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(sb_schema, "value").?); // the live text
+    try std.testing.expect(findProp(sb_schema, "theme") == null); // global token set
+    const nr_schema = try byName("navigation_rail").?.schema(std.testing.allocator);
+    defer {
+        for (nr_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(nr_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(nr_schema, "expanded").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(nr_schema, "selected").?);
+    try std.testing.expectEqual(value_mod.EditorKind.unsupported, findProp(nr_schema, "items").?);
+    try std.testing.expect(findProp(nr_schema, "theme") == null); // global token set
 }
 
 test "registry: card + list_item + menu + segmented_button + split_button (M3E) schemas expose the right editor kinds" {
