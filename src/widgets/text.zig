@@ -75,6 +75,14 @@ pub fn text(allocator: std.mem.Allocator, str: []const u8, opts: TextOptions) !*
     return node;
 }
 
+/// Recolor a live text (signal-driven widgets recolor their label on state
+/// change — e.g. the M3E chip's selected state).
+pub fn setColor(n: *Node, color: Color) void {
+    const s: *TextState = @ptrCast(@alignCast(n.state.?));
+    s.opts.color = color;
+    n.markDirty();
+}
+
 // --- BoundText: a Text whose string follows a signal ---
 
 /// Text bound to a signal: the string is `fmt(sig.peek())`, reformatted and

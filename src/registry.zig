@@ -31,6 +31,7 @@ const checkbox_w = @import("widgets/checkbox.zig");
 const radio_w = @import("widgets/radio.zig");
 const switch_w = @import("widgets/switch.zig");
 const slider_w = @import("widgets/slider.zig");
+const chip_w = @import("widgets/chip.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -82,7 +83,8 @@ pub const WidgetEntry = struct {
 /// button entry — the P0 stays in widgets/input.zig for legacy use) + icon
 /// button (2d.2 PR B1: M3E icon button, plain + toggle) + selection controls
 /// (2d.2 PR B2: checkbox / radio / switch / slider M3E replace the P0
-/// checkbox/toggle/slider entries — the P0 fixtures stay in input.zig).
+/// checkbox/toggle/slider entries — the P0 fixtures stay in input.zig) +
+/// chips (2d.2 PR C1: the 5 M3E chip variants).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -99,6 +101,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "checkbox", .category = "input", .build = buildCheckbox, .schema = schemaCheckbox },
     .{ .name = "radio", .category = "input", .build = buildRadio, .schema = schemaRadio },
     .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
+    .{ .name = "chip", .category = "input", .build = buildChip, .schema = schemaChip },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -481,6 +484,20 @@ fn deinitF32Signal(p: *anyopaque) void {
     s.deinit(); // Signal.deinit frees itself (state.zig)
 }
 
+/// M3E chip (2d.2 PR C1): a "selected" option makes it a toggle (a ctx-owned
+/// bool signal drives the selected state); without it, an action chip (or a
+/// fixed selected state). The label and icons are internal chrome — document
+/// children never serialize.
+fn buildChip(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const copts = try value_mod.optionsFromValue(chip_w.ChipOptions, opts, null, null);
+    if (opts.get("selected") != null) {
+        const sig = try buildBoolSignal(allocator, opts, ctx, "selected");
+        const n = try chip_w.chip(allocator, sig, null, copts);
+        return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readBoolSignal }, .skip_children = true };
+    }
+    return .{ .node = try chip_w.chip(allocator, null, null, copts), .skip_children = true };
+}
+
 // --- batch 2d.1 PR A: navigation chrome (M3E) ---
 
 /// Slot builder for the registry builds: a slot Value is a subtree document
@@ -726,6 +743,13 @@ fn schemaSlider(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.appendSchemaProp(base, allocator, "value", .number, &.{}, .{ .float = 0.5 });
 }
 
+fn schemaChip(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // variant (select), enabled/selected (toggle), label (text),
+    // leading_icon/trailing_icon (select, nullable) — all automatic from
+    // the options type; theme is unsupported (global token set)
+    return value_mod.schemaOf(chip_w.ChipOptions, allocator);
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -799,7 +823,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 25), widgets.len);
+    try std.testing.expectEqual(@as(usize, 26), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1060,6 +1084,44 @@ test "registry: icon_button round-trips (toggle with its selected state, and pla
     const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
     defer std.testing.allocator.free(plain_out);
     try std.testing.expectEqualStrings(plain_doc, plain_out);
+}
+
+test "registry: chip (M3E) round-trips (toggle with its selected state, and plain)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // toggle: the "selected" option drives a live bool signal
+    const doc = "{\"name\":\"chip\",\"options\":{\"variant\":\"filter\",\"label\":\"News\",\"selected\":true}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    try std.testing.expectEqual(ui.semantics.Role.toggle, node.semantics.?.role);
+    try std.testing.expectEqual(true, node.semantics.?.checked.?); // the signal
+    // plain: no "selected" option -> no signal, no live binding
+    const plain_doc = "{\"name\":\"chip\",\"options\":{\"variant\":\"suggestion\",\"label\":\"Nearby\"}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings(plain_doc, plain_out);
+    try std.testing.expectEqual(ui.semantics.Role.button, plain.semantics.?.role);
+    try std.testing.expect(plain.semantics.?.checked == null);
+}
+
+test "registry: chip (M3E) schema exposes the right editor kinds" {
+    const chip_schema = try byName("chip").?.schema(std.testing.allocator);
+    defer {
+        for (chip_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(chip_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(chip_schema, "variant").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(chip_schema, "enabled").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(chip_schema, "label").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(chip_schema, "selected").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(chip_schema, "leading_icon").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(chip_schema, "trailing_icon").?);
+    try std.testing.expect(findProp(chip_schema, "theme") == null); // global token set
 }
 
 test "registry: checkbox / slider / radio (M3E) round-trip with their live values" {
