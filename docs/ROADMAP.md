@@ -192,11 +192,12 @@ Oppo navbars etc.) are absorbed as options/variants — never as a second visual
 (e.g. NavBar `indicator_style: .pill | .underline | .dot`, free item count, configurable
 height); a strong enough pattern is promoted to a framework variant.
 
-### 2d.2. Widgets — Inputs M3E (batch 2) — IN PROGRESS (PR A DONE: buttons x5 M3E — PR #22; PR B: icon buttons + checkbox/radio/switch/slider next)
+### 2d.2. Widgets — Inputs M3E (batch 2) — IN PROGRESS (PR A DONE: buttons x5 — PR #22; PR B1 DONE: icon buttons x4 — PR #23; PR B2: checkbox/radio/switch/slider next)
 
 Buttons ×5 (elevated / filled / filled-tonal / outlined / text) — DONE (PR #22, M3E:
 5 variants x 5 sizes XS-XL, state layers, shape morph, RTL, clipped label ink), icon
-buttons ×4, checkbox / radio / switch / slider M3E, chips ×5 (assist / elevated /
+buttons ×4 — DONE (PR #23, M3E: 4 variants x 5 sizes x 3 widths, plain + toggle),
+checkbox / radio / switch / slider M3E, chips ×5 (assist / elevated /
 filter / input / suggestion), text fields (outlined / filled) — replacing the P0
 fixtures. Self-register.
 
@@ -229,7 +230,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 45 today — 2d.1 DONE (PR #16 + #17), 2d.2 PR A DONE (M3E buttons x5, PR #22), 2d.2 PR B - 2d.4 next). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 46 today — 2d.1 DONE (PR #16 + #17), 2d.2 PR A DONE (M3E buttons x5, PR #22), 2d.2 PR B1 DONE (M3E icon buttons, PR #23), 2d.2 PR B2 - 2d.4 next). No-code designer v1 (2e).
 
 ---
 
