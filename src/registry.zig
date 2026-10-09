@@ -35,6 +35,7 @@ const chip_w = @import("widgets/chip.zig");
 const text_field_w = @import("widgets/text_field.zig");
 const card_w = @import("widgets/card.zig");
 const list_item_w = @import("widgets/list_item.zig");
+const menu_w = @import("widgets/menu.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -91,7 +92,8 @@ pub const WidgetEntry = struct {
 /// checkbox/toggle/slider entries — the P0 fixtures stay in input.zig) +
 /// chips (2d.2 PR C1: the 5 M3E chip variants) + text field (2d.2 PR C2: the
 /// M3E text field, filled / outlined) + cards (2d.3 PR D1: the 3 M3E card
-/// variants) + list item (2d.3 PR D1: the M3E list item, 1-3 lines).
+/// variants) + list item (2d.3 PR D1: the M3E list item, 1-3 lines) +
+/// menu (2d.3 PR D2: the M3E dropdown menu — anchor slot + item rows).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -112,6 +114,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "text_field", .category = "input", .build = buildTextField, .schema = schemaTextField },
     .{ .name = "card", .category = "display", .build = buildCard, .schema = schemaCard },
     .{ .name = "list_item", .category = "display", .build = buildListItem, .schema = schemaListItem },
+    .{ .name = "menu", .category = "display", .build = buildMenu, .schema = schemaMenu },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -574,6 +577,64 @@ fn buildListItem(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anye
     return .{ .node = try list_item_w.listItem(allocator, null, null, lopts), .skip_children = true };
 }
 
+/// M3E dropdown menu (2d.3 PR D2): the anchor is a factory slot (a subtree
+/// document); the item rows are internal chrome — document children never
+/// serialize. A non-null "open" option drives a ctx-owned bool signal (the
+/// live open state round-trips). "items" is an option array parsed manually
+/// (optionsFromValue cannot map []MenuItem).
+fn buildMenu(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const mopts = try value_mod.optionsFromValue(menu_w.MenuOptions, opts, null, null);
+    const anchor = try buildSlotNode(ctx, opts.get("anchor") orelse return error.MissingSlot);
+    errdefer anchor.deinit();
+    const items = try parseMenuItems(allocator, opts.get("items") orelse Value.null);
+    errdefer allocator.free(items);
+    const has_open = if (opts.get("open")) |v| v != .null else false;
+    if (has_open) {
+        const sig = try buildBoolSignal(allocator, opts, ctx, "open");
+        const n = try menu_w.menu(allocator, anchor, items, sig, null, mopts);
+        allocator.free(items); // the factory copies the strings
+        return .{ .node = n, .live = .{ .signal = sig, .field = "open", .read = readBoolSignal }, .skip_children = true };
+    }
+    const n = try menu_w.menu(allocator, anchor, items, null, null, mopts);
+    allocator.free(items); // the factory copies the strings
+    return .{ .node = n, .skip_children = true };
+}
+
+/// Parse the "items" option: an array of {label, leading_icon?,
+/// trailing_text?, enabled?} objects. The strings are BORROWED from the
+/// options snapshot (the menu factory copies them).
+fn parseMenuItems(allocator: std.mem.Allocator, v: Value) ![]menu_w.MenuItem {
+    switch (v) {
+        .null => return allocator.alloc(menu_w.MenuItem, 0),
+        .array => |arr| {
+            const items = try allocator.alloc(menu_w.MenuItem, arr.len);
+            errdefer allocator.free(items);
+            for (arr, 0..) |iv, i| {
+                if (iv != .object) return error.ExpectedObject;
+                const label: []const u8 = if (iv.get("label")) |lv| switch (lv) {
+                    .string => |s| s,
+                    else => "",
+                } else "";
+                const leading: ?icon_w.IconName = if (iv.get("leading_icon")) |lv| switch (lv) {
+                    .string => |s| std.meta.stringToEnum(icon_w.IconName, s) orelse return error.UnknownIcon,
+                    else => null,
+                } else null;
+                const trailing: []const u8 = if (iv.get("trailing_text")) |tv| switch (tv) {
+                    .string => |s| s,
+                    else => "",
+                } else "";
+                const enabled: bool = if (iv.get("enabled")) |ev| switch (ev) {
+                    .bool => |b| b,
+                    else => true,
+                } else true;
+                items[i] = .{ .label = label, .leading_icon = leading, .trailing_text = trailing, .enabled = enabled };
+            }
+            return items;
+        },
+        else => return error.ExpectedArray,
+    }
+}
+
 fn deinitTextSignal(p: *anyopaque) void {
     const s: *state.Signal(text_field_w.TextBuf) = @ptrCast(@alignCast(p));
     s.deinit(); // Signal.deinit frees itself (state.zig)
@@ -853,6 +914,15 @@ fn schemaListItem(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema 
     return value_mod.appendSchemaProp(base, allocator, "selected", .toggle, &.{}, .{ .bool = false });
 }
 
+fn schemaMenu(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // the anchor is a factory slot; "items" is a structured array the
+    // inspector cannot edit generically yet (unsupported); "open" is live
+    var base = try value_mod.schemaOf(menu_w.MenuOptions, allocator);
+    base = try value_mod.appendSchemaProp(base, allocator, "anchor", .slot, &.{}, .null);
+    base = try value_mod.appendSchemaProp(base, allocator, "items", .unsupported, &.{}, .null);
+    return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -926,7 +996,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 29), widgets.len);
+    try std.testing.expectEqual(@as(usize, 30), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1348,7 +1418,31 @@ test "registry: list_item (M3E) round-trips (selected with its live state, and p
     try std.testing.expect(plain.semantics.?.checked == null or !plain.semantics.?.checked.?);
 }
 
-test "registry: card + list_item (M3E) schemas expose the right editor kinds" {
+test "registry: menu (M3E) round-trips (anchor slot + items, live open state, and plain)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // live: the "open" option drives a bool signal; the current state
+    // round-trips; the anchor + items are option slots preserved verbatim
+    const doc = "{\"name\":\"menu\",\"options\":{\"anchor\":{\"name\":\"button\",\"options\":{\"label\":\"Actions\"}},\"items\":[{\"label\":\"Copy\"},{\"label\":\"Paste\",\"leading_icon\":\"star\",\"trailing_text\":\"Ctrl+V\",\"enabled\":false}],\"open\":true}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expect(menu_w.isOpen(node)); // applied at build
+    try std.testing.expectEqual(@as(usize, 3), node.children.items.len); // anchor + 2 item rows (internal)
+    try std.testing.expectEqual(ui.semantics.Role.menu, node.semantics.?.role);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // plain: no "open" option -> closed, nothing live to serialize
+    const plain_doc = "{\"name\":\"menu\",\"options\":{\"anchor\":{\"name\":\"button\",\"options\":{\"label\":\"Actions\"}},\"items\":[{\"label\":\"Copy\"}]}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    try std.testing.expect(!menu_w.isOpen(plain));
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings(plain_doc, plain_out);
+}
+
+test "registry: card + list_item + menu (M3E) schemas expose the right editor kinds" {
     const card_schema = try byName("card").?.schema(std.testing.allocator);
     defer {
         for (card_schema) |*p| p.deinit(std.testing.allocator);
@@ -1368,6 +1462,15 @@ test "registry: card + list_item (M3E) schemas expose the right editor kinds" {
     try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(li_schema, "selected").?);
     try std.testing.expectEqual(value_mod.EditorKind.select, findProp(li_schema, "leading_icon").?);
     try std.testing.expect(findProp(li_schema, "theme") == null); // global token set
+    const menu_schema = try byName("menu").?.schema(std.testing.allocator);
+    defer {
+        for (menu_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(menu_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.slot, findProp(menu_schema, "anchor").?);
+    try std.testing.expectEqual(value_mod.EditorKind.unsupported, findProp(menu_schema, "items").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(menu_schema, "open").?);
+    try std.testing.expect(findProp(menu_schema, "theme") == null); // global token set
 }
 
 test "registry: checkbox / slider / radio (M3E) round-trip with their live values" {
