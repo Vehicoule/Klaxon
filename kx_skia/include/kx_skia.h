@@ -23,6 +23,9 @@
 //   0.6.0 — Phase 2d.2: + kx_stroke_rrect (outlined M3E button borders).
 //   0.7.0 — Phase 2d.2 PR C2: + kx_fill_rrect_corners (per-corner radii —
 //           the M3E filled text field's top-only rounded corners).
+//   0.8.0 — Phase 2d.3 PR D3: + kx_stroke_rrect_corners (per-corner radii
+//           stroke — the M3E segmented/split buttons' 1dp borders on
+//           start/end/middle shapes).
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -78,6 +81,11 @@ void kx_fill_rrect_corners(kx_ctx* ctx, float x, float y, float w, float h, floa
 // Stroke a rounded rectangle's outline (added in 0.6.0): the stroke is
 // centered on the edge, like Skia's drawRoundRect with a stroke paint.
 void kx_stroke_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, float stroke_w, uint32_t rgba);
+// Stroke a rounded rectangle's outline with PER-CORNER radii (added in
+// 0.8.0), in SkRRect order: top-left, top-right, bottom-right, bottom-left.
+// The M3E segmented/split buttons stroke 1dp borders on start/end/middle
+// shapes (a pill's start half, a square, a pill's end half).
+void kx_stroke_rrect_corners(kx_ctx* ctx, float x, float y, float w, float h, float tl, float tr, float br, float bl, float stroke_w, uint32_t rgba);
 
 // Canvas state + transforms (added in 0.3.0). save/restore must be balanced
 // within a frame; a wrapper widget wraps its children's paint in a pair.

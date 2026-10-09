@@ -40,6 +40,8 @@ const text_field_w = widgets.text_field;
 const card_w = widgets.card;
 const list_item_w = widgets.list_item;
 const menu_w = widgets.menu;
+const segmented_button_w = widgets.segmented_button;
+const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -74,6 +76,8 @@ const Refs = struct {
     li_m3e: *Node, // the clickable M3E list item (List items section)
     li_m3e_sel: *Node, // the selected M3E list item (List items section)
     menu_m3e: *Node, // the M3E dropdown menu (Menus section)
+    seg_m3e: *Node, // the M3E segmented button (Segmented buttons section)
+    split_m3e: *Node, // the M3E split button (Split buttons section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -132,6 +136,11 @@ pub const Gallery = struct {
     // the menu's signals (M3E section, 2d.3 PR D2)
     menu_open: *state.Signal(bool), // the menu's open state (toggled by the anchor)
     menu_select: *state.Signal(u32), // the menu's selection counter
+    // the segmented/split buttons' signals (M3E sections, 2d.3 PR D3)
+    seg_selected: *state.Signal(usize), // the segmented button's selection
+    seg_change: *state.Signal(u32), // the segmented button's change counter
+    split_press: *state.Signal(u32), // the split button's leading counter
+    split_trail: *state.Signal(u32), // the split button's trailing counter
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -234,6 +243,14 @@ pub const Gallery = struct {
         errdefer g.menu_open.deinit();
         g.menu_select = try state.Signal(u32).init(allocator, 0);
         errdefer g.menu_select.deinit();
+        g.seg_selected = try state.Signal(usize).init(allocator, 0);
+        errdefer g.seg_selected.deinit();
+        g.seg_change = try state.Signal(u32).init(allocator, 0);
+        errdefer g.seg_change.deinit();
+        g.split_press = try state.Signal(u32).init(allocator, 0);
+        errdefer g.split_press.deinit();
+        g.split_trail = try state.Signal(u32).init(allocator, 0);
+        errdefer g.split_trail.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -356,6 +373,10 @@ pub const Gallery = struct {
         g.li_selected.deinit();
         g.menu_open.deinit();
         g.menu_select.deinit();
+        g.seg_selected.deinit();
+        g.seg_change.deinit();
+        g.split_press.deinit();
+        g.split_trail.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -399,6 +420,8 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Cards (M3E)", try buildCardsSection(g, theme)));
     content.add(try section(a, theme, "List items (M3E)", try buildListItemsSection(g, theme)));
     content.add(try section(a, theme, "Menus (M3E)", try buildMenusSection(g, theme)));
+    content.add(try section(a, theme, "Segmented buttons (M3E)", try buildSegmentedSection(g, theme)));
+    content.add(try section(a, theme, "Split buttons (M3E)", try buildSplitSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -779,6 +802,35 @@ fn buildMenusSection(g: *Gallery, theme: Theme) !*Node {
     g.refs.menu_m3e = m;
     row.add(m);
     row.add(try text_w.BoundText(u32).text(a, g.menu_select, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    return row;
+}
+
+/// Segmented buttons (M3E, batch 2d.3 PR D3): a single-choice row — a click
+/// selects (the signal round-trips) and the change counter fires.
+fn buildSegmentedSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    const m = try segmented_button_w.segmentedButton(a, &.{
+        .{ .label = "Day" },
+        .{ .label = "Week", .icon = .star },
+        .{ .label = "Month" },
+    }, g.seg_selected, .{ .fn_ptr = segChangeCb, .userdata = g }, .{ .theme = theme });
+    g.refs.seg_m3e = m;
+    row.add(m);
+    row.add(try text_w.BoundText(u32).text(a, g.seg_change, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    return row;
+}
+
+/// Split buttons (M3E, batch 2d.3 PR D3): the leading half fires the action,
+/// the trailing half fires the toggle (the app would open a menu).
+fn buildSplitSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    const m = try split_button_w.splitButton(a, .{ .fn_ptr = splitPressCb, .userdata = g }, .{ .fn_ptr = splitTrailCb, .userdata = g }, .{ .label = "Save", .leading_icon = .star, .theme = theme });
+    g.refs.split_m3e = m;
+    row.add(m);
+    row.add(try text_w.BoundText(u32).text(a, g.split_press, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(u32).text(a, g.split_trail, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     return row;
 }
 
@@ -1278,6 +1330,21 @@ fn menuSelectCb(userdata: ?*anyopaque) void {
     g.menu_select.set(g.menu_select.peek() + 1);
 }
 
+fn segChangeCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.seg_change.set(g.seg_change.peek() + 1);
+}
+
+fn splitPressCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.split_press.set(g.split_press.peek() + 1);
+}
+
+fn splitTrailCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.split_trail.set(g.split_trail.peek() + 1);
+}
+
 fn chipCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.chip_sel.set(!g.chip_sel.peek()); // the Chip widget only fires callbacks
@@ -1717,6 +1784,62 @@ test "gallery: the M3E menu opens via the anchor, selects an item and closes" {
     try std.testing.expect(!g.menu_open.peek()); // closed after the selection
     try std.testing.expect(!menu_w.isOpen(m));
     try std.testing.expect(!m.children.items[1].visible);
+}
+
+test "gallery: the M3E segmented button selects on click and follows the signal" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Segmented buttons section sits below the Menus section
+    const m = g.refs.seg_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, m.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = m.bounds;
+    // 3 equal segments overlapping by 1dp: the segment width from the total
+    const w = (b.w + 2) / 3;
+    try std.testing.expectEqual(@as(usize, 0), g.seg_selected.peek());
+    // click the 3rd segment
+    const x3 = b.x + 2 * (w - 1) + 10;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x3, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x3, .y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqual(@as(usize, 2), g.seg_selected.peek()); // the signal round-trips
+    try std.testing.expectEqual(@as(usize, 2), segmented_button_w.selectedIndex(m));
+    try std.testing.expectEqual(@as(u32, 1), g.seg_change.peek()); // on_change fired
+    // the external signal moves the selection (and the a11y value)
+    g.seg_selected.set(0);
+    try std.testing.expectEqual(@as(usize, 0), segmented_button_w.selectedIndex(m));
+    try std.testing.expectEqualStrings("Day", m.semantics.?.value);
+}
+
+test "gallery: the M3E split button fires the leading + trailing callbacks" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Split buttons section sits below the Segmented buttons section
+    const m = g.refs.split_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, m.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = m.bounds;
+    try std.testing.expectEqual(@as(u32, 0), g.split_press.peek());
+    try std.testing.expectEqual(@as(u32, 0), g.split_trail.peek());
+    // click the leading half
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + 10, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + 10, .y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqual(@as(u32, 1), g.split_press.peek());
+    try std.testing.expectEqual(@as(u32, 0), g.split_trail.peek());
+    // click the trailing half
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w - 10, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w - 10, .y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqual(@as(u32, 1), g.split_press.peek());
+    try std.testing.expectEqual(@as(u32, 1), g.split_trail.peek());
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

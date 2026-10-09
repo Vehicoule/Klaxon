@@ -452,7 +452,12 @@ pub fn valueFromOptions(allocator: std.mem.Allocator, comptime T: type, opts: T,
 fn valueOfField(allocator: std.mem.Allocator, comptime FT: type, val: FT, describe_node: ?DescribeNodeFn, userdata: ?*anyopaque) !Value {
     switch (@typeInfo(FT)) {
         .bool => return .{ .bool = val },
-        .int => return .{ .int = val },
+        .int => |info| {
+            // Value.int is i64: unsigned fields are narrowed (a widget index
+            // is always well within i64)
+            if (info.signedness == .unsigned) return .{ .int = @intCast(val) };
+            return .{ .int = val };
+        },
         .float => return .{ .float = val },
         .@"enum" => return .{ .string = try allocator.dupe(u8, @tagName(val)) },
         .optional => |o| {

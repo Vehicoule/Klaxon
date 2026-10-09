@@ -39,6 +39,10 @@
 // Phase 2d.3 PR D1.
 // Menu (1): the M3E dropdown menu (anchor + popup panel, signal-driven open
 // state, keyboard navigation) — Phase 2d.3 PR D2.
+// SegmentedButton (1): the M3E single-choice segmented button row (equal
+// segments, outlined, signal-driven selection) — Phase 2d.3 PR D3.
+// SplitButton (1): the M3E split button (leading action + trailing toggle,
+// filled style, 5 sizes) — Phase 2d.3 PR D3.
 // ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -58,6 +62,8 @@ pub const text_field = @import("widgets/text_field.zig");
 pub const card = @import("widgets/card.zig");
 pub const list_item = @import("widgets/list_item.zig");
 pub const menu = @import("widgets/menu.zig");
+pub const segmented_button = @import("widgets/segmented_button.zig");
+pub const split_button = @import("widgets/split_button.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");
