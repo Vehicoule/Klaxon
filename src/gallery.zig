@@ -46,6 +46,8 @@ const navigation_rail_w = widgets.navigation_rail;
 const side_sheet_w = widgets.side_sheet;
 const pull_to_refresh_w = widgets.pull_to_refresh;
 const loading_indicator_w = widgets.loading_indicator;
+const date_picker_w = widgets.date_picker;
+const time_picker_w = widgets.time_picker;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -91,6 +93,8 @@ const Refs = struct {
     ptr_m3e: *Node, // the M3E pull-to-refresh container (Pull to refresh section)
     load_m3e: *Node, // the M3E plain indeterminate loading indicator (Loading indicator section)
     load_det_m3e: *Node, // the M3E contained determinate loading indicator (Loading indicator section)
+    dp_m3e: *Node, // the M3E date picker panel (Date picker section)
+    tp_m3e: *Node, // the M3E time picker panel (Time picker section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -168,6 +172,11 @@ pub const Gallery = struct {
     ptr_refreshing: *state.Signal(bool), // the PTR's refreshing state
     ptr_refresh: *state.Signal(u32), // the PTR's refresh counter
     li_progress: *state.Signal(f32), // the determinate loading indicator's progress (0..1)
+    dp_selected: *state.Signal(?i64), // the date picker's selected day (UTC epoch day)
+    dp_displayed: *state.Signal(i64), // the date picker's displayed month
+    dp_ok: *state.Signal(u32), // the date picker's OK counter
+    tp_time: *state.Signal(i32), // the time picker's time (minutes since midnight)
+    tp_ok: *state.Signal(u32), // the time picker's OK counter
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -308,6 +317,17 @@ pub const Gallery = struct {
         errdefer g.ptr_refresh.deinit();
         g.li_progress = try state.Signal(f32).init(allocator, 0.35);
         errdefer g.li_progress.deinit();
+        const dp_today = date_picker_w.todayDay(null);
+        g.dp_selected = try state.Signal(?i64).init(allocator, dp_today);
+        errdefer g.dp_selected.deinit();
+        g.dp_displayed = try state.Signal(i64).init(allocator, date_picker_w.firstOfMonthOf(dp_today));
+        errdefer g.dp_displayed.deinit();
+        g.dp_ok = try state.Signal(u32).init(allocator, 0);
+        errdefer g.dp_ok.deinit();
+        g.tp_time = try state.Signal(i32).init(allocator, 10 * 60 + 30);
+        errdefer g.tp_time.deinit();
+        g.tp_ok = try state.Signal(u32).init(allocator, 0);
+        errdefer g.tp_ok.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -450,6 +470,11 @@ pub const Gallery = struct {
         g.ptr_refreshing.deinit();
         g.ptr_refresh.deinit();
         g.li_progress.deinit();
+        g.dp_selected.deinit();
+        g.dp_displayed.deinit();
+        g.dp_ok.deinit();
+        g.tp_time.deinit();
+        g.tp_ok.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -500,6 +525,8 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Side sheet (M3E)", try buildSideSheetSection(g, theme)));
     content.add(try section(a, theme, "Pull to refresh (M3E)", try buildPullToRefreshSection(g, theme)));
     content.add(try section(a, theme, "Loading indicator (M3E)", try buildLoadingIndicatorSection(g, theme)));
+    content.add(try section(a, theme, "Date picker (M3E)", try buildDatePickerSection(g, theme)));
+    content.add(try section(a, theme, "Time picker (M3E)", try buildTimePickerSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1033,6 +1060,36 @@ fn buildLoadingIndicatorSection(g: *Gallery, theme: Theme) !*Node {
     const lab = try layout.row(a, .{ .gap = 8, .cross_align = .center });
     lab.add(try text_w.BoundText(f32).text(a, g.li_progress, fmtProgress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(lab);
+    return col;
+}
+
+/// Date picker (M3E): the calendar panel — tap a day to select it, ‹ › page
+/// the month, OK fires the counter.
+fn buildDatePickerSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const dp = try date_picker_w.datePicker(a, g.dp_selected, g.dp_displayed, .{ .fn_ptr = dpOkCb, .userdata = g }, null, .{ .theme = theme });
+    g.refs.dp_m3e = dp;
+    col.add(dp);
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    row.add(try text_w.BoundText(?i64).text(a, g.dp_selected, fmtOptDay, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(u32).text(a, g.dp_ok, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(row);
+    return col;
+}
+
+/// Time picker (M3E): the dial panel — tap the dial to set the time, the
+/// plates switch hour/minute mode, AM/PM flips the period, OK fires.
+fn buildTimePickerSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const tp = try time_picker_w.timePicker(a, g.tp_time, .{ .fn_ptr = tpOkCb, .userdata = g }, null, .{ .theme = theme });
+    g.refs.tp_m3e = tp;
+    col.add(tp);
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    row.add(try text_w.BoundText(i32).text(a, g.tp_time, fmtTime, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(u32).text(a, g.tp_ok, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(row);
     return col;
 }
 
@@ -1720,6 +1777,31 @@ fn fmtRefreshing(v: bool, buf: []u8) []const u8 {
 fn fmtProgress(v: f32, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "Progress {d:.2}", .{v}) catch "Progress";
 }
+
+fn fmtOptDay(v: ?i64, buf: []u8) []const u8 {
+    if (v) |d| {
+        var dbuf: [32]u8 = undefined;
+        const s = date_picker_w.formatDay(d, &dbuf);
+        return std.fmt.bufPrint(buf, "{s}", .{s}) catch "?";
+    }
+    return std.fmt.bufPrint(buf, "none", .{}) catch "none";
+}
+
+fn dpOkCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.dp_ok.set(g.dp_ok.peek() + 1);
+}
+
+fn tpOkCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.tp_ok.set(g.tp_ok.peek() + 1);
+}
+
+fn fmtTime(v: i32, buf: []u8) []const u8 {
+    var b: [24]u8 = undefined;
+    const s = time_picker_w.formatTime12(v, &b);
+    return std.fmt.bufPrint(buf, "{s}", .{s}) catch "?";
+}
 fn fmtStatus(v: StatusBuf, buf: []u8) []const u8 {
     const s = std.mem.sliceTo(&v, 0);
     @memcpy(buf[0..s.len], s);
@@ -2271,6 +2353,50 @@ test "gallery: the M3E loading indicator (determinate) follows its progress sign
     try std.testing.expectApproxEqAbs(@as(f32, -0.75 * 180), loading_indicator_w.shapeRotation(det), 0.01);
     // the plain indicator is indeterminate: static without a timeline (shape 0)
     try std.testing.expectEqual(@as(usize, 0), loading_indicator_w.morphIndex(g.refs.load_m3e));
+}
+
+test "gallery: the M3E date picker selects a tapped day (the signal round-trips)" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const dp = g.refs.dp_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, dp.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // tap the 15th of the displayed month (the 1st + 14 days)
+    const target = g.dp_displayed.peek() + 14;
+    const r = date_picker_w.dayCellRect(dp, target).?;
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2 - sy;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = cx, .y = cy, .raw_x = cx, .raw_y = cy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = cx, .y = cy, .raw_x = cx, .raw_y = cy });
+    try std.testing.expectEqual(@as(?i64, target), g.dp_selected.peek()); // round-trips
+    try std.testing.expectEqual(@as(?i64, target), date_picker_w.selectedDay(dp));
+}
+
+test "gallery: the M3E time picker selects a tapped dial position (the signal round-trips)" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const tp = g.refs.tp_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, tp.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // tap to the right of the dial's center (hour mode): 3 o'clock
+    // 10:30 AM → 3:30 AM = 210 minutes
+    const d = time_picker_w.dialRectOf(tp);
+    const cx = d.x + d.w / 2;
+    const cy = d.y + d.h / 2 - sy;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = cx + 101, .y = cy, .raw_x = cx + 101, .raw_y = cy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = cx + 101, .y = cy, .raw_x = cx + 101, .raw_y = cy });
+    try std.testing.expectEqual(@as(i32, 3 * 60 + 30), g.tp_time.peek()); // round-trips
+    try std.testing.expectEqual(@as(i32, 210), time_picker_w.timeMinutes(tp));
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

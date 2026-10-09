@@ -43,6 +43,8 @@ const navigation_rail_w = @import("widgets/navigation_rail.zig");
 const side_sheet_w = @import("widgets/side_sheet.zig");
 const pull_to_refresh_w = @import("widgets/pull_to_refresh.zig");
 const loading_indicator_w = @import("widgets/loading_indicator.zig");
+const date_picker_w = @import("widgets/date_picker.zig");
+const time_picker_w = @import("widgets/time_picker.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -137,6 +139,8 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "side_sheet", .category = "navigation", .build = buildSideSheet, .schema = schemaSideSheet },
     .{ .name = "pull_to_refresh", .category = "input", .build = buildPullToRefresh, .schema = schemaPullToRefresh },
     .{ .name = "loading_indicator", .category = "feedback", .build = buildLoadingIndicator, .schema = schemaLoadingIndicator },
+    .{ .name = "date_picker", .category = "input", .build = buildDatePicker, .schema = schemaDatePicker },
+    .{ .name = "time_picker", .category = "input", .build = buildTimePicker, .schema = schemaTimePicker },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -817,6 +821,92 @@ fn buildLoadingIndicator(allocator: std.mem.Allocator, opts: Value, ctx: *BuildC
     return .{ .node = n, .skip_children = true };
 }
 
+/// M3E date picker (2d.4 PR #33): a LEAF panel (skip_children).
+/// "selected" is ALWAYS live (a Signal(?i64) of UTC epoch days; null = no
+/// selection — round-trips). "displayed" is the INITIAL displayed month (not
+/// live — transient UI state): the option, else the month of
+/// (selected ?? today). "today" is injected (else the system clock, UTC).
+fn buildDatePicker(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const dopts = try value_mod.optionsFromValue(date_picker_w.DatePickerOptions, opts, null, null);
+    const sel = try buildOptI64Signal(allocator, opts, ctx, "selected");
+    const today = date_picker_w.todayDay(dopts.today);
+    const def_disp = date_picker_w.firstOfMonthOf(sel.peek() orelse today);
+    const disp_val: i64 = if (opts.get("displayed")) |x| switch (x) {
+        .int => |i| i,
+        .float => |f| blk: {
+            if (!std.math.isFinite(f)) return error.ValueOutOfRange;
+            break :blk std.math.cast(i64, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
+        },
+        else => def_disp,
+    } else def_disp;
+    const disp = try state.Signal(i64).init(allocator, disp_val);
+    try ctx.track(disp, deinitI64Signal);
+    const n = try date_picker_w.datePicker(allocator, sel, disp, null, null, dopts);
+    return .{ .node = n, .live = .{ .signal = sel, .field = "selected", .read = readOptI64Signal }, .skip_children = true };
+}
+
+/// A nullable i64 signal builder (the date picker's "selected": null = no
+/// selection, a number = a UTC epoch day).
+fn buildOptI64Signal(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx, field: []const u8) anyerror!*state.Signal(?i64) {
+    const v: ?i64 = if (opts.get(field)) |x| switch (x) {
+        .null => null,
+        .int => |i| i,
+        .float => |f| blk: {
+            if (!std.math.isFinite(f)) return error.ValueOutOfRange;
+            break :blk std.math.cast(i64, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
+        },
+        else => null,
+    } else null;
+    const sig = try state.Signal(?i64).init(allocator, v);
+    try ctx.track(sig, deinitOptI64Signal);
+    return sig;
+}
+
+fn readOptI64Signal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
+    const s: *state.Signal(?i64) = @ptrCast(@alignCast(p));
+    const v = s.peek();
+    return if (v) |d| .{ .int = d } else .null;
+}
+
+fn deinitOptI64Signal(p: *anyopaque) void {
+    const s: *state.Signal(?i64) = @ptrCast(@alignCast(p));
+    s.deinit(); // Signal.deinit frees itself (state.zig)
+}
+
+fn deinitI64Signal(p: *anyopaque) void {
+    const s: *state.Signal(i64) = @ptrCast(@alignCast(p));
+    s.deinit(); // Signal.deinit frees itself (state.zig)
+}
+
+/// M3E time picker (2d.4 PR #33): a LEAF panel (skip_children). "time" is
+/// ALWAYS live (a Signal(i32) of minutes since midnight, clamped 0..1439 —
+/// round-trips).
+fn buildTimePicker(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const topts = try value_mod.optionsFromValue(time_picker_w.TimePickerOptions, opts, null, null);
+    const val: i32 = if (opts.get("time")) |x| switch (x) {
+        .int => |i| std.math.cast(i32, i) orelse return error.ValueOutOfRange,
+        .float => |f| blk: {
+            if (!std.math.isFinite(f)) return error.ValueOutOfRange;
+            break :blk std.math.cast(i32, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
+        },
+        else => 630, // 10:30
+    } else 630;
+    const sig = try state.Signal(i32).init(allocator, val);
+    try ctx.track(sig, deinitI32Signal);
+    const n = try time_picker_w.timePicker(allocator, sig, null, null, topts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "time", .read = readI32Signal }, .skip_children = true };
+}
+
+fn readI32Signal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
+    const s: *state.Signal(i32) = @ptrCast(@alignCast(p));
+    return .{ .int = @as(i64, s.peek()) };
+}
+
+fn deinitI32Signal(p: *anyopaque) void {
+    const s: *state.Signal(i32) = @ptrCast(@alignCast(p));
+    s.deinit(); // Signal.deinit frees itself (state.zig)
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1185,6 +1275,22 @@ fn schemaLoadingIndicator(allocator: std.mem.Allocator) anyerror![]value_mod.Pro
     return value_mod.appendSchemaProp(base, allocator, "progress", .number, &.{}, .{ .float = 0.5 });
 }
 
+fn schemaDatePicker(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // title (text), width (number), today (number) — automatic; "selected"
+    // is live (null = no selection); "displayed" is the initial month (not
+    // live); theme is unsupported (global token set)
+    const base = try value_mod.schemaOf(date_picker_w.DatePickerOptions, allocator);
+    const with_sel = try value_mod.appendSchemaProp(base, allocator, "selected", .number, &.{}, .null);
+    return value_mod.appendSchemaProp(with_sel, allocator, "displayed", .number, &.{}, .{ .int = 0 });
+}
+
+fn schemaTimePicker(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // is_24h (toggle), width (number) — automatic; "time" is live; theme is
+    // unsupported (global token set)
+    const base = try value_mod.schemaOf(time_picker_w.TimePickerOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "time", .number, &.{}, .{ .int = 630 });
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -1258,7 +1364,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 37), widgets.len);
+    try std.testing.expectEqual(@as(usize, 39), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1907,6 +2013,87 @@ test "registry: loading_indicator (M3E) schema exposes the right editor kinds" {
     try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(li_schema, "contained").?);
     try std.testing.expectEqual(value_mod.EditorKind.number, findProp(li_schema, "progress").?);
     try std.testing.expect(findProp(li_schema, "theme") == null); // global token set
+}
+
+test "registry: date_picker (M3E) round-trips (live selected; displayed is the initial month)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // the selected day is ALWAYS live and round-trips (20735 = 2026-10-09;
+    // today = 20734 = 2026-10-08, injected for determinism)
+    const doc = "{\"name\":\"date_picker\",\"options\":{\"today\":20734,\"selected\":20735}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(ui.semantics.Role.group, node.semantics.?.role);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // no selection: selected = null round-trips; displayed defaults to the
+    // month of today (20734 = 2026-10-08 → October 2026) but is not live
+    const plain_doc = "{\"name\":\"date_picker\",\"options\":{\"today\":20734}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings("{\"name\":\"date_picker\",\"options\":{\"today\":20734,\"selected\":null}}", plain_out);
+    // an explicit displayed month is kept in the snapshot
+    const disp_doc = "{\"name\":\"date_picker\",\"options\":{\"today\":20734,\"selected\":20735,\"displayed\":19510}}";
+    const disp = try treeFromJson(&ctx, std.testing.allocator, disp_doc);
+    defer disp.deinit();
+    const disp_out = try treeToJson(&ctx, disp, std.testing.allocator);
+    defer std.testing.allocator.free(disp_out);
+    try std.testing.expectEqualStrings(disp_doc, disp_out); // 19510 = 2023-06-01
+}
+
+test "registry: date_picker (M3E) schema exposes the right editor kinds + rejects children" {
+    const dp_schema = try byName("date_picker").?.schema(std.testing.allocator);
+    defer {
+        for (dp_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(dp_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(dp_schema, "title").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(dp_schema, "width").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(dp_schema, "today").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(dp_schema, "selected").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(dp_schema, "displayed").?);
+    try std.testing.expect(findProp(dp_schema, "theme") == null); // global token set
+    // a leaf panel: a document child is rejected
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"date_picker\",\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, doc));
+}
+
+test "registry: time_picker (M3E) round-trips (live time) + schema + rejects children" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // the time is ALWAYS live and round-trips (630 = 10:30)
+    const doc = "{\"name\":\"time_picker\",\"options\":{\"is_24h\":true,\"time\":1325}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(ui.semantics.Role.group, node.semantics.?.role);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // plain: the default 10:30 is live and round-trips
+    const plain_doc = "{\"name\":\"time_picker\"}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings("{\"name\":\"time_picker\",\"options\":{\"time\":630}}", plain_out);
+    // the schema
+    const tp_schema = try byName("time_picker").?.schema(std.testing.allocator);
+    defer {
+        for (tp_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(tp_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(tp_schema, "is_24h").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(tp_schema, "width").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(tp_schema, "time").?);
+    try std.testing.expect(findProp(tp_schema, "theme") == null); // global token set
+    // a leaf panel: a document child is rejected
+    const cdoc = "{\"name\":\"time_picker\",\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"hi\"}}]}";
+    try std.testing.expectError(error.ChildrenNotSupported, treeFromJson(&ctx, std.testing.allocator, cdoc));
 }
 
 test "registry: search_bar + navigation_rail (M3E) schemas expose the right editor kinds" {
