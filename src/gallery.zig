@@ -745,6 +745,11 @@ fn buildListItemsSection(g: *Gallery, theme: Theme) !*Node {
     g.refs.li_m3e = click_li;
     col.add(click_li);
     col.add(try list_item_w.listItem(a, null, null, .{ .enabled = false, .headline = "Disabled", .supporting = "Supporting text", .lines = .two, .theme = theme }));
+    // the clickable row's counter
+    const li_row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    li_row.add(try list_item_w.listItem(a, null, .{ .fn_ptr = listItemPressCb, .userdata = g }, .{ .headline = "Counter row", .leading_icon = .plus, .trailing_icon = .close, .trailing_text = "both", .theme = theme }));
+    li_row.add(try text_w.BoundText(u32).text(a, g.li_press, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(li_row);
     return col;
 }
 

@@ -170,10 +170,15 @@ fn listItemMeasure(n: *Node, c: Constraints) Size {
     if (hasOverline(s)) text_w = @max(text_w, ui.paint.measureText(s.overline, t.type_scale.label_small.size, false).width);
     var w = h_padding + text_w + h_padding;
     if (s.opts.leading_icon != null) w += icon_size + icon_gap;
-    if (s.opts.trailing_icon != null) w += icon_gap + icon_size + trailing_space;
-    if (s.trailing_text.len > 0) {
-        const tw = ui.paint.measureText(s.trailing_text, t.type_scale.label_small.size, false).width;
-        w += icon_gap + tw + trailing_space;
+    // the trailing zone: [icon?][8dp gap][text?] ending 16dp from the end
+    const has_trail_icon = s.opts.trailing_icon != null;
+    const has_trail_text = s.trailing_text.len > 0;
+    if (has_trail_icon or has_trail_text) {
+        var zone_w: f32 = trailing_space;
+        if (has_trail_icon) zone_w += icon_size;
+        if (has_trail_icon and has_trail_text) zone_w += 8;
+        if (has_trail_text) zone_w += ui.paint.measureText(s.trailing_text, t.type_scale.label_small.size, false).width;
+        w += icon_gap + zone_w; // TrailingContentStartPadding + the zone
     }
     return c.constrain(.{ .w = w, .h = @max(minHeight(s), contentHeight(s, t)) });
 }
@@ -227,10 +232,11 @@ fn listItemPaint(n: *Node, ctx: *kx.Ctx) void {
         }
     }
 
-    // --- the text column (centered vertically) ---
+    // --- the text column (centered vertically; the LTR anchor — each run
+    // mirrors itself once with its measured width) ---
     const content_h = contentHeight(s, t);
     var y = b.y + (b.h - content_h) / 2;
-    const text_x = mx(b.x, b.w, b.x + h_padding + (if (s.opts.leading_icon != null) icon_size + icon_gap else 0), 0, rtl);
+    const text_x = b.x + h_padding + (if (s.opts.leading_icon != null) icon_size + icon_gap else 0);
     if (hasOverline(s)) {
         const style = t.type_scale.label_small;
         const m = ui.paint.measureText(s.overline, style.size, false);
@@ -254,18 +260,33 @@ fn listItemPaint(n: *Node, ctx: *kx.Ctx) void {
         const ix = mx(b.x, b.w, b.x + h_padding, icon_size, rtl);
         paintIcon(ctx, iname, ix, b.y + (b.h - icon_size) / 2, fc.icon);
     }
-    // --- trailing icon or trailing text (end side, vertically centered) ---
-    if (s.opts.trailing_icon) |iname| {
-        const ix = mx(b.x, b.w, b.x + b.w - trailing_space - icon_size, icon_size, rtl);
-        paintIcon(ctx, iname, ix, b.y + (b.h - icon_size) / 2, fc.icon);
+    // --- the trailing zone: [icon?][8dp gap][text?] ending 16dp from the end
+    // (sequential — an icon and a text never overlap)
+    {
+        const has_trail_icon = s.opts.trailing_icon != null;
+        const has_trail_text = s.trailing_text.len > 0;
+        if (has_trail_icon or has_trail_text) {
+            var zone_end = b.x + b.w - trailing_space;
+            if (has_trail_text) {
+                const style = t.type_scale.label_small;
+                const m = ui.paint.measureText(s.trailing_text, style.size, false);
+                const ty = b.y + (b.h - m.height) / 2 + m.ascent;
+                const tx = mx(b.x, b.w, zone_end - m.width, m.width, rtl);
+                ui.paint.text(ctx, s.trailing_text, tx, ty, style.size, false, fc.trailing_text);
+                zone_end -= m.width;
+                if (has_trail_icon) zone_end -= 8;
+            }
+            if (has_trail_icon) {
+                const ix = mx(b.x, b.w, zone_end - icon_size, icon_size, rtl);
+                paintIcon(ctx, s.opts.trailing_icon, ix, b.y + (b.h - icon_size) / 2, fc.icon);
+            }
+        }
     }
-    if (s.trailing_text.len > 0) {
-        const style = t.type_scale.label_small;
-        const m = ui.paint.measureText(s.trailing_text, style.size, false);
-        const ty = b.y + (b.h - m.height) / 2 + m.ascent;
-        const tx = mx(b.x, b.w, b.x + b.w - trailing_space - m.width, m.width, rtl);
-        ui.paint.text(ctx, s.trailing_text, tx, ty, style.size, false, fc.trailing_text);
-    }
+}
+
+/// Desktop cursor: a hand over clickable rows, the default arrow otherwise.
+fn listItemCursor(n: *Node) ui.node.PointerCursor {
+    return if (isClickable(stateOf(n))) .hand else .default;
 }
 
 fn listItemOnPointer(n: *Node, ev: input.PointerEvent) bool {
@@ -362,6 +383,7 @@ const list_item_vtable = ui.node.VTable{
     .deinit = listItemDeinit,
     .on_pointer = listItemOnPointer,
     .on_key = listItemOnKey,
+    .cursor = listItemCursor,
 };
 
 /// An M3E list item. `sig` = null → the selected state is `opts.selected`
@@ -403,6 +425,7 @@ pub fn listItem(allocator: std.mem.Allocator, sig: ?*ui.state.Signal(bool), on_c
         .focusable = opts.enabled and on_click != null,
         .disabled = !opts.enabled,
         .checked = isSelected(s),
+        .actions = if (opts.enabled and on_click != null) ui.semantics.Actions.initOne(.activate) else .{},
     }); // Phase 2c
     if (sig) |sg| {
         sg.subscribe(.{ .callback = .{ .fn_ptr = listItemSyncCb, .userdata = node } }); // the selected state follows the signal
@@ -435,6 +458,11 @@ test "list_item: measures the per-lines min heights (56/72/88), content + paddin
     const ic = try listItem(std.testing.allocator, null, null, .{ .headline = "Title", .leading_icon = .star, .trailing_icon = .close, .theme = t });
     defer ic.deinit();
     try std.testing.expectApproxEqAbs(h_padding * 2 + hw + (icon_size + icon_gap) + (icon_gap + icon_size + trailing_space), ic.measure(.{ .max_w = 2000, .max_h = 2000 }).w, 0.001);
+    // both trailing options: the zone is [icon][8][text] + the 16 end space
+    const both = try listItem(std.testing.allocator, null, null, .{ .headline = "Title", .trailing_icon = .close, .trailing_text = "Edit", .theme = t });
+    defer both.deinit();
+    const tw = ui.paint.measureText("Edit", 11, false).width;
+    try std.testing.expectApproxEqAbs(h_padding * 2 + hw + icon_gap + icon_size + 8 + tw + trailing_space, both.measure(.{ .max_w = 2000, .max_h = 2000 }).w, 0.001);
 }
 
 test "list_item: click fires on_click (selection is external); the signal drives the state" {
@@ -507,6 +535,50 @@ test "golden: selected list item paints the SecondaryContainer + on_secondary co
     try std.testing.expect(f.countColorIn(.{ .x = 76, .y = 24, .w = 100, .h = 24 }, t.colors.on_secondary_container) > 0);
     // the leading icon ink: on_secondary_container (the icon sits at x=36)
     try std.testing.expect(f.countColorIn(.{ .x = 36, .y = 24, .w = 24, .h = 24 }, t.colors.on_secondary_container) > 0);
+}
+
+test "golden: trailing icon + text lay out sequentially (no overlap)" {
+    const t = theme_mod.light;
+    const li = try listItem(std.testing.allocator, null, null, .{ .headline = "Title", .trailing_icon = .close, .trailing_text = "Edit", .theme = t });
+    defer li.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 320, 72);
+    defer r.deinit();
+    li.layout(.{ .x = 20, .y = 8, .w = 280, .h = 56 });
+    r.paint(li, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    const tw = ui.paint.measureText("Edit", 11, false);
+    // the text ends 16dp from the end; the icon sits 8dp before the text
+    const text_end = 20 + 280 - 16;
+    const icon_end = text_end - tw.width - 8;
+    // both zones have ink (on_surface_variant) — in separate slots
+    try std.testing.expect(f.countColorIn(.{ .x = text_end - tw.width, .y = 24, .w = tw.width, .h = 24 }, t.colors.on_surface_variant) > 0);
+    try std.testing.expect(f.countColorIn(.{ .x = icon_end - 24, .y = 24, .w = 24, .h = 24 }, t.colors.on_surface_variant) > 0);
+}
+
+test "golden: RTL list item paints the headline at the end side" {
+    const i18n = try ui.i18n.I18n.init(std.testing.allocator, "en");
+    defer i18n.deinit();
+    try i18n.addArb("ar", "{\"x\":\"y\"}", .rtl);
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    try i18n.setLocale("ar");
+    const t = theme_mod.light;
+    const li = try listItem(std.testing.allocator, null, null, .{ .headline = "Title", .leading_icon = .star, .theme = t });
+    defer li.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 320, 72);
+    defer r.deinit();
+    li.layout(.{ .x = 20, .y = 8, .w = 280, .h = 56 });
+    r.paint(li, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    const m = ui.paint.measureText("Title", 16, false);
+    // the headline run is end-aligned (past the mirrored leading icon)
+    const run_end = 20 + 280 - 16 - (icon_size + icon_gap);
+    try std.testing.expect(f.countColorIn(.{ .x = run_end - m.width, .y = 24, .w = m.width, .h = 24 }, t.colors.on_surface) > 0);
+    // no headline ink where the LTR run would paint (the container is opaque,
+    // so the assertion is on the ink color, not on "not background")
+    try std.testing.expectEqual(@as(u64, 0), f.countColorIn(.{ .x = 76, .y = 24, .w = m.width, .h = 24 }, t.colors.on_surface));
 }
 
 test "golden: disabled list item paints the OnSurface@0.38 content over the Surface" {
