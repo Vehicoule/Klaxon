@@ -263,7 +263,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.5.0";
+    return "0.6.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {

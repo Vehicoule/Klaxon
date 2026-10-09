@@ -115,3 +115,9 @@ pub fn imageDestroy(ctx: *kx.Ctx, id: u64) void {
 pub fn imageDraw(ctx: *kx.Ctx, id: u64, x: f32, y: f32, w: f32, h: f32) void {
     kx.c.kx_draw_image(ctx, id, x, y, w, h);
 }
+
+// --- tests ---
+
+test "kx ABI version reports 0.6.0 (the stroke_rrect entry)" {
+    try std.testing.expectEqualStrings("0.6.0", std.mem.span(kx.c.kx_abi_version()));
+}
