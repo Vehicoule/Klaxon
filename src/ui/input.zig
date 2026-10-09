@@ -146,6 +146,23 @@ pub const InputRouter = struct {
         return null;
     }
 
+    /// Move the capture for `ev.pointer` to `node` mid-gesture (a wrapper
+    /// taking over a drag — pull-to-refresh once the overscroll starts).
+    /// The previous owner is notified with .outside_down (its gesture is
+    /// canceled); the notification bubbles from it, skipping `except` (the
+    /// new owner — it is already driving the gesture).
+    pub fn captureNode(self: *InputRouter, ev: PointerEvent, node: *Node, except: ?*Node) void {
+        if (self.captureSlot(ev.pointer)) |i| {
+            const prev = self.captured[i].?.node;
+            self.captured[i] = .{ .pointer = ev.pointer, .node = node };
+            if (prev != node) {
+                _ = sendPointerExcept(prev, .{ .phase = .outside_down, .x = ev.x, .y = ev.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms }, except);
+            }
+        } else {
+            self.captureSet(ev.pointer, node);
+        }
+    }
+
     pub fn dispatchPointer(self: *InputRouter, root: *Node, ev_in: PointerEvent) void {
         // Events arrive in window (viewport) coordinates; keep a copy as
         // raw_* before any local-space mapping below. Drag deltas are
@@ -350,6 +367,12 @@ pub fn cursorForNode(node: ?*Node) PointerCursor {
 /// Hover phases are notifications: they keep bubbling past handlers that
 /// report them handled (see the module header).
 fn sendPointer(node: *Node, ev: PointerEvent) bool {
+    return sendPointerExcept(node, ev, null);
+}
+
+/// sendPointer, skipping `except` (a capture handover notifies the previous
+/// owner; the new owner must not see its own cancellation).
+fn sendPointerExcept(node: *Node, ev: PointerEvent, except: ?*Node) bool {
     const notify = switch (ev.phase) {
         .enter, .leave, .hover_move => true,
         else => false,
@@ -357,6 +380,7 @@ fn sendPointer(node: *Node, ev: PointerEvent) bool {
     var handled = false;
     var n: ?*Node = node;
     while (n) |cur| : (n = cur.parent) {
+        if (cur == except) continue;
         if (cur.vtable.on_pointer) |h| {
             if (h(cur, ev)) {
                 handled = true;
@@ -826,6 +850,50 @@ test "multiple pointers are captured independently (multi-touch)" {
     try std.testing.expect(router.capturedNode(2) == null);
     try std.testing.expect(router.capturedNode(1) == a);
     try std.testing.expectEqual(PointerPhase.up, recState(b).log.items[1]);
+}
+
+test "captureNode moves the capture mid-gesture and notifies the previous owner (skipping the new one)" {
+    const root = try recNode(std.testing.allocator, false);
+    defer root.deinit();
+    const wrapper = try recNode(std.testing.allocator, false);
+    const btn = try recNode(std.testing.allocator, true); // claims (a button)
+    root.add(wrapper);
+    wrapper.add(btn);
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    wrapper.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    btn.layout(.{ .x = 0, .y = 0, .w = 50, .h = 100 });
+    var router = InputRouter{};
+    router.dispatchPointer(root, .{ .phase = .down, .x = 10, .y = 10 });
+    try std.testing.expect(router.capturedNode(0) == btn);
+    try std.testing.expectEqual(@as(usize, 0), recState(wrapper).log.items.len); // the button claimed the down
+    // The wrapper takes over the drag (pull-to-refresh once the overscroll starts).
+    router.captureNode(.{ .phase = .move, .x = 10, .y = 60, .raw_x = 10, .raw_y = 60 }, wrapper, wrapper);
+    try std.testing.expect(router.capturedNode(0) == wrapper);
+    // The previous owner was canceled (outside_down — claimed, stops there);
+    // the new owner skipped the notification.
+    const blog = recState(btn).log.items;
+    try std.testing.expectEqual(@as(usize, 2), blog.len);
+    try std.testing.expectEqual(PointerPhase.down, blog[0]);
+    try std.testing.expectEqual(PointerPhase.outside_down, blog[1]);
+    try std.testing.expectEqual(@as(usize, 0), recState(wrapper).log.items.len);
+    // Subsequent moves and the release go to the wrapper only.
+    router.dispatchPointer(root, .{ .phase = .move, .x = 10, .y = 80, .raw_x = 10, .raw_y = 80 });
+    try std.testing.expectEqual(@as(usize, 1), recState(wrapper).log.items.len);
+    try std.testing.expectEqual(PointerPhase.move, recState(wrapper).log.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), recState(btn).log.items.len);
+    router.dispatchPointer(root, .{ .phase = .up, .x = 10, .y = 80, .raw_x = 10, .raw_y = 80 });
+    // The trailing .enter is the hover notification from refreshHover —
+    // notifications bubble past claiming handlers (see the module header).
+    const wlog = recState(wrapper).log.items;
+    try std.testing.expectEqual(@as(usize, 3), wlog.len);
+    try std.testing.expectEqual(PointerPhase.move, wlog[0]);
+    try std.testing.expectEqual(PointerPhase.up, wlog[1]);
+    // The button never saw a move or the release (only the hover .enter).
+    const blog2 = recState(btn).log.items;
+    try std.testing.expectEqual(@as(usize, 3), blog2.len);
+    try std.testing.expectEqual(PointerPhase.down, blog2[0]);
+    try std.testing.expectEqual(PointerPhase.outside_down, blog2[1]);
+    try std.testing.expectEqual(PointerPhase.enter, blog2[2]);
 }
 
 test "invisible nodes are neither painted nor hit-tested" {

@@ -1551,6 +1551,10 @@ fn ssClosedCb(userdata: ?*anyopaque) void {
 fn ptrRefreshCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.ptr_refresh.set(g.ptr_refresh.peek() + 1);
+    // The refreshing signal is app-owned (Compose's isRefreshing contract):
+    // the PTR sets it on trigger, the app clears it when the refresh
+    // completes. The gallery's "refresh" is instant — the test models the
+    // completion explicitly (a real app clears it when the data arrives).
 }
 
 fn chipCb(userdata: ?*anyopaque) void {
@@ -2199,18 +2203,28 @@ test "gallery: the M3E pull-to-refresh triggers on a pull past the threshold" {
     const sy = widgets.scroll_view.scrollOffset(sv);
     const b = ptr.bounds;
     try std.testing.expect(!g.ptr_refreshing.peek());
-    // pull down 100 at the top (past the 80dp threshold)
+    // pull down 100 at the top (past the 80dp threshold; the first move past
+    // the top anchors the pull origin, the next one pulls)
     const x = b.x + b.w / 2;
     const y0 = b.y + 40;
     router.dispatchPointer(g.root, .{ .phase = .down, .x = x, .y = y0 - sy, .raw_x = x, .raw_y = y0 - sy });
-    router.dispatchPointer(g.root, .{ .phase = .move, .x = x, .y = y0 + 100 - sy, .raw_x = x, .raw_y = y0 + 100 - sy });
-    router.dispatchPointer(g.root, .{ .phase = .up, .x = x, .y = y0 + 100 - sy, .raw_x = x, .raw_y = y0 + 100 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = x, .y = y0 + 60 - sy, .raw_x = x, .raw_y = y0 + 60 - sy }); // anchor
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = x, .y = y0 + 160 - sy, .raw_x = x, .raw_y = y0 + 160 - sy }); // pull 100
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x, .y = y0 + 160 - sy, .raw_x = x, .raw_y = y0 + 160 - sy });
     try std.testing.expectEqual(@as(u32, 1), g.ptr_refresh.peek()); // on_refresh fired
     try std.testing.expect(g.ptr_refreshing.peek()); // the signal round-trips
     try std.testing.expect(pull_to_refresh_w.adjusted(ptr) > 0); // the indicator holds at rest
-    // the app clears the refreshing state → the indicator hides
+    // the app clears the refreshing state (the refresh completed) → the
+    // indicator hides, and a LATER pull triggers again (no stranded state)
     g.ptr_refreshing.set(false);
     try std.testing.expectEqual(@as(f32, 0), pull_to_refresh_w.adjusted(ptr));
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = x, .y = y0 - sy, .raw_x = x, .raw_y = y0 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = x, .y = y0 + 60 - sy, .raw_x = x, .raw_y = y0 + 60 - sy }); // anchor
+    router.dispatchPointer(g.root, .{ .phase = .move, .x = x, .y = y0 + 200 - sy, .raw_x = x, .raw_y = y0 + 200 - sy }); // pull 140
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = x, .y = y0 + 200 - sy, .raw_x = x, .raw_y = y0 + 200 - sy });
+    try std.testing.expectEqual(@as(u32, 2), g.ptr_refresh.peek()); // the second pull fired too
+    try std.testing.expect(g.ptr_refreshing.peek());
+    g.ptr_refreshing.set(false);
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

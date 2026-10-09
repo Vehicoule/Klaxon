@@ -319,6 +319,15 @@ fn sheetLayout(n: *Node, bounds: Rect) void {
     } else if (target != s.anim_to) {
         animateProgress(n, s, target);
     }
+    // A resize changes panel_w: recompute the slide offset from the current
+    // progress — a stale offset would expose a closed panel (and its hit
+    // bounds would intercept clicks over the body).
+    const ps = panelStateOf(s.panel);
+    const new_offset = hideSign(s.opts) * (s.panel_w * (1 - s.progress));
+    if (new_offset != ps.offset_x) {
+        ps.offset_x = new_offset;
+        markInternalsDirty(n, s);
+    }
 }
 
 fn sheetPaint(n: *Node, ctx: *kx.Ctx) void {
@@ -541,6 +550,25 @@ test "side_sheet: the panel docks to the side edge, full height, width capped" {
     // a narrow parent clamps the panel width
     d.layout(.{ .x = 0, .y = 0, .w = 200, .h = 200 });
     try std.testing.expectEqual(@as(f32, 200), stateOf(d).panel.bounds.w);
+}
+
+test "side_sheet: a resize recomputes the closed panel's slide offset (no exposed panel, no stray hits)" {
+    const open = try ui.state.Signal(bool).init(std.testing.allocator, false);
+    defer open.deinit();
+    const d = try sideSheet(std.testing.allocator, open, null, .{
+        .body = try golden.solidBox(std.testing.allocator, 320, 200, 0x112233FF),
+    });
+    defer d.deinit();
+    d.layout(.{ .x = 0, .y = 0, .w = 200, .h = 200 });
+    const s = stateOf(d);
+    try std.testing.expectEqual(@as(f32, 200), s.panel_w);
+    try std.testing.expectEqual(@as(f32, 200), panelStateOf(s.panel).offset_x); // end side: off-screen right
+    // widen the parent: the panel grows to the 256 default, stays off-screen
+    d.layout(.{ .x = 0, .y = 0, .w = 320, .h = 200 });
+    try std.testing.expectEqual(@as(f32, 256), s.panel_w);
+    try std.testing.expectEqual(@as(f32, 256), panelStateOf(s.panel).offset_x);
+    // the (stale-offset) exposed region now hits the body, not the panel
+    try std.testing.expect(d.hitTest(315, 100).? == s.opts.body.?);
 }
 
 test "side_sheet: without a timeline the panel snaps open/closed on the signal" {

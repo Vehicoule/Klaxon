@@ -21,6 +21,19 @@
 // or its offset is 0 (scroll_view.isScrollView). While refreshing, the
 // gesture is ignored.
 //
+// Gesture model: the PTR starts as a passive observer — the content's scroll
+// view claims the moves that actually scroll (bubbling stops there). The
+// first downward move the PTR sees at scroll top ANCHORS the pull origin (the
+// scroll-to-top transition is invisible to the wrapper: it never saw the
+// consumed moves) and STEALS the pointer capture (input.captureNode; the
+// previous owner is canceled with .outside_down). From then on every move
+// and the release are the PTR's — a clickable child can no longer strand the
+// indicator, and an upward drag shrinks the pull, then scrolls the content
+// (Flutter's overscroll model). A fresh down cancels any in-flight snap-back
+// spring. Residual imprecision (sub-frame): the overscroll within the final
+// scroll-consuming move (a drag crossing from scrolled to top mid-move) is
+// not counted — the pull origin is the first move seen past the top.
+//
 // The refreshing state is a Signal(bool) owned by the app (two-way): the PTR
 // sets it on trigger; the app clears it when the refresh completes.
 // `on_refresh` fires at the trigger. The adjusted value animates with the
@@ -100,12 +113,52 @@ pub fn adjusted(n: *Node) f32 {
     return stateOf(n).adjusted;
 }
 
+/// The content child's scroll offset (0 when it is not a scroll view).
+fn contentOffset(n: *Node) f32 {
+    if (n.children.items.len == 0) return 0;
+    const content = n.children.items[0];
+    if (!scroll_view.isScrollView(content)) return 0;
+    return scroll_view.scrollOffset(content);
+}
+
 /// Whether the content child is at scroll top (not a scroll view, or offset 0).
 fn contentAtTop(n: *Node) bool {
-    if (n.children.items.len == 0) return true;
+    return contentOffset(n) <= 0.001;
+}
+
+/// Scroll the content child (a no-op when it is not a scroll view).
+fn scrollContent(n: *Node, delta: f32) void {
+    if (n.children.items.len == 0) return;
     const content = n.children.items[0];
-    if (!scroll_view.isScrollView(content)) return true;
-    return scroll_view.scrollOffset(content) <= 0.001;
+    if (!scroll_view.isScrollView(content)) return;
+    scroll_view.scrollBy(content, delta);
+}
+
+/// The PTR owns the gesture (it holds the capture): every move delta is
+/// ours. Dragging down pulls at scroll top (scrolling back toward the top
+/// first); dragging up shrinks the pull, then scrolls the content.
+fn handleCapturedMove(n: *Node, s: *PtrState, dy: f32) void {
+    if (dy > 0) {
+        if (s.pull > 0) {
+            s.pull += dy;
+        } else if (contentOffset(n) > 0.001) {
+            scrollContent(n, -dy); // scroll back toward the top
+            return;
+        } else {
+            s.pull = dy; // the overscroll (re-)starts
+        }
+    } else if (dy < 0) {
+        const up = -dy;
+        if (s.pull > 0) {
+            const absorbed = @min(s.pull, up);
+            s.pull -= absorbed;
+            const excess = up - absorbed;
+            if (excess > 0.001) scrollContent(n, excess); // resume scrolling
+        } else {
+            scrollContent(n, up);
+        }
+    }
+    applyAdjusted(n, s, s.pull * drag_multiplier);
 }
 
 fn ptrMeasure(n: *Node, c: Constraints) Size {
@@ -190,7 +243,13 @@ fn ptrOnPointer(n: *Node, ev: input.PointerEvent) bool {
     const s = stateOf(n);
     switch (ev.phase) {
         .down => {
-            // record the track (a drag may start here); the content handles taps
+            if (s.track.active) return false; // one pull gesture at a time
+            // A fresh gesture takes control: cancel any in-flight snap-back
+            // spring (its next tick would overwrite the new pull).
+            if (anim.timeline()) |tl| tl.cancelChannel(@ptrCast(&s.anim_channel));
+            // Record the track (a drag may start here); the content handles
+            // taps. A claiming child (a button) may consume this down before
+            // it bubbles here — the track then self-heals on the first move.
             s.track = .{ .pointer = ev.pointer, .y = ev.raw_y, .active = true };
             s.pull = 0;
             s.pulling = false;
@@ -198,6 +257,7 @@ fn ptrOnPointer(n: *Node, ev: input.PointerEvent) bool {
         },
         .move => {},
         .up, .outside_down => {
+            if (s.track.active and s.track.pointer != ev.pointer) return false; // another finger
             const was = s.pulling;
             const pull = s.pull; // captured before the reset (finishPull reads it)
             s.pull = 0;
@@ -211,23 +271,30 @@ fn ptrOnPointer(n: *Node, ev: input.PointerEvent) bool {
         },
         else => return false,
     }
-    // .move: a drag DOWN at scroll top pulls (the track self-heals across
-    // unseen ups — hover moves keep it fresh, like scroll_util.ScrollInput)
+    // .move
     if (s.sig.peek()) return false; // no pull while refreshing
+    if (s.track.active and s.track.pointer != ev.pointer) return false; // another finger
     const router = input.current() orelse return false;
-    const dragging = router.capturedNode(ev.pointer) != null;
     const last = if (s.track.active and s.track.pointer == ev.pointer) s.track.y else ev.raw_y;
     s.track = .{ .pointer = ev.pointer, .y = ev.raw_y, .active = true };
-    if (!dragging) return false; // hover move: no pull
-    const dy = ev.raw_y - last;
-    if (dy == 0) return s.pulling;
-    if (s.pulling or contentAtTop(n)) {
-        s.pulling = true;
-        s.pull = @max(0, s.pull + dy);
-        applyAdjusted(n, s, s.pull * drag_multiplier);
-        return true;
+    const self_captured = router.capturedNode(ev.pointer) == n;
+    if (!self_captured and !s.pulling) {
+        // Bubbling: the scroll view claimed the moves that scrolled. The
+        // first move we see at scroll top anchors the pull origin (the
+        // scroll-to-top transition was invisible to us) and steals the
+        // capture: from now on every move and the release are ours.
+        const dy = ev.raw_y - last;
+        if (dy > 0 and contentAtTop(n)) {
+            s.pulling = true;
+            s.pull = 0; // this move only anchors
+            router.captureNode(ev, n, n);
+            return true;
+        }
+        return false;
     }
-    return false;
+    // The PTR owns the gesture: every delta is ours (see handleCapturedMove).
+    handleCapturedMove(n, s, ev.raw_y - last);
+    return true;
 }
 
 fn ptrDeinit(n: *Node) void {
@@ -364,19 +431,23 @@ test "pull_to_refresh: a drag down at scroll top pulls; release past 80 triggers
     const ptr = try ptrWithScroll(a, refreshing, cb);
     defer ptr.deinit();
     ptr.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
-    // a short pull (30 < 80): no trigger, snaps back
+    // a short pull (30 < 80): no trigger, snaps back. The first move past
+    // the top anchors the pull origin; the next ones pull.
     router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
-    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 }); // down 30
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 }); // anchor
+    try std.testing.expectEqual(@as(f32, 0), adjusted(ptr));
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 }); // pull 30
     try std.testing.expectEqual(@as(f32, 15), adjusted(ptr)); // 30 × 0.5
-    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 });
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 });
     try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // snapped back
     try std.testing.expectEqual(@as(u32, 0), fired);
     try std.testing.expect(!refreshing.peek());
     // a long pull (100 ≥ 80): triggers
     router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
-    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 200, .raw_x = 50, .raw_y = 200 }); // down 100
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 }); // anchor
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 230, .raw_x = 50, .raw_y = 230 }); // pull 100
     try std.testing.expectEqual(@as(f32, 50), adjusted(ptr)); // 100 × 0.5
-    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 200, .raw_x = 50, .raw_y = 200 });
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 230, .raw_x = 50, .raw_y = 230 });
     try std.testing.expectEqual(@as(u32, 1), fired); // on_refresh fired
     try std.testing.expect(refreshing.peek()); // the signal round-trips
     try std.testing.expectEqual(resting, adjusted(ptr)); // held at rest
@@ -407,18 +478,19 @@ test "pull_to_refresh: a drag does NOT pull when the content is scrolled" {
     try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // no pull
     try std.testing.expectEqual(@as(f32, 50), scroll_view.scrollOffset(sv)); // scrolled 100 → 50
     router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 150, .raw_x = 50, .raw_y = 150 });
-    // back at the top mid-drag: pulling starts. The scroll view CLAIMS the
-    // moves that actually scroll (bubbling stops there), so the PTR first
-    // sees the move after the offset hit 0 (v1: the pull distance is
-    // measured from the PTR's tracked position — see the spec's deviations)
+    // back at the top mid-drag: the first move past the top anchors the pull
+    // origin (the scroll-to-top transition was invisible to the PTR), then
+    // the capture is stolen and the next moves pull
     router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
-    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 140, .raw_x = 50, .raw_y = 140 }); // down 40 → scrolls 50 → 10
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 140, .raw_x = 50, .raw_y = 140 }); // down 40 → scrolls 50 → 10 (claimed)
     router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 150, .raw_x = 50, .raw_y = 150 }); // down 10 → scrolls 10 → 0 (claimed)
     try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // the PTR has not seen a move yet
-    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 }); // at top → the PTR pulls
-    try std.testing.expect(adjusted(ptr) > 0);
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 }); // anchor: the capture is stolen
+    try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // the anchor move itself does not pull
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 180, .raw_x = 50, .raw_y = 180 }); // pulls 20
+    try std.testing.expectEqual(@as(f32, 10), adjusted(ptr)); // 20 × 0.5
     try std.testing.expectEqual(@as(f32, 0), scroll_view.scrollOffset(sv)); // still at the top
-    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 });
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 180, .raw_x = 50, .raw_y = 180 });
     try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // below the threshold → snapped back
 }
 
@@ -450,7 +522,8 @@ test "golden: the indicator paints the container circle + the arc; the content t
     // edge (y = 10 + 20 = 30), the container spans y = -10..30 (clipped to 10)
     ptr.layout(.{ .x = 10, .y = 10, .w = 100, .h = 200 });
     router.dispatchPointer(ptr, .{ .phase = .down, .x = 60, .y = 100, .raw_x = 60, .raw_y = 100 });
-    router.dispatchPointer(ptr, .{ .phase = .move, .x = 60, .y = 140, .raw_x = 60, .raw_y = 140 }); // down 40
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 60, .y = 120, .raw_x = 60, .raw_y = 120 }); // anchor
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 60, .y = 160, .raw_x = 60, .raw_y = 160 }); // pull 40
     var r = try golden.Renderer.init(a, 120, 220);
     defer r.deinit();
     r.paint(ptr, 0xFFFFFFFF);
@@ -468,4 +541,125 @@ test "golden: the indicator paints the container circle + the arc; the content t
     // content: untouched background
     try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(20, 25));
     router.dispatchPointer(ptr, .{ .phase = .up, .x = 60, .y = 140, .raw_x = 60, .raw_y = 140 });
+}
+
+test "pull_to_refresh: a drag that scrolls to the top first does not count the scrolled distance as pull" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    var fired: u32 = 0;
+    const cb = Callback{ .fn_ptr = refreshCounterCb, .userdata = &fired };
+    const refreshing = try ui.state.Signal(bool).init(a, false);
+    defer refreshing.deinit();
+    const ptr = try ptrWithScroll(a, refreshing, cb);
+    defer ptr.deinit();
+    ptr.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    const sv = ptr.children.items[0];
+    _ = scroll_view.setScrollOffset(sv, 100); // scrolled
+    // drag down 100: the scroll view scrolls to the top (it claims the moves)
+    router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 200, .raw_x = 50, .raw_y = 200 });
+    try std.testing.expectEqual(@as(f32, 0), scroll_view.scrollOffset(sv)); // at the top
+    try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // the PTR has seen no move
+    // past the top: the first move anchors the pull origin (the scrolled
+    // distance is NOT pull), the next ones pull
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 240, .raw_x = 50, .raw_y = 240 }); // anchor
+    try std.testing.expectEqual(@as(f32, 0), adjusted(ptr));
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 310, .raw_x = 50, .raw_y = 310 }); // pull 70
+    try std.testing.expectEqual(@as(f32, 35), adjusted(ptr)); // 70 × 0.5
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 310, .raw_x = 50, .raw_y = 310 });
+    try std.testing.expectEqual(@as(u32, 0), fired); // 70 < 80: no refresh
+    try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // snapped back
+}
+
+test "pull_to_refresh: reversing a pull shrinks it and scrolls instead of refreshing" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    var fired: u32 = 0;
+    const cb = Callback{ .fn_ptr = refreshCounterCb, .userdata = &fired };
+    const refreshing = try ui.state.Signal(bool).init(a, false);
+    defer refreshing.deinit();
+    const ptr = try ptrWithScroll(a, refreshing, cb);
+    defer ptr.deinit();
+    ptr.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    const sv = ptr.children.items[0];
+    // pull 100 down (past the threshold), then drag back up 150: the pull
+    // shrinks to 0 and the excess scrolls the content (the PTR owns the
+    // gesture, so the scroll view cannot consume the return move)
+    router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 }); // anchor
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 230, .raw_x = 50, .raw_y = 230 }); // pull 100
+    try std.testing.expectEqual(@as(f32, 50), adjusted(ptr));
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 80, .raw_x = 50, .raw_y = 80 }); // up 150
+    try std.testing.expectEqual(@as(f32, 0), adjusted(ptr)); // the pull is gone
+    try std.testing.expectEqual(@as(f32, 50), scroll_view.scrollOffset(sv)); // 100 absorbed the pull, 50 scrolled
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 80, .raw_x = 50, .raw_y = 80 });
+    try std.testing.expectEqual(@as(u32, 0), fired); // no refresh
+    try std.testing.expect(!refreshing.peek());
+}
+
+test "pull_to_refresh: a pull starting over a button still triggers (the release is not stranded)" {
+    const button_w = @import("button.zig");
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    var fired: u32 = 0;
+    var btn_fired: u32 = 0;
+    const refreshing = try ui.state.Signal(bool).init(a, false);
+    defer refreshing.deinit();
+    const ptr = try pullToRefresh(a, refreshing, .{ .fn_ptr = refreshCounterCb, .userdata = &fired }, .{});
+    defer ptr.deinit();
+    const sv = try scroll_view.scrollView(a, .{});
+    sv.add(try button_w.button(a, .{ .fn_ptr = refreshCounterCb, .userdata = &btn_fired }, .{ .label = "Pull" }));
+    ptr.add(sv);
+    ptr.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    // press the button, drag down past the threshold, release: the PTR steals
+    // the capture at the first move past the top, so the release reaches it
+    // (the button's click was canceled by the drag)
+    router.dispatchPointer(ptr, .{ .phase = .down, .x = 25, .y = 20, .raw_x = 25, .raw_y = 20 });
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 25, .y = 120, .raw_x = 25, .raw_y = 120 }); // the button cancels; the PTR's track self-heals
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 25, .y = 220, .raw_x = 25, .raw_y = 220 }); // anchor: the capture is stolen
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 25, .y = 320, .raw_x = 25, .raw_y = 320 }); // pull 100
+    try std.testing.expectEqual(@as(f32, 50), adjusted(ptr));
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 25, .y = 320, .raw_x = 25, .raw_y = 320 });
+    try std.testing.expectEqual(@as(u32, 1), fired); // the refresh fired
+    try std.testing.expectEqual(@as(u32, 0), btn_fired); // the button's click was canceled
+    try std.testing.expect(refreshing.peek());
+}
+
+test "pull_to_refresh: a fresh gesture cancels the in-flight snap-back spring" {
+    var tl = anim.Timeline.init(std.testing.allocator);
+    defer tl.deinit();
+    anim.setCurrent(&tl);
+    defer anim.setCurrent(null);
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    const refreshing = try ui.state.Signal(bool).init(a, false);
+    defer refreshing.deinit();
+    const ptr = try ptrWithScroll(a, refreshing, null);
+    defer ptr.deinit();
+    ptr.layout(.{ .x = 0, .y = 0, .w = 100, .h = 200 });
+    tl.tick(0); // lazy start
+    // a short pull (30 < 80): the release starts a snap-back spring
+    router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 }); // anchor
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 }); // pull 30
+    try std.testing.expectEqual(@as(f32, 15), adjusted(ptr));
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 160, .raw_x = 50, .raw_y = 160 });
+    try std.testing.expect(tl.hasActive()); // the snap-back spring runs
+    // a new pull before the spring settles: the down cancels the spring
+    router.dispatchPointer(ptr, .{ .phase = .down, .x = 50, .y = 100, .raw_x = 50, .raw_y = 100 });
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 130, .raw_x = 50, .raw_y = 130 }); // anchor
+    router.dispatchPointer(ptr, .{ .phase = .move, .x = 50, .y = 230, .raw_x = 50, .raw_y = 230 }); // pull 100
+    try std.testing.expectEqual(@as(f32, 50), adjusted(ptr));
+    tl.tick(50); // the canceled spring must not overwrite the new pull
+    try std.testing.expectEqual(@as(f32, 50), adjusted(ptr));
+    router.dispatchPointer(ptr, .{ .phase = .up, .x = 50, .y = 230, .raw_x = 50, .raw_y = 230 });
+    try std.testing.expect(refreshing.peek()); // 100 ≥ 80 → triggered
 }
