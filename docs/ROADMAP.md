@@ -208,14 +208,16 @@ minimized at the top or in the outline cutout), edge icons, supporting text, the
 active indicator / outline per state, real text entry with caret + semantics) —
 replacing the P0 fixtures. Self-register.
 
-### 2d.3. Widgets — Surfaces & display (batch 3) — IN PROGRESS (PR D1 DONE — PR #27, 63 widgets today; PR D2: menus next)
+### 2d.3. Widgets — Surfaces & display (batch 3) — IN PROGRESS (PR D1 DONE — PR #27; PR D2 DONE — PR #28, 64 widgets today; PR D3: segmented/split buttons next)
 
 Cards ×3 (elevated / filled / outlined) — DONE (PR #27, M3E: CornerMedium 12dp,
 SurfaceContainerHighest/Low + OutlineVariant stroke, state layer, container
 children), lists (one/two/three-line M3E list items) — DONE (PR #27: 56/72/88
 heights, leading icon + sequential trailing zone, selected = SecondaryContainer,
-external selection signal), menus M3E, search bar, navigation rail,
-side sheets, pull-to-refresh, segmented + split buttons.
+external selection signal), menus (M3E dropdown) — DONE (PR #28: anchor slot +
+SurfaceContainer panel over later siblings via the popup overlay pass, signal-
+driven open, keyboard nav, focus returns to the anchor), segmented + split
+buttons, search bar, navigation rail, side sheets, pull-to-refresh.
 
 ### 2d.4. Widgets — Pickers + M3E extras (batch 4) — PLANNED
 
@@ -241,7 +243,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 63 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26), 2d.3 PR D1 DONE (cards x3, list items x3 — PR #27); the catalog continues: 2d.3 (menus, search bar, navigation rail, side sheets, pull-to-refresh, segmented/split buttons) then 2d.4). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 64 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26), 2d.3 PR D1 DONE (cards x3, list items x3 — PR #27), 2d.3 PR D2 DONE (dropdown menu — PR #28); the catalog continues: 2d.3 (segmented/split buttons, search bar, navigation rail, side sheets, pull-to-refresh) then 2d.4). No-code designer v1 (2e).
 
 ---
 
