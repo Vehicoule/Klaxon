@@ -640,36 +640,6 @@ test "button: semantics — role button, focusable, disabled flag, activate acti
     try std.testing.expect(d.semantics.?.disabled);
 }
 
-// --- golden helpers (src-over blend + per-channel diff with tolerance) ---
-
-fn blendChannel(s: u32, d: u32, sa: f32) u32 {
-    const v = @as(f32, @floatFromInt(s)) * (sa / 255) + @as(f32, @floatFromInt(d)) * (1 - sa / 255) + 0.5;
-    return @intFromFloat(std.math.clamp(v, 0, 255));
-}
-
-/// The src-over blend of `src` over `dst` (both 0xRRGGBBAA).
-fn blendOver(src: Color, dst: Color) Color {
-    const sa: f32 = @floatFromInt(src & 0xFF);
-    return (blendChannel((src >> 24) & 0xFF, (dst >> 24) & 0xFF, sa) << 24) |
-        (blendChannel((src >> 16) & 0xFF, (dst >> 16) & 0xFF, sa) << 16) |
-        (blendChannel((src >> 8) & 0xFF, (dst >> 8) & 0xFF, sa) << 8) | 0xFF;
-}
-
-fn channelDiff(c1: Color, c2: Color, shift: u5) i32 {
-    const x: i32 = @intCast((c1 >> shift) & 0xFF);
-    const y: i32 = @intCast((c2 >> shift) & 0xFF);
-    const d0 = x - y;
-    return if (d0 < 0) -d0 else d0;
-}
-
-/// ±2 per channel: the raster's integer rounding.
-fn expectPixelApprox(f: golden.Frame, x: i32, y: i32, expected: Color) !void {
-    const got = f.pixelAt(x, y);
-    try std.testing.expect(channelDiff(got, expected, 24) <= 2);
-    try std.testing.expect(channelDiff(got, expected, 16) <= 2);
-    try std.testing.expect(channelDiff(got, expected, 8) <= 2);
-}
-
 test "golden: filled button paints the primary pill (round = height/2)" {
     const t = theme_mod.light;
     const b = try button(std.testing.allocator, null, .{ .label = "OK", .theme = t });
@@ -754,7 +724,7 @@ test "golden: disabled filled button paints the OnSurface@0.10 container" {
     var f = try r.readback(std.testing.allocator);
     defer f.deinit();
     // src-over blend of on_surface@0.10 over white
-    try expectPixelApprox(f, 14, 30, blendOver(ui.paint.withAlphaScaled(t.colors.on_surface, 0.10), 0xFFFFFFFF));
+    try golden.expectPixelApprox(f, 14, 30, golden.blendOver(ui.paint.withAlphaScaled(t.colors.on_surface, 0.10), 0xFFFFFFFF));
 }
 
 test "golden: text button hover paints the on-color at the state alpha (transparent container)" {
@@ -770,7 +740,7 @@ test "golden: text button hover paints the on-color at the state alpha (transpar
     defer f.deinit();
     // the layer is primary AT 0.08 (NOT lerped from transparent black — the
     // RGB must stay the full primary in the src-over blend)
-    try expectPixelApprox(f, 14, 30, blendOver(ui.paint.withAlphaScaled(t.colors.primary, t.state.hover), 0xFFFFFFFF));
+    try golden.expectPixelApprox(f, 14, 30, golden.blendOver(ui.paint.withAlphaScaled(t.colors.primary, t.state.hover), 0xFFFFFFFF));
 }
 
 test "golden: a constrained button clips its label ink to the container bounds" {

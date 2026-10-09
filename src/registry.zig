@@ -26,6 +26,7 @@ const icon_w = @import("widgets/icon.zig");
 const divider_w = @import("widgets/divider.zig");
 const input_w = @import("widgets/input.zig");
 const button_w = @import("widgets/button.zig");
+const icon_button_w = @import("widgets/icon_button.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -74,7 +75,8 @@ pub const WidgetEntry = struct {
 /// 2d.1 PR A: app_bar, nav_bar, drawer, tabs — M3E) + feedback batch
 /// (2d.1 PR B: bottom_sheet, dialog, progress, badge, badged_box, tooltip,
 /// snackbar — M3E) + buttons (2d.2 PR A: the M3E button replaces the P0
-/// button entry — the P0 stays in widgets/input.zig for legacy use).
+/// button entry — the P0 stays in widgets/input.zig for legacy use) + icon
+/// button (2d.2 PR B1: M3E icon button, plain + toggle).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -86,6 +88,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "text", .category = "display", .build = buildText, .schema = schemaText },
     .{ .name = "icon", .category = "display", .build = buildIcon, .schema = schemaIcon },
     .{ .name = "button", .category = "input", .build = buildButton, .schema = schemaButton },
+    .{ .name = "icon_button", .category = "input", .build = buildIconButton, .schema = schemaIconButton },
     .{ .name = "toggle", .category = "input", .build = buildToggle, .schema = schemaToggle },
     .{ .name = "checkbox", .category = "input", .build = buildCheckbox, .schema = schemaCheckbox },
     .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
@@ -367,6 +370,19 @@ fn buildButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerr
     return .{ .node = try button_w.button(allocator, null, bopts), .skip_children = true };
 }
 
+/// M3E icon button (2d.2 PR B1): a "selected" option makes it a toggle (a
+/// ctx-owned bool signal drives the checked state); without it, a plain
+/// button. The icon is internal chrome — document children never serialize.
+fn buildIconButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const iopts = try value_mod.optionsFromValue(icon_button_w.IconButtonOptions, opts, null, null);
+    if (opts.get("selected") != null) {
+        const sig = try buildBoolSignal(allocator, opts, ctx, "selected");
+        const n = try icon_button_w.iconButton(allocator, sig, null, iopts);
+        return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readBoolSignal }, .skip_children = true };
+    }
+    return .{ .node = try icon_button_w.iconButton(allocator, null, null, iopts), .skip_children = true };
+}
+
 fn buildToggle(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const topts = try value_mod.optionsFromValue(input_w.ToggleOptions, opts, null, null);
     const checked: bool = if (opts.get("checked")) |c| switch (c) {
@@ -636,6 +652,13 @@ fn schemaButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.schemaOf(button_w.ButtonOptions, allocator);
 }
 
+fn schemaIconButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // variant/size/width/shape (select), enabled (toggle), a11y_label (text),
+    // icon (select) — automatic; "selected" makes the registry build a toggle
+    const base = try value_mod.schemaOf(icon_button_w.IconButtonOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "selected", .toggle, &.{}, .{ .bool = false });
+}
+
 fn schemaToggle(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     const base = try value_mod.schemaOf(input_w.ToggleOptions, allocator);
     return value_mod.appendSchemaProp(base, allocator, "checked", .toggle, &.{}, .{ .bool = false });
@@ -724,7 +747,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 23), widgets.len);
+    try std.testing.expectEqual(@as(usize, 24), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -966,6 +989,25 @@ test "registry: snackbar round-trips with its visible state" {
     const out = try treeToJson(&ctx, node, std.testing.allocator);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings(doc, out);
+}
+
+test "registry: icon_button round-trips (toggle with its selected state, and plain)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // toggle: the "selected" option drives a live bool signal
+    const doc = "{\"name\":\"icon_button\",\"options\":{\"variant\":\"filled\",\"a11y_label\":\"Favorite\",\"icon\":\"heart\",\"selected\":true}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // plain: no "selected" option -> no signal, no live binding
+    const plain_doc = "{\"name\":\"icon_button\",\"options\":{\"variant\":\"outlined\",\"a11y_label\":\"Search\",\"icon\":\"search\"}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings(plain_doc, plain_out);
 }
 
 test "registry: PR B schemas expose the right editor kinds" {

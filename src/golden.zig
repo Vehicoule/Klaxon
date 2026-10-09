@@ -175,3 +175,34 @@ pub fn solidBox(allocator: std.mem.Allocator, w: f32, h: f32, color: Color) !*No
     node.state = s;
     return node;
 }
+
+// --- translucent-paint helpers (state layers, disabled containers) ---
+
+fn blendChannel(s: u32, d: u32, sa: f32) u32 {
+    const v = @as(f32, @floatFromInt(s)) * (sa / 255) + @as(f32, @floatFromInt(d)) * (1 - sa / 255) + 0.5;
+    return @intFromFloat(std.math.clamp(v, 0, 255));
+}
+
+/// The expected src-over blend of `src` over `dst` (both 0xRRGGBBAA).
+pub fn blendOver(src: Color, dst: Color) Color {
+    const sa: f32 = @floatFromInt(src & 0xFF);
+    return (blendChannel((src >> 24) & 0xFF, (dst >> 24) & 0xFF, sa) << 24) |
+        (blendChannel((src >> 16) & 0xFF, (dst >> 16) & 0xFF, sa) << 16) |
+        (blendChannel((src >> 8) & 0xFF, (dst >> 8) & 0xFF, sa) << 8) | 0xFF;
+}
+
+pub fn channelDiff(c1: Color, c2: Color, shift: u5) i32 {
+    const x: i32 = @intCast((c1 >> shift) & 0xFF);
+    const y: i32 = @intCast((c2 >> shift) & 0xFF);
+    const d0 = x - y;
+    return if (d0 < 0) -d0 else d0;
+}
+
+/// Assert a pixel equals `expected` within ±2 per channel (the raster's
+/// integer rounding of translucent blends).
+pub fn expectPixelApprox(f: Frame, x: i32, y: i32, expected: Color) !void {
+    const got = f.pixelAt(x, y);
+    try std.testing.expect(channelDiff(got, expected, 24) <= 2);
+    try std.testing.expect(channelDiff(got, expected, 16) <= 2);
+    try std.testing.expect(channelDiff(got, expected, 8) <= 2);
+}

@@ -117,6 +117,14 @@ pub fn icon(allocator: std.mem.Allocator, name: IconName, opts: IconOptions) !*N
     return node;
 }
 
+/// Recolor a live icon (signal-driven widgets recolor their icon on state
+/// change — e.g. the M3E icon toggle button's checked state).
+pub fn setColor(n: *Node, color: Color) void {
+    const s: *IconState = @ptrCast(@alignCast(n.state.?));
+    s.opts.color = color;
+    n.markDirty();
+}
+
 // --- tests ---
 
 test "icon codepoints are stable (golden data)" {
