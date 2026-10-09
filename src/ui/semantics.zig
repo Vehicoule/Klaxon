@@ -373,9 +373,15 @@ pub const FocusManager = struct {
     fn setFocused(fm: *FocusManager, node: ?*Node) void {
         if (fm.focused == node) return;
         // Damage the old + new ring regions (mapped to window space) so the
-        // host repaints exactly what the ring vacated/occupies.
+        // host repaints exactly what the ring vacated/occupies. The old node
+        // is also marked dirty (wakeup): its focus styling must repaint, and
+        // its damage_overflow covers paint beyond its bounds (a text field's
+        // cutout label) that the ring rect (ring_offset) would miss.
         if (fm.root) |r| {
-            if (fm.focused) |old| r.markDirtyRect(ringRect(old, fm.ring_offset));
+            if (fm.focused) |old| {
+                old.markDirty();
+                r.markDirtyRect(ringRect(old, fm.ring_offset));
+            }
             if (node) |new| r.markDirtyRect(ringRect(new, fm.ring_offset));
         }
         fm.focused = node;

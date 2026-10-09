@@ -188,6 +188,17 @@ void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius
     ctx->canvas->drawRoundRect(SkRect::MakeXYWH(x, y, w, h), radius, radius, paint);
 }
 
+void kx_fill_rrect_corners(kx_ctx* ctx, float x, float y, float w, float h, float tl, float tr, float br, float bl, uint32_t rgba) {
+    if (!ctx || !ctx->canvas) return;
+    SkPaint paint;
+    paint.setColor(kx_to_skcolor(rgba));
+    paint.setAntiAlias(true);
+    SkRRect rrect;
+    const SkVector radii[4] = {{tl, tl}, {tr, tr}, {br, br}, {bl, bl}};
+    rrect.setRectRadii(SkRect::MakeXYWH(x, y, w, h), radii);
+    ctx->canvas->drawRRect(rrect, paint);
+}
+
 void kx_stroke_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, float stroke_w, uint32_t rgba) {
     if (!ctx || !ctx->canvas || stroke_w <= 0) return;
     SkPaint paint;
@@ -263,7 +274,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.6.0";
+    return "0.7.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {

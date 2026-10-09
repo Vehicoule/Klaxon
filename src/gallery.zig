@@ -36,6 +36,7 @@ const radio_w = widgets.radio;
 const switch_w = widgets.@"switch";
 const slider_w = widgets.slider;
 const chip_w = widgets.chip;
+const text_field_w = widgets.text_field;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -65,6 +66,7 @@ const Refs = struct {
     ib_heart: *Node, // the M3E filled icon toggle (Icon buttons M3E section)
     cb_m3e_btn: *Node, // the M3E checkbox (Selection controls section)
     chip_m3e_filter: *Node, // the M3E filter chip (Chips section)
+    tf_m3e: [5]*Node, // the M3E text fields (Text fields section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -151,6 +153,9 @@ pub const Gallery = struct {
     saved_scroll: f32 = 0,
     saved_list: f32 = 0,
     saved_grid: f32 = 0,
+    // the M3E text fields' entries (restored across theme switches)
+    saved_tf_m3e: [5][256]u8 = std.mem.zeroes([5][256]u8),
+    saved_tf_m3e_lens: [5]usize = std.mem.zeroes([5]usize),
 
     /// Heap-allocated: the tree holds pointers into the Gallery (item
     /// factories, callback userdata), so its address must be stable.
@@ -167,6 +172,8 @@ pub const Gallery = struct {
         g.saved_scroll = 0;
         g.saved_list = 0;
         g.saved_grid = 0;
+        g.saved_tf_m3e = std.mem.zeroes([5][256]u8);
+        g.saved_tf_m3e_lens = std.mem.zeroes([5]usize);
         g.dark_mode = try state.Signal(bool).init(allocator, true);
         errdefer g.dark_mode.deinit();
         // one function-scope errdefer frees the signals initialized so far
@@ -275,6 +282,11 @@ pub const Gallery = struct {
             g.saved_scroll = widgets.scroll_view.scrollOffset(g.refs.scroll_view);
             g.saved_list = widgets.list_view.scrollOffset(g.refs.list_10k);
             g.saved_grid = widgets.grid_view.scrollOffset(g.refs.grid);
+            for (g.refs.tf_m3e, 0..) |tf, i| {
+                const txt = text_field_w.text(tf);
+                g.saved_tf_m3e_lens[i] = @min(txt.len, g.saved_tf_m3e[i].len - 1);
+                @memcpy(g.saved_tf_m3e[i][0..g.saved_tf_m3e_lens[i]], txt[0..g.saved_tf_m3e_lens[i]]);
+            }
         }
         const fresh = try buildTree(g, theme);
         if (g.tree) |old| {
@@ -354,6 +366,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Icon buttons (M3E)", try buildIconButtonsSection(g, theme)));
     content.add(try section(a, theme, "Selection controls (M3E)", try buildSelectionSection(g, theme)));
     content.add(try section(a, theme, "Chips (M3E)", try buildChipsSection(g, theme)));
+    content.add(try section(a, theme, "Text fields (M3E)", try buildTextFieldsSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -640,6 +653,30 @@ fn buildChipsSection(g: *Gallery, theme: Theme) !*Node {
     r2.add(try chip_w.chip(a, null, null, .{ .enabled = false, .label = "Disabled", .theme = theme }));
     r2.add(try chip_w.chip(a, null, null, .{ .variant = .suggestion, .label = "With icon", .leading_icon = .star, .theme = theme }));
     col.add(r2);
+    return col;
+}
+
+/// Text fields (M3E, batch 2d.2 PR C2): outlined (label + placeholder),
+/// outlined with a leading icon, filled with supporting text, error,
+/// disabled. The fields stretch to the full width (column cross_align).
+fn buildTextFieldsSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    var specs = [_]text_field_w.TextFieldOptions{
+        .{ .variant = .outlined, .label = "Email", .placeholder = "you@example.com", .theme = theme },
+        .{ .variant = .outlined, .label = "Search", .leading_icon = .search, .theme = theme },
+        .{ .variant = .filled, .label = "Notes", .supporting = "Helper text", .theme = theme },
+        .{ .variant = .outlined, .@"error" = true, .label = "Username", .supporting = "Already taken", .theme = theme },
+        .{ .variant = .filled, .enabled = false, .label = "Locked", .initial = "Read only", .theme = theme },
+    };
+    for (&specs, 0..) |*spec, i| {
+        // the entry is restored across theme switches (disabled fields keep
+        // their fixed initial — they are never edited)
+        if (spec.enabled) spec.initial = g.saved_tf_m3e[i][0..g.saved_tf_m3e_lens[i]];
+        const f = try text_field_w.textField(a, null, null, null, spec.*);
+        g.refs.tf_m3e[i] = f;
+        col.add(f);
+    }
     return col;
 }
 
@@ -1437,6 +1474,55 @@ test "gallery: the M3E filter chip toggles its signal on click" {
     router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
     try std.testing.expect(g.chip_filter.peek()); // clicked -> selected
     try std.testing.expectEqual(true, g.refs.chip_m3e_filter.semantics.?.checked.?); // a11y follows
+}
+
+test "gallery: the M3E text field takes focus, floats its label and accepts text" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Text fields section sits below the Chips section
+    const b = g.refs.tf_m3e[0].bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // the label starts expanded (centered in the 56dp container; labelRect is
+    // in tree coordinates → relative to the field's y)
+    try std.testing.expectEqual(@as(f32, 16), text_field_w.labelRect(g.refs.tf_m3e[0]).?.y - b.y);
+    // click → focus → the label floats into the cutout
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expect(input_mod.isFocused(g.refs.tf_m3e[0]));
+    try std.testing.expectEqual(@as(f32, -8), text_field_w.labelRect(g.refs.tf_m3e[0]).?.y - b.y);
+    // type: the text + the a11y value follow
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "Hi" });
+    try std.testing.expectEqualStrings("Hi", text_field_w.text(g.refs.tf_m3e[0]));
+    try std.testing.expectEqualStrings("Hi", g.refs.tf_m3e[0].semantics.?.value);
+    // the label stays floated (the field holds text)
+    try std.testing.expectEqual(@as(f32, -8), text_field_w.labelRect(g.refs.tf_m3e[0]).?.y - b.y);
+}
+
+test "gallery: the M3E text field's entry survives a theme switch" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const b = g.refs.tf_m3e[0].bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "typed" });
+    try std.testing.expectEqualStrings("typed", text_field_w.text(g.refs.tf_m3e[0]));
+    // toggle the theme (the header sits above the scroll content)
+    const t = g.refs.theme_toggle.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = t.x + t.w / 2, .y = t.y + t.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = t.x + t.w / 2, .y = t.y + t.h / 2 });
+    // the entry survived the rebuild
+    try std.testing.expectEqualStrings("typed", text_field_w.text(g.refs.tf_m3e[0]));
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

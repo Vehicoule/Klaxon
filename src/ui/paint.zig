@@ -79,6 +79,12 @@ pub fn fillRRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, radius: f32, colo
     kx.c.kx_fill_rrect(ctx, x, y, w, h, radius, color);
 }
 
+/// Fill a rounded rectangle with PER-CORNER radii (ABI 0.7.0), in SkRRect
+/// order: top-left, top-right, bottom-right, bottom-left.
+pub fn fillRRectCorners(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, tl: f32, tr: f32, br: f32, bl: f32, color: Color) void {
+    kx.c.kx_fill_rrect_corners(ctx, x, y, w, h, tl, tr, br, bl, color);
+}
+
 /// Stroke a rounded rectangle's outline (ABI 0.6.0) — centered on the edge.
 pub fn strokeRRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, radius: f32, stroke_w: f32, color: Color) void {
     kx.c.kx_stroke_rrect(ctx, x, y, w, h, radius, stroke_w, color);
@@ -118,6 +124,6 @@ pub fn imageDraw(ctx: *kx.Ctx, id: u64, x: f32, y: f32, w: f32, h: f32) void {
 
 // --- tests ---
 
-test "kx ABI version reports 0.6.0 (the stroke_rrect entry)" {
-    try std.testing.expectEqualStrings("0.6.0", std.mem.span(kx.c.kx_abi_version()));
+test "kx ABI version reports 0.7.0 (the fill_rrect_corners entry)" {
+    try std.testing.expectEqualStrings("0.7.0", std.mem.span(kx.c.kx_abi_version()));
 }

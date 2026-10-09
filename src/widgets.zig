@@ -28,6 +28,10 @@
 // in input.zig for the legacy gallery sections).
 // Chips (5): the M3E chip variants (assist / elevated / filter / input /
 // suggestion) — Phase 2d.2 PR C1.
+// TextField (2): the M3E text field (filled / outlined, floating label,
+// icons, supporting text, error/disabled, real text entry) — Phase 2d.2
+// PR C2 (the P0 text field stays in input.zig for the legacy gallery Input
+// section).
 // ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -43,6 +47,7 @@ pub const radio = @import("widgets/radio.zig");
 pub const @"switch" = @import("widgets/switch.zig");
 pub const slider = @import("widgets/slider.zig");
 pub const chip = @import("widgets/chip.zig");
+pub const text_field = @import("widgets/text_field.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");

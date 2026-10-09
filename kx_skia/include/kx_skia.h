@@ -21,6 +21,8 @@
 //   0.4.0 — Phase 2a: + kx_layer_alpha (saveLayer with alpha) for fade
 //           transitions. Restored with kx_restore, like kx_save.
 //   0.6.0 — Phase 2d.2: + kx_stroke_rrect (outlined M3E button borders).
+//   0.7.0 — Phase 2d.2 PR C2: + kx_fill_rrect_corners (per-corner radii —
+//           the M3E filled text field's top-only rounded corners).
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -69,6 +71,10 @@ void kx_draw_text_styled(kx_ctx* ctx, const char* text, float x, float y, float 
 void kx_fill_rect(kx_ctx* ctx, float x, float y, float w, float h, uint32_t rgba);
 // Fill a rounded rectangle with a solid color.
 void kx_fill_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, uint32_t rgba);
+// Fill a rounded rectangle with PER-CORNER radii (added in 0.7.0), in
+// SkRRect order: top-left, top-right, bottom-right, bottom-left. The M3E
+// filled text field rounds only its top corners (bottom = 0).
+void kx_fill_rrect_corners(kx_ctx* ctx, float x, float y, float w, float h, float tl, float tr, float br, float bl, uint32_t rgba);
 // Stroke a rounded rectangle's outline (added in 0.6.0): the stroke is
 // centered on the edge, like Skia's drawRoundRect with a stroke paint.
 void kx_stroke_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radius, float stroke_w, uint32_t rgba);
