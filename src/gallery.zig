@@ -36,6 +36,7 @@ const radio_w = widgets.radio;
 const switch_w = widgets.@"switch";
 const slider_w = widgets.slider;
 const chip_w = widgets.chip;
+const text_field_w = widgets.text_field;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -65,6 +66,7 @@ const Refs = struct {
     ib_heart: *Node, // the M3E filled icon toggle (Icon buttons M3E section)
     cb_m3e_btn: *Node, // the M3E checkbox (Selection controls section)
     chip_m3e_filter: *Node, // the M3E filter chip (Chips section)
+    tf_m3e: *Node, // the M3E outlined text field (Text fields section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -354,6 +356,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Icon buttons (M3E)", try buildIconButtonsSection(g, theme)));
     content.add(try section(a, theme, "Selection controls (M3E)", try buildSelectionSection(g, theme)));
     content.add(try section(a, theme, "Chips (M3E)", try buildChipsSection(g, theme)));
+    content.add(try section(a, theme, "Text fields (M3E)", try buildTextFieldsSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -640,6 +643,22 @@ fn buildChipsSection(g: *Gallery, theme: Theme) !*Node {
     r2.add(try chip_w.chip(a, null, null, .{ .enabled = false, .label = "Disabled", .theme = theme }));
     r2.add(try chip_w.chip(a, null, null, .{ .variant = .suggestion, .label = "With icon", .leading_icon = .star, .theme = theme }));
     col.add(r2);
+    return col;
+}
+
+/// Text fields (M3E, batch 2d.2 PR C2): outlined (label + placeholder),
+/// outlined with a leading icon, filled with supporting text, error,
+/// disabled. The fields stretch to the full width (column cross_align).
+fn buildTextFieldsSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    const f1 = try text_field_w.textField(a, null, null, null, .{ .variant = .outlined, .label = "Email", .placeholder = "you@example.com", .theme = theme });
+    g.refs.tf_m3e = f1;
+    col.add(f1);
+    col.add(try text_field_w.textField(a, null, null, null, .{ .variant = .outlined, .label = "Search", .leading_icon = .search, .theme = theme }));
+    col.add(try text_field_w.textField(a, null, null, null, .{ .variant = .filled, .label = "Notes", .supporting = "Helper text", .theme = theme }));
+    col.add(try text_field_w.textField(a, null, null, null, .{ .variant = .outlined, .@"error" = true, .label = "Username", .supporting = "Already taken", .theme = theme }));
+    col.add(try text_field_w.textField(a, null, null, null, .{ .variant = .filled, .enabled = false, .label = "Locked", .initial = "Read only", .theme = theme }));
     return col;
 }
 
@@ -1437,6 +1456,33 @@ test "gallery: the M3E filter chip toggles its signal on click" {
     router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
     try std.testing.expect(g.chip_filter.peek()); // clicked -> selected
     try std.testing.expectEqual(true, g.refs.chip_m3e_filter.semantics.?.checked.?); // a11y follows
+}
+
+test "gallery: the M3E text field takes focus, floats its label and accepts text" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Text fields section sits below the Chips section
+    const b = g.refs.tf_m3e.bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // the label starts expanded (centered in the 56dp container; labelRect is
+    // in tree coordinates → relative to the field's y)
+    try std.testing.expectEqual(@as(f32, 16), text_field_w.labelRect(g.refs.tf_m3e).?.y - b.y);
+    // click → focus → the label floats into the cutout
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expect(input_mod.isFocused(g.refs.tf_m3e));
+    try std.testing.expectEqual(@as(f32, -8), text_field_w.labelRect(g.refs.tf_m3e).?.y - b.y);
+    // type: the text + the a11y value follow
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "Hi" });
+    try std.testing.expectEqualStrings("Hi", text_field_w.text(g.refs.tf_m3e));
+    try std.testing.expectEqualStrings("Hi", g.refs.tf_m3e.semantics.?.value);
+    // the label stays floated (the field holds text)
+    try std.testing.expectEqual(@as(f32, -8), text_field_w.labelRect(g.refs.tf_m3e).?.y - b.y);
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

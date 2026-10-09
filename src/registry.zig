@@ -32,6 +32,7 @@ const radio_w = @import("widgets/radio.zig");
 const switch_w = @import("widgets/switch.zig");
 const slider_w = @import("widgets/slider.zig");
 const chip_w = @import("widgets/chip.zig");
+const text_field_w = @import("widgets/text_field.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -53,7 +54,9 @@ pub const NoOptions = struct {};
 pub const LiveBinding = struct {
     signal: *anyopaque,
     field: []const u8, // well-known serialized field name
-    read: *const fn (*anyopaque) Value,
+    /// Read the live value as an OWNED Value (strings are duped — Value.set
+    /// takes ownership).
+    read: *const fn (allocator: std.mem.Allocator, signal: *anyopaque) anyerror!Value,
 };
 
 pub const BuildResult = struct {
@@ -84,7 +87,8 @@ pub const WidgetEntry = struct {
 /// button (2d.2 PR B1: M3E icon button, plain + toggle) + selection controls
 /// (2d.2 PR B2: checkbox / radio / switch / slider M3E replace the P0
 /// checkbox/toggle/slider entries — the P0 fixtures stay in input.zig) +
-/// chips (2d.2 PR C1: the 5 M3E chip variants).
+/// chips (2d.2 PR C1: the 5 M3E chip variants) + text field (2d.2 PR C2: the
+/// M3E text field, filled / outlined).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -102,6 +106,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "radio", .category = "input", .build = buildRadio, .schema = schemaRadio },
     .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
     .{ .name = "chip", .category = "input", .build = buildChip, .schema = schemaChip },
+    .{ .name = "text_field", .category = "input", .build = buildTextField, .schema = schemaTextField },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -287,7 +292,7 @@ pub fn treeToValue(ctx: *BuildCtx, root: *Node, allocator: std.mem.Allocator) !V
     // carry their current value.
     if (rec.live) |lb| {
         var obj = if (rec.opts == .object) try rec.opts.dupe(allocator) else Value{ .object = &.{} };
-        try obj.set(allocator, lb.field, lb.read(lb.signal));
+        try obj.set(allocator, lb.field, try lb.read(allocator, lb.signal));
         try fields.append(.{ .name = try allocator.dupe(u8, "options"), .value = obj });
     } else if (rec.opts == .object and rec.opts.object.len > 0) {
         try fields.append(.{ .name = try allocator.dupe(u8, "options"), .value = try rec.opts.dupe(allocator) });
@@ -410,7 +415,7 @@ fn buildSwitch(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerr
     return .{ .node = n, .live = .{ .signal = sig, .field = "checked", .read = readBoolSignal } };
 }
 
-fn readBoolSignal(p: *anyopaque) Value {
+fn readBoolSignal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
     const s: *state.Signal(bool) = @ptrCast(@alignCast(p));
     return .{ .bool = s.peek() };
 }
@@ -474,7 +479,7 @@ fn buildSlider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerr
     return .{ .node = n, .live = .{ .signal = sig, .field = "value", .read = readF32Signal } };
 }
 
-fn readF32Signal(p: *anyopaque) Value {
+fn readF32Signal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
     const s: *state.Signal(f32) = @ptrCast(@alignCast(p));
     return .{ .float = s.peek() };
 }
@@ -498,6 +503,39 @@ fn buildChip(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror
         return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readBoolSignal }, .skip_children = true };
     }
     return .{ .node = try chip_w.chip(allocator, null, null, copts), .skip_children = true };
+}
+
+/// M3E text field (2d.2 PR C2): a non-null "value" option drives a ctx-owned
+/// text signal (the live current text, mirrored both ways); without it, the
+/// text starts at the "initial" option. The widget is a leaf — document
+/// children never serialize.
+fn buildTextField(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const topts = try value_mod.optionsFromValue(text_field_w.TextFieldOptions, opts, null, null);
+    // a null "value" means the field default (no live signal)
+    const has_value = if (opts.get("value")) |v| v != .null else false;
+    if (has_value) {
+        const initial: []const u8 = switch (opts.get("value").?) {
+            .string => |s| s,
+            else => "",
+        };
+        const sig = try state.Signal(text_field_w.TextBuf).init(allocator, text_field_w.bufFromText(initial));
+        try ctx.track(sig, deinitTextSignal);
+        const n = try text_field_w.textField(allocator, sig, null, null, topts);
+        return .{ .node = n, .live = .{ .signal = sig, .field = "value", .read = readTextSignal } };
+    }
+    return .{ .node = try text_field_w.textField(allocator, null, null, null, topts) };
+}
+
+fn readTextSignal(allocator: std.mem.Allocator, p: *anyopaque) anyerror!Value {
+    const s: *state.Signal(text_field_w.TextBuf) = @ptrCast(@alignCast(p));
+    const v = s.peek();
+    const len = std.mem.indexOfScalar(u8, &v, 0) orelse v.len;
+    return .{ .string = try allocator.dupe(u8, v[0..len]) }; // owned (Value.set takes ownership)
+}
+
+fn deinitTextSignal(p: *anyopaque) void {
+    const s: *state.Signal(text_field_w.TextBuf) = @ptrCast(@alignCast(p));
+    s.deinit(); // Signal.deinit frees itself (state.zig)
 }
 
 // --- batch 2d.1 PR A: navigation chrome (M3E) ---
@@ -545,7 +583,7 @@ fn buildUsizeSignal(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) a
     return sig;
 }
 
-fn readUsizeSignal(p: *anyopaque) Value {
+fn readUsizeSignal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
     const s: *state.Signal(usize) = @ptrCast(@alignCast(p));
     return .{ .int = @intCast(s.peek()) };
 }
@@ -752,6 +790,14 @@ fn schemaChip(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.schemaOf(chip_w.ChipOptions, allocator);
 }
 
+fn schemaTextField(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // variant (select), enabled/error (toggle), label/placeholder/initial/
+    // supporting (text), leading_icon/trailing_icon (select) — automatic;
+    // "value" is the live text
+    const base = try value_mod.schemaOf(text_field_w.TextFieldOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "value", .text, &.{}, .{ .string = "" });
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -825,7 +871,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 26), widgets.len);
+    try std.testing.expectEqual(@as(usize, 27), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1134,6 +1180,54 @@ test "registry: chip (M3E) schema exposes the right editor kinds" {
     try std.testing.expectEqual(value_mod.EditorKind.select, findProp(chip_schema, "leading_icon").?);
     try std.testing.expectEqual(value_mod.EditorKind.select, findProp(chip_schema, "trailing_icon").?);
     try std.testing.expect(findProp(chip_schema, "theme") == null); // global token set
+}
+
+test "registry: text_field (M3E) round-trips (live value, and plain initial)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // live: the "value" option drives a text signal; the current text round-trips
+    const doc = "{\"name\":\"text_field\",\"options\":{\"variant\":\"outlined\",\"label\":\"Email\",\"value\":\"a@b.c\"}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    try std.testing.expectEqual(ui.semantics.Role.text_field, node.semantics.?.role);
+    try std.testing.expectEqualStrings("a@b.c", node.semantics.?.value);
+    // the live value follows edits (type → the serialized value changes)
+    var router = ui.input.InputRouter{};
+    ui.input.setCurrent(&router);
+    defer ui.input.setCurrent(null);
+    router.focus(node);
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "!" });
+    const out2 = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "\"value\":\"a@b.c!\"") != null);
+    // plain: no "value" → fixed initial text, no live binding
+    const plain_doc = "{\"name\":\"text_field\",\"options\":{\"variant\":\"filled\",\"initial\":\"Hi\"}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings(plain_doc, plain_out);
+    try std.testing.expectEqualStrings("Hi", plain.semantics.?.value);
+}
+
+test "registry: text_field (M3E) schema exposes the right editor kinds" {
+    const schema = try byName("text_field").?.schema(std.testing.allocator);
+    defer {
+        for (schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(schema, "variant").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(schema, "enabled").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(schema, "error").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(schema, "label").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(schema, "placeholder").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(schema, "value").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(schema, "leading_icon").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(schema, "trailing_icon").?);
+    try std.testing.expect(findProp(schema, "theme") == null); // global token set
 }
 
 test "registry: checkbox / slider / radio (M3E) round-trip with their live values" {
