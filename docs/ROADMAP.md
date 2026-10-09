@@ -192,7 +192,7 @@ Oppo navbars etc.) are absorbed as options/variants — never as a second visual
 (e.g. NavBar `indicator_style: .pill | .underline | .dot`, free item count, configurable
 height); a strong enough pattern is promoted to a framework variant.
 
-### 2d.2. Widgets — Inputs M3E (batch 2) — IN PROGRESS (PR A / B1 / B2 / C1 DONE — PR #22 / #23 / #24 / #25, 55 widgets today; PR C2: text fields next)
+### 2d.2. Widgets — Inputs M3E (batch 2) — DONE (PR A / B1 / B2 / C1 / C2 — PR #22 / #23 / #24 / #25 / #26, 57 widgets today)
 
 Buttons ×5 (elevated / filled / filled-tonal / outlined / text) — DONE (PR #22, M3E:
 5 variants x 5 sizes XS-XL, state layers, shape morph, RTL, clipped label ink), icon
@@ -202,10 +202,13 @@ polyline + error variant, radio group = shared signal, switch 52x32 pill + handl
 16/24/28, slider M3E 16dp track + 4x44 bar thumb + gesture arbitration), chips ×5
 (assist / elevated / filter / input / suggestion) — DONE (PR #25, M3E: h=32, radius 8,
 outline 1dp, selected = SecondaryContainer, the filter check follows the selected
-state, 48dp per-axis hit target, RTL mirror, clipped ink), text fields (outlined /
-filled) — replacing the P0 fixtures. Self-register.
+state, 48dp per-axis hit target, RTL mirror, clipped ink), text fields ×2 (filled /
+outlined) — DONE (PR #26, M3E: 56dp container, floating label (expanded centered /
+minimized at the top or in the outline cutout), edge icons, supporting text, the
+active indicator / outline per state, real text entry with caret + semantics) —
+replacing the P0 fixtures. Self-register.
 
-### 2d.3. Widgets — Surfaces & display (batch 3) — PLANNED
+### 2d.3. Widgets — Surfaces & display (batch 3) — NEXT
 
 Cards ×3 (elevated / filled / outlined), lists, menus M3E, search bar, navigation rail,
 side sheets, pull-to-refresh, segmented + split buttons.
@@ -234,7 +237,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 55 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 PR A/B1/B2/C1 DONE (buttons, icon buttons, selection controls, chips — PR #22/#23/#24/#25); the catalog continues: 2d.2 PR C2 text fields, then 2d.3-2d.4). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 57 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26); the catalog continues: 2d.3-2d.4). No-code designer v1 (2e).
 
 ---
 
