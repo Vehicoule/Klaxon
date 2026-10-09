@@ -33,6 +33,8 @@ const switch_w = @import("widgets/switch.zig");
 const slider_w = @import("widgets/slider.zig");
 const chip_w = @import("widgets/chip.zig");
 const text_field_w = @import("widgets/text_field.zig");
+const card_w = @import("widgets/card.zig");
+const list_item_w = @import("widgets/list_item.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -88,7 +90,8 @@ pub const WidgetEntry = struct {
 /// (2d.2 PR B2: checkbox / radio / switch / slider M3E replace the P0
 /// checkbox/toggle/slider entries — the P0 fixtures stay in input.zig) +
 /// chips (2d.2 PR C1: the 5 M3E chip variants) + text field (2d.2 PR C2: the
-/// M3E text field, filled / outlined).
+/// M3E text field, filled / outlined) + cards (2d.3 PR D1: the 3 M3E card
+/// variants) + list item (2d.3 PR D1: the M3E list item, 1-3 lines).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -107,6 +110,8 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
     .{ .name = "chip", .category = "input", .build = buildChip, .schema = schemaChip },
     .{ .name = "text_field", .category = "input", .build = buildTextField, .schema = schemaTextField },
+    .{ .name = "card", .category = "display", .build = buildCard, .schema = schemaCard },
+    .{ .name = "list_item", .category = "display", .build = buildListItem, .schema = schemaListItem },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -547,6 +552,28 @@ fn readTextFieldNode(allocator: std.mem.Allocator, p: *anyopaque) anyerror!Value
     return .{ .string = try allocator.dupe(u8, text_field_w.text(n)) }; // owned (Value.set takes ownership)
 }
 
+/// M3E card (2d.3 PR D1): a container — the children ARE document data.
+fn buildCard(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const copts = try value_mod.optionsFromValue(card_w.CardOptions, opts, null, null);
+    return .{ .node = try card_w.card(allocator, null, copts) };
+}
+
+/// M3E list item (2d.3 PR D1): a "selected" option drives a ctx-owned bool
+/// signal (selection is external — the document's children never serialize:
+/// the chrome is built from the options).
+fn buildListItem(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const lopts = try value_mod.optionsFromValue(list_item_w.ListItemOptions, opts, null, null);
+    // a null "selected" means the field default (unselected, fixed)
+    const has_selected = if (opts.get("selected")) |v| v != .null else false;
+    if (has_selected) {
+        const sig = try buildBoolSignal(allocator, opts, ctx, "selected");
+        const n = try list_item_w.listItem(allocator, sig, null, lopts);
+        return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readBoolSignal }, .skip_children = true };
+    }
+    return .{ .node = try list_item_w.listItem(allocator, null, null, lopts), .skip_children = true };
+}
+
 fn deinitTextSignal(p: *anyopaque) void {
     const s: *state.Signal(text_field_w.TextBuf) = @ptrCast(@alignCast(p));
     s.deinit(); // Signal.deinit frees itself (state.zig)
@@ -812,6 +839,20 @@ fn schemaTextField(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema
     return value_mod.appendSchemaProp(base, allocator, "value", .text, &.{}, .{ .string = "" });
 }
 
+fn schemaCard(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // variant (select), enabled (toggle), padding (insets), gap (number) —
+    // all automatic from the options type; theme is unsupported (global)
+    return value_mod.schemaOf(card_w.CardOptions, allocator);
+}
+
+fn schemaListItem(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // lines (select), enabled (toggle), headline/supporting/overline/
+    // trailing_text (text), leading_icon/trailing_icon (select) — automatic;
+    // "selected" is live
+    const base = try value_mod.schemaOf(list_item_w.ListItemOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "selected", .toggle, &.{}, .{ .bool = false });
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -885,7 +926,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 27), widgets.len);
+    try std.testing.expectEqual(@as(usize, 29), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1269,6 +1310,64 @@ test "registry: text_field (M3E) schema exposes the right editor kinds" {
     try std.testing.expectEqual(value_mod.EditorKind.select, findProp(schema, "leading_icon").?);
     try std.testing.expectEqual(value_mod.EditorKind.select, findProp(schema, "trailing_icon").?);
     try std.testing.expect(findProp(schema, "theme") == null); // global token set
+}
+
+test "registry: card (M3E) round-trips with its document children" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // a card is a container: the children are document data
+    const doc = "{\"name\":\"card\",\"options\":{\"variant\":\"elevated\"},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"Hi\",\"size\":16,\"color\":16777215}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(@as(usize, 1), node.children.items.len);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    try std.testing.expectEqual(ui.semantics.Role.group, node.semantics.?.role);
+}
+
+test "registry: list_item (M3E) round-trips (selected with its live state, and plain)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // selected: the option drives a live bool signal
+    const doc = "{\"name\":\"list_item\",\"options\":{\"headline\":\"Row\",\"selected\":true}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    try std.testing.expectEqual(ui.semantics.Role.list_item, node.semantics.?.role);
+    try std.testing.expectEqual(true, node.semantics.?.checked.?);
+    // plain: no "selected" option -> fixed state, no live binding
+    const plain_doc = "{\"name\":\"list_item\",\"options\":{\"headline\":\"Row\",\"supporting\":\"Sub\",\"lines\":\"two\"}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings(plain_doc, plain_out);
+    try std.testing.expect(plain.semantics.?.checked == null or !plain.semantics.?.checked.?);
+}
+
+test "registry: card + list_item (M3E) schemas expose the right editor kinds" {
+    const card_schema = try byName("card").?.schema(std.testing.allocator);
+    defer {
+        for (card_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(card_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(card_schema, "variant").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(card_schema, "enabled").?);
+    try std.testing.expectEqual(value_mod.EditorKind.insets, findProp(card_schema, "padding").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(card_schema, "gap").?);
+    const li_schema = try byName("list_item").?.schema(std.testing.allocator);
+    defer {
+        for (li_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(li_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(li_schema, "lines").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(li_schema, "headline").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(li_schema, "selected").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(li_schema, "leading_icon").?);
+    try std.testing.expect(findProp(li_schema, "theme") == null); // global token set
 }
 
 test "registry: checkbox / slider / radio (M3E) round-trip with their live values" {
