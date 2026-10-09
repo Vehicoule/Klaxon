@@ -27,6 +27,10 @@ const divider_w = @import("widgets/divider.zig");
 const input_w = @import("widgets/input.zig");
 const button_w = @import("widgets/button.zig");
 const icon_button_w = @import("widgets/icon_button.zig");
+const checkbox_w = @import("widgets/checkbox.zig");
+const radio_w = @import("widgets/radio.zig");
+const switch_w = @import("widgets/switch.zig");
+const slider_w = @import("widgets/slider.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -76,7 +80,9 @@ pub const WidgetEntry = struct {
 /// (2d.1 PR B: bottom_sheet, dialog, progress, badge, badged_box, tooltip,
 /// snackbar — M3E) + buttons (2d.2 PR A: the M3E button replaces the P0
 /// button entry — the P0 stays in widgets/input.zig for legacy use) + icon
-/// button (2d.2 PR B1: M3E icon button, plain + toggle).
+/// button (2d.2 PR B1: M3E icon button, plain + toggle) + selection controls
+/// (2d.2 PR B2: checkbox / radio / switch / slider M3E replace the P0
+/// checkbox/toggle/slider entries — the P0 fixtures stay in input.zig).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -89,8 +95,9 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "icon", .category = "display", .build = buildIcon, .schema = schemaIcon },
     .{ .name = "button", .category = "input", .build = buildButton, .schema = schemaButton },
     .{ .name = "icon_button", .category = "input", .build = buildIconButton, .schema = schemaIconButton },
-    .{ .name = "toggle", .category = "input", .build = buildToggle, .schema = schemaToggle },
+    .{ .name = "switch", .category = "input", .build = buildSwitch, .schema = schemaSwitch },
     .{ .name = "checkbox", .category = "input", .build = buildCheckbox, .schema = schemaCheckbox },
+    .{ .name = "radio", .category = "input", .build = buildRadio, .schema = schemaRadio },
     .{ .name = "slider", .category = "input", .build = buildSlider, .schema = schemaSlider },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
@@ -383,15 +390,12 @@ fn buildIconButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) an
     return .{ .node = try icon_button_w.iconButton(allocator, null, null, iopts), .skip_children = true };
 }
 
-fn buildToggle(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
-    const topts = try value_mod.optionsFromValue(input_w.ToggleOptions, opts, null, null);
-    const checked: bool = if (opts.get("checked")) |c| switch (c) {
-        .bool => |b| b,
-        else => false,
-    } else false;
-    const sig = try state.Signal(bool).init(allocator, checked); // *Signal(bool)
-    try ctx.track(sig, deinitBoolSignal);
-    const n = try input_w.toggle(allocator, sig, null, topts);
+/// M3E switch (2d.2 PR B2, replaces the P0 toggle entry): a "checked" option
+/// drives a ctx-owned bool signal.
+fn buildSwitch(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const sopts = try value_mod.optionsFromValue(switch_w.SwitchOptions, opts, null, null);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "checked");
+    const n = try switch_w.@"switch"(allocator, sig, null, sopts);
     return .{ .node = n, .live = .{ .signal = sig, .field = "checked", .read = readBoolSignal } };
 }
 
@@ -405,20 +409,32 @@ fn deinitBoolSignal(p: *anyopaque) void {
     s.deinit(); // Signal.deinit frees itself (state.zig)
 }
 
+/// M3E checkbox (2d.2 PR B2, replaces the P0 checkbox entry): a "checked"
+/// option drives a ctx-owned bool signal.
 fn buildCheckbox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
-    const copts = try value_mod.optionsFromValue(input_w.CheckboxOptions, opts, null, null);
-    const checked: bool = if (opts.get("checked")) |c| switch (c) {
-        .bool => |b| b,
-        else => false,
-    } else false;
-    const sig = try state.Signal(bool).init(allocator, checked); // *Signal(bool)
-    try ctx.track(sig, deinitBoolSignal);
-    const n = try input_w.checkbox(allocator, sig, null, copts);
+    const copts = try value_mod.optionsFromValue(checkbox_w.CheckboxOptions, opts, null, null);
+    const sig = try buildBoolSignal(allocator, opts, ctx, "checked");
+    const n = try checkbox_w.checkbox(allocator, sig, null, copts);
     return .{ .node = n, .live = .{ .signal = sig, .field = "checked", .read = readBoolSignal } };
 }
 
+/// M3E radio (2d.2 PR B2, new entry): an "index" option + a "selected"
+/// ctx-owned usize signal (the group value; checked = selected == index).
+fn buildRadio(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const ropts = try value_mod.optionsFromValue(radio_w.RadioOptions, opts, null, null);
+    const index: u32 = if (opts.get("index")) |x| switch (x) {
+        .int => |i| std.math.cast(u32, i) orelse return error.ValueOutOfRange,
+        else => 0,
+    } else 0;
+    const sig = try buildUsizeSignal(allocator, opts, ctx); // "selected"
+    const n = try radio_w.radio(allocator, sig, index, ropts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal } };
+}
+
+/// M3E slider (2d.2 PR B2, replaces the P0 slider entry): a "value" option
+/// drives a ctx-owned f32 signal (0..1).
 fn buildSlider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
-    const sopts = try value_mod.optionsFromValue(input_w.SliderOptions, opts, null, null);
+    const sopts = try value_mod.optionsFromValue(slider_w.SliderOptions, opts, null, null);
     const val: f32 = if (opts.get("value")) |x| switch (x) {
         .float => |f| @floatCast(f),
         .int => |i| @floatFromInt(i),
@@ -426,7 +442,7 @@ fn buildSlider(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerr
     } else 0.5;
     const sig = try state.Signal(f32).init(allocator, val); // *Signal(f32)
     try ctx.track(sig, deinitF32Signal);
-    const n = try input_w.slider(allocator, sig, null, sopts);
+    const n = try slider_w.slider(allocator, sig, null, sopts);
     return .{ .node = n, .live = .{ .signal = sig, .field = "value", .read = readF32Signal } };
 }
 
@@ -659,18 +675,28 @@ fn schemaIconButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchem
     return value_mod.appendSchemaProp(base, allocator, "selected", .toggle, &.{}, .{ .bool = false });
 }
 
-fn schemaToggle(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
-    const base = try value_mod.schemaOf(input_w.ToggleOptions, allocator);
+fn schemaSwitch(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // enabled (toggle), a11y_label (text) — automatic; "checked" is live
+    const base = try value_mod.schemaOf(switch_w.SwitchOptions, allocator);
     return value_mod.appendSchemaProp(base, allocator, "checked", .toggle, &.{}, .{ .bool = false });
 }
 
 fn schemaCheckbox(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
-    const base = try value_mod.schemaOf(input_w.CheckboxOptions, allocator);
+    // enabled/error (toggle), a11y_label (text) — automatic; "checked" is live
+    const base = try value_mod.schemaOf(checkbox_w.CheckboxOptions, allocator);
     return value_mod.appendSchemaProp(base, allocator, "checked", .toggle, &.{}, .{ .bool = false });
 }
 
+fn schemaRadio(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // enabled (toggle), a11y_label (text) — automatic; "selected" is live
+    var base = try value_mod.schemaOf(radio_w.RadioOptions, allocator);
+    base = try value_mod.appendSchemaProp(base, allocator, "selected", .number, &.{}, .{ .int = 0 });
+    return value_mod.appendSchemaProp(base, allocator, "index", .number, &.{}, .{ .int = 0 });
+}
+
 fn schemaSlider(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
-    const base = try value_mod.schemaOf(input_w.SliderOptions, allocator);
+    // enabled (toggle), default_width (number), a11y_label (text) — automatic
+    const base = try value_mod.schemaOf(slider_w.SliderOptions, allocator);
     return value_mod.appendSchemaProp(base, allocator, "value", .number, &.{}, .{ .float = 0.5 });
 }
 
@@ -747,7 +773,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 24), widgets.len);
+    try std.testing.expectEqual(@as(usize, 25), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -785,7 +811,7 @@ test "registry: treeFromJson / treeToJson wrappers" {
 test "registry: signal widgets build with a ctx-owned signal (no leak)" {
     var ctx = BuildCtx.init(std.testing.allocator);
     defer ctx.deinit();
-    const node = try treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":[{\"name\":\"toggle\"},{\"name\":\"checkbox\"},{\"name\":\"slider\"}]}");
+    const node = try treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":[{\"name\":\"switch\"},{\"name\":\"checkbox\"},{\"name\":\"slider\"}]}");
     defer node.deinit();
     try std.testing.expectEqual(@as(usize, 3), node.children.items.len);
     try std.testing.expectEqual(@as(usize, 3), ctx.tracked.items.len);
@@ -795,7 +821,7 @@ test "registry: reset frees records and signals between builds" {
     var ctx = BuildCtx.init(std.testing.allocator);
     defer ctx.deinit();
     {
-        const node = try treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"toggle\"}");
+        const node = try treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"switch\"}");
         node.deinit();
     }
     ctx.reset();
@@ -829,7 +855,7 @@ test "registry: a failed build leaves no stale records or signals" {
     try std.testing.expectEqual(@as(usize, 0), ctx.tracked.items.len);
     try std.testing.expectEqual(@as(usize, 0), ctx.journal.items.len);
     // column[ toggle, unknown ] — fails after a signal was created
-    try std.testing.expectError(error.UnknownWidget, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":[{\"name\":\"toggle\"},{\"name\":\"nope\"}]}"));
+    try std.testing.expectError(error.UnknownWidget, treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"column\",\"children\":[{\"name\":\"switch\"},{\"name\":\"nope\"}]}"));
     try std.testing.expectEqual(@as(usize, 0), ctx.records.count());
     try std.testing.expectEqual(@as(usize, 0), ctx.tracked.items.len);
     // the ctx is still usable afterwards
@@ -843,7 +869,7 @@ test "registry: a failed build leaves no stale records or signals" {
 test "registry: signal widgets round-trip their live value" {
     var ctx = BuildCtx.init(std.testing.allocator);
     defer ctx.deinit();
-    const doc = "{\"name\":\"column\",\"children\":[{\"name\":\"toggle\",\"options\":{\"checked\":true}},{\"name\":\"slider\",\"options\":{\"value\":0.25}}]}";
+    const doc = "{\"name\":\"column\",\"children\":[{\"name\":\"switch\",\"options\":{\"checked\":true}},{\"name\":\"slider\",\"options\":{\"value\":0.25}}]}";
     const node = try treeFromJson(&ctx, std.testing.allocator, doc);
     defer node.deinit();
     const out = try treeToJson(&ctx, node, std.testing.allocator);
@@ -1010,6 +1036,33 @@ test "registry: icon_button round-trips (toggle with its selected state, and pla
     try std.testing.expectEqualStrings(plain_doc, plain_out);
 }
 
+test "registry: checkbox / slider / radio (M3E) round-trip with their live values" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // checkbox: "checked" drives a live bool signal
+    const cb_doc = "{\"name\":\"checkbox\",\"options\":{\"checked\":true,\"a11y_label\":\"Accept\",\"error\":true}}";
+    const cb = try treeFromJson(&ctx, std.testing.allocator, cb_doc);
+    defer cb.deinit();
+    const cb_out = try treeToJson(&ctx, cb, std.testing.allocator);
+    defer std.testing.allocator.free(cb_out);
+    try std.testing.expectEqualStrings(cb_doc, cb_out);
+    // slider: "value" drives a live f32 signal
+    const sl_doc = "{\"name\":\"slider\",\"options\":{\"value\":0.25,\"a11y_label\":\"Volume\",\"default_width\":200}}";
+    const sl = try treeFromJson(&ctx, std.testing.allocator, sl_doc);
+    defer sl.deinit();
+    const sl_out = try treeToJson(&ctx, sl, std.testing.allocator);
+    defer std.testing.allocator.free(sl_out);
+    try std.testing.expectEqualStrings(sl_doc, sl_out);
+    // radio: "selected" drives a live usize signal; "index" selects this radio
+    const rd_doc = "{\"name\":\"radio\",\"options\":{\"a11y_label\":\"Two\",\"selected\":2,\"index\":2}}";
+    const rd = try treeFromJson(&ctx, std.testing.allocator, rd_doc);
+    defer rd.deinit();
+    const rd_out = try treeToJson(&ctx, rd, std.testing.allocator);
+    defer std.testing.allocator.free(rd_out);
+    try std.testing.expectEqualStrings(rd_doc, rd_out);
+    try std.testing.expectEqual(true, rd.semantics.?.checked.?); // selected == index
+}
+
 test "registry: PR B schemas expose the right editor kinds" {
     const progress_schema = try byName("progress").?.schema(std.testing.allocator);
     defer {
@@ -1079,13 +1132,14 @@ test "registry: every entry exposes an inspector schema" {
     }
     try std.testing.expectEqual(value_mod.EditorKind.text, findProp(text_schema, "text").?);
     try std.testing.expectEqual(value_mod.EditorKind.color, findProp(text_schema, "color").?);
-    const toggle_schema = try byName("toggle").?.schema(std.testing.allocator);
+    const switch_schema = try byName("switch").?.schema(std.testing.allocator);
     defer {
-        for (toggle_schema) |*p| p.deinit(std.testing.allocator);
-        std.testing.allocator.free(toggle_schema);
+        for (switch_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(switch_schema);
     }
-    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(toggle_schema, "checked").?);
-    try std.testing.expectEqual(value_mod.EditorKind.color, findProp(toggle_schema, "track_on").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(switch_schema, "checked").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(switch_schema, "enabled").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(switch_schema, "a11y_label").?);
 }
 
 test "registry: slot options build subtrees via the slot builder" {

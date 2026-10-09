@@ -23,6 +23,9 @@
 // migration).
 // IconButton (1): the M3E icon button (4 variants x 5 sizes x 3 widths,
 // plain + toggle) — Phase 2d.2 PR B1.
+// Selection controls (4): Checkbox / Radio / Switch / Slider M3E — Phase 2d.2
+// PR B2 (they replace the P0 checkbox/toggle/slider; the P0 fixtures stay
+// in input.zig for the legacy gallery sections).
 // ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -33,6 +36,10 @@ pub const divider = @import("widgets/divider.zig");
 pub const input = @import("widgets/input.zig");
 pub const button = @import("widgets/button.zig");
 pub const icon_button = @import("widgets/icon_button.zig");
+pub const checkbox = @import("widgets/checkbox.zig");
+pub const radio = @import("widgets/radio.zig");
+pub const @"switch" = @import("widgets/switch.zig");
+pub const slider = @import("widgets/slider.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");

@@ -31,6 +31,10 @@ const divider_w = widgets.divider;
 const input_w = widgets.input;
 const button_w = widgets.button;
 const icon_button_w = widgets.icon_button;
+const checkbox_w = widgets.checkbox;
+const radio_w = widgets.radio;
+const switch_w = widgets.@"switch";
+const slider_w = widgets.slider;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -58,6 +62,7 @@ const Refs = struct {
     demo_button: *Node,
     m3e_button: *Node, // the M3E filled button (Buttons M3E section)
     ib_heart: *Node, // the M3E filled icon toggle (Icon buttons M3E section)
+    cb_m3e_btn: *Node, // the M3E checkbox (Selection controls section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -95,6 +100,17 @@ pub const Gallery = struct {
     // Signals (owned by the gallery, survive theme rebuilds).
     dark_mode: *state.Signal(bool),
     ib_toggles: [4]*state.Signal(bool), // the icon-button toggles' checked states
+    // the selection controls' signals (M3E section, 2d.2 PR B2)
+    cb_m3e: *state.Signal(bool), // checkbox, clickable (unchecked)
+    cb_on: *state.Signal(bool), // checkbox, checked
+    cb_dis: *state.Signal(bool), // checkbox, disabled
+    cb_err: *state.Signal(bool), // checkbox, error + checked
+    sw_m3e: *state.Signal(bool), // switch, clickable (off)
+    sw_on: *state.Signal(bool), // switch, on
+    sw_dis: *state.Signal(bool), // switch, disabled
+    sl_m3e: *state.Signal(f32), // slider, 0.25
+    sl_dis: *state.Signal(f32), // slider, disabled
+    radio_m3e: *state.Signal(usize), // the M3E radio group selection
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -158,6 +174,26 @@ pub const Gallery = struct {
             sig.* = try state.Signal(bool).init(allocator, i == 0); // the heart starts checked
             ib_init += 1;
         }
+        g.cb_m3e = try state.Signal(bool).init(allocator, false);
+        errdefer g.cb_m3e.deinit();
+        g.cb_on = try state.Signal(bool).init(allocator, true);
+        errdefer g.cb_on.deinit();
+        g.cb_dis = try state.Signal(bool).init(allocator, false);
+        errdefer g.cb_dis.deinit();
+        g.cb_err = try state.Signal(bool).init(allocator, true);
+        errdefer g.cb_err.deinit();
+        g.sw_m3e = try state.Signal(bool).init(allocator, false);
+        errdefer g.sw_m3e.deinit();
+        g.sw_on = try state.Signal(bool).init(allocator, true);
+        errdefer g.sw_on.deinit();
+        g.sw_dis = try state.Signal(bool).init(allocator, false);
+        errdefer g.sw_dis.deinit();
+        g.sl_m3e = try state.Signal(f32).init(allocator, 0.25);
+        errdefer g.sl_m3e.deinit();
+        g.sl_dis = try state.Signal(f32).init(allocator, 0.4);
+        errdefer g.sl_dis.deinit();
+        g.radio_m3e = try state.Signal(usize).init(allocator, 0);
+        errdefer g.radio_m3e.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -258,6 +294,16 @@ pub const Gallery = struct {
         g.root.deinit();
         g.dark_mode.deinit();
         for (g.ib_toggles) |sig| sig.deinit();
+        g.cb_m3e.deinit();
+        g.cb_on.deinit();
+        g.cb_dis.deinit();
+        g.cb_err.deinit();
+        g.sw_m3e.deinit();
+        g.sw_on.deinit();
+        g.sw_dis.deinit();
+        g.sl_m3e.deinit();
+        g.sl_dis.deinit();
+        g.radio_m3e.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -295,6 +341,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Input", try buildInputSection(g, theme)));
     content.add(try section(a, theme, "Buttons (M3E)", try buildButtonsSection(g, theme)));
     content.add(try section(a, theme, "Icon buttons (M3E)", try buildIconButtonsSection(g, theme)));
+    content.add(try section(a, theme, "Selection controls (M3E)", try buildSelectionSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -515,6 +562,45 @@ fn buildIconButtonsSection(g: *Gallery, theme: Theme) !*Node {
     r4.add(try icon_button_w.iconButton(a, null, null, .{ .variant = .filled, .width = .wide, .icon = .star, .a11y_label = "Wide", .theme = theme }));
     r4.add(try icon_button_w.iconButton(a, null, null, .{ .variant = .filled, .enabled = false, .icon = .star, .a11y_label = "Disabled", .theme = theme }));
     r4.add(try icon_button_w.iconButton(a, null, null, .{ .variant = .outlined, .shape = .square, .icon = .star, .a11y_label = "Square", .theme = theme }));
+    col.add(r4);
+    return col;
+}
+
+/// Selection controls (M3E, batch 2d.2 PR B2): checkboxes (off/on/disabled/
+/// error), a radio group, switches (off/on/disabled), sliders (determinate/
+/// disabled).
+fn buildSelectionSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    // Checkboxes
+    const r1 = try layout.row(a, .{ .gap = 16, .cross_align = .center });
+    const cb = try checkbox_w.checkbox(a, g.cb_m3e, null, .{ .a11y_label = "Unchecked", .theme = theme });
+    g.refs.cb_m3e_btn = cb;
+    r1.add(cb);
+    r1.add(try checkbox_w.checkbox(a, g.cb_on, null, .{ .a11y_label = "Checked", .theme = theme }));
+    r1.add(try checkbox_w.checkbox(a, g.cb_dis, null, .{ .enabled = false, .a11y_label = "Disabled", .theme = theme }));
+    r1.add(try checkbox_w.checkbox(a, g.cb_err, null, .{ .@"error" = true, .a11y_label = "Error", .theme = theme }));
+    col.add(r1);
+    // Radio group (3 radios, shared selection signal)
+    const r2 = try layout.row(a, .{ .gap = 16, .cross_align = .center });
+    for (radio_labels, 0..) |label, i| {
+        r2.add(try radio_w.radio(a, g.radio_m3e, @intCast(i), .{ .a11y_label = label, .theme = theme }));
+        r2.add(try text_w.text(a, label, .{ .size = 13, .color = theme.colors.on_surface }));
+    }
+    col.add(r2);
+    // Switches
+    const r3 = try layout.row(a, .{ .gap = 16, .cross_align = .center });
+    r3.add(try switch_w.@"switch"(a, g.sw_m3e, null, .{ .a11y_label = "Off", .theme = theme }));
+    r3.add(try switch_w.@"switch"(a, g.sw_on, null, .{ .a11y_label = "On", .theme = theme }));
+    r3.add(try switch_w.@"switch"(a, g.sw_dis, null, .{ .enabled = false, .a11y_label = "Disabled", .theme = theme }));
+    col.add(r3);
+    // Sliders + value labels
+    const r4 = try layout.column(a, .{ .gap = 8 });
+    const sl1 = try slider_w.slider(a, g.sl_m3e, null, .{ .a11y_label = "Volume", .theme = theme });
+    r4.add(sl1);
+    r4.add(try text_w.BoundText(f32).text(a, g.sl_m3e, fmtSlider, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    const sl2 = try slider_w.slider(a, g.sl_dis, null, .{ .enabled = false, .a11y_label = "Disabled", .theme = theme });
+    r4.add(sl2);
     col.add(r4);
     return col;
 }
@@ -1276,6 +1362,24 @@ test "gallery: the M3E icon toggle flips its signal on click" {
     router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
     router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
     try std.testing.expect(!g.ib_toggles[0].peek()); // clicked -> unchecked
+}
+
+test "gallery: the M3E checkbox toggles its signal on click" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Selection controls section sits below the Icon buttons section
+    const b = g.refs.cb_m3e_btn.bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    try std.testing.expect(!g.cb_m3e.peek());
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expect(g.cb_m3e.peek()); // clicked -> checked
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
