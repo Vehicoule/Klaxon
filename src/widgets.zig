@@ -21,6 +21,8 @@
 // Button (1): the M3E button (5 variants x 5 sizes) — Phase 2d.2 PR A; the
 // P0 button stays in input.zig (legacy gallery sections, progressive
 // migration).
+// IconButton (1): the M3E icon button (4 variants x 5 sizes x 3 widths,
+// plain + toggle) — Phase 2d.2 PR B1.
 // ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -30,6 +32,7 @@ pub const container = @import("widgets/container.zig");
 pub const divider = @import("widgets/divider.zig");
 pub const input = @import("widgets/input.zig");
 pub const button = @import("widgets/button.zig");
+pub const icon_button = @import("widgets/icon_button.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");
