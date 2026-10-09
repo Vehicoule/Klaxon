@@ -244,11 +244,12 @@ fn searchBarPaint(n: *Node, ctx: *kx.Ctx) void {
         paintIcon(ctx, .close, cx, icon_y, muted);
     }
 
-    // --- text content (clipped between the icons) ---
+    // --- text content (clipped between the icons; the whole clip rect
+    // mirrors in RTL — mirroring only the edge would clip the text away) ---
     const tr = textRect(n);
     const right = if (hasText(s)) icon_box + text_gap_trail else text_end_no_icon;
-    const clip_x = mx(b.x, b.w, b.x + text_start, 0, rtl);
     const clip_w = b.w - text_start - right;
+    const clip_x = mx(b.x, b.w, b.x + text_start, clip_w, rtl);
     ui.paint.clipRect(ctx, clip_x, b.y, clip_w, container_h);
     const style = t.type_scale.body_large;
     if (hasText(s)) {
@@ -408,13 +409,19 @@ fn searchBarOnKey(n: *Node, ev: input.KeyEvent) bool {
 }
 
 /// An external signal set (the designer): replace the buffer when the text
-/// differs (the widget's own sets round-trip as no-ops — Signal.set dedups).
+/// differs. The comparison runs against the MIRROR of the current buffer
+/// (the signal channel caps at 255 bytes): the widget's own sets round-trip
+/// as no-ops even when the buffer exceeds the mirror (Signal.set dedups
+/// only exact values — a truncated mirror of a long buffer would otherwise
+/// feed back and truncate the buffer).
 fn searchBarSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     const s = stateOf(n);
     const incoming = s.sig.?.peek();
     const inc_len = std.mem.indexOfScalar(u8, &incoming, 0) orelse incoming.len;
-    if (std.mem.eql(u8, s.buf.items, incoming[0..inc_len])) return;
+    const cur_mirror = bufFromText(s.buf.items);
+    const cur_len = std.mem.indexOfScalar(u8, &cur_mirror, 0) orelse cur_mirror.len;
+    if (std.mem.eql(u8, cur_mirror[0..cur_len], incoming[0..inc_len])) return;
     s.buf.clearRetainingCapacity();
     s.buf.appendSlice(incoming[0..inc_len]) catch @panic("klaxon: out of memory");
     setSentinel(&s.buf);
@@ -449,10 +456,15 @@ const search_bar_vtable = ui.node.VTable{
 pub fn searchBar(allocator: std.mem.Allocator, sig: ?*ui.state.Signal(TextBuf), on_changed: ?Callback, on_submitted: ?Callback, opts: SearchBarOptions) !*Node {
     const node = try Node.create(allocator, &search_bar_vtable);
     errdefer node.allocator.destroy(node); // no state yet
-    const s = try allocator.create(SearchBarState);
-    errdefer allocator.destroy(s);
     const placeholder = try dupeZ(allocator, opts.placeholder);
-    errdefer allocator.free(placeholder);
+    // One ownership boundary: the placeholder's errdefer covers only the
+    // state allocation (after s.* owns it, the block errdefer below is the
+    // single owner — no double free).
+    const s = allocator.create(SearchBarState) catch |err| {
+        allocator.free(placeholder);
+        return err;
+    };
+    errdefer allocator.destroy(s);
     s.* = .{
         .buf = std.array_list.Managed(u8).init(allocator),
         .placeholder = placeholder,
@@ -624,6 +636,34 @@ test "search_bar: RTL mirrors the chrome (the search icon moves to the end side)
     try std.testing.expect(!inClear(stateOf(b), b.bounds, 360 - icon_box / 2, 28));
     // the LTR anchor is unchanged (the paint mirrors it)
     try std.testing.expectEqual(text_start, textRect(b).x);
+}
+
+test "golden: RTL paints the input text at the end side (the clip mirrors with it)" {
+    const i18n = try ui.i18n.I18n.init(std.testing.allocator, "en");
+    defer i18n.deinit();
+    try i18n.addArb("ar", "{\"x\":\"y\"}", .rtl);
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    try i18n.setLocale("ar");
+    const t = theme_mod.light;
+    const b = try searchBar(std.testing.allocator, null, null, null, .{ .initial = "Hi", .theme = t });
+    defer b.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 420, 80);
+    defer r.deinit();
+    b.layout(.{ .x = 20, .y = 12, .w = 380, .h = 56 });
+    r.paint(b, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    const m = ui.paint.measureText("Hi", 16, false);
+    // the text run mirrors to the end side: its right edge is at
+    // b.x + b.w - text_start (the trailing clear zone starts at the end)
+    const mirrored_x = 20 + 380 - text_start - m.width;
+    // ink at the mirrored position...
+    try std.testing.expect(f.countColorIn(.{ .x = mirrored_x, .y = 28, .w = m.width, .h = 24 }, t.colors.on_surface) > 0);
+    // ...and none where LTR would paint (left of the search icon's zone)
+    try std.testing.expectEqual(@as(u64, 0), f.countColorIn(.{ .x = 72, .y = 28, .w = m.width, .h = 24 }, t.colors.on_surface));
+    // the search icon moved to the end side too (its ink is at the right)
+    try std.testing.expect(f.countColorIn(.{ .x = 20 + 380 - icon_edge - icon_size, .y = 28, .w = 24, .h = 24 }, t.colors.on_surface) > 0);
 }
 
 test "golden: the pill paints SurfaceContainerHigh with rounded ends; the search icon + placeholder ink" {

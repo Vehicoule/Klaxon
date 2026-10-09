@@ -483,13 +483,19 @@ fn textFieldOnKey(n: *Node, ev: input.KeyEvent) bool {
 }
 
 /// An external signal set (the designer): replace the buffer when the text
-/// differs (the widget's own sets round-trip as no-ops — Signal.set dedups).
+/// differs. The comparison runs against the MIRROR of the current buffer
+/// (the signal channel caps at 255 bytes): the widget's own sets round-trip
+/// as no-ops even when the buffer exceeds the mirror (Signal.set dedups
+/// only exact values — a truncated mirror of a long buffer would otherwise
+/// feed back and truncate the buffer).
 fn textFieldSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     const s = stateOf(n);
     const incoming = s.sig.?.peek();
     const inc_len = std.mem.indexOfScalar(u8, &incoming, 0) orelse incoming.len;
-    if (std.mem.eql(u8, s.buf.items, incoming[0..inc_len])) return;
+    const cur_mirror = bufFromText(s.buf.items);
+    const cur_len = std.mem.indexOfScalar(u8, &cur_mirror, 0) orelse cur_mirror.len;
+    if (std.mem.eql(u8, cur_mirror[0..cur_len], incoming[0..inc_len])) return;
     s.buf.clearRetainingCapacity();
     s.buf.appendSlice(incoming[0..inc_len]) catch @panic("klaxon: out of memory");
     setSentinel(&s.buf);

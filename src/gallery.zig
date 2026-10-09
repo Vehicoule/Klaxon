@@ -192,6 +192,10 @@ pub const Gallery = struct {
     // the M3E text fields' entries (restored across theme switches)
     saved_tf_m3e: [5][256]u8 = std.mem.zeroes([5][256]u8),
     saved_tf_m3e_lens: [5]usize = std.mem.zeroes([5]usize),
+    // the M3E search bar's entry (restored across theme switches at FULL
+    // length — the TextBuf signal mirror caps at 255 bytes, so the saved
+    // copy is an owned buffer, not a fixed array)
+    saved_sb: std.array_list.Managed(u8),
 
     /// Heap-allocated: the tree holds pointers into the Gallery (item
     /// factories, callback userdata), so its address must be stable.
@@ -210,6 +214,8 @@ pub const Gallery = struct {
         g.saved_grid = 0;
         g.saved_tf_m3e = std.mem.zeroes([5][256]u8);
         g.saved_tf_m3e_lens = std.mem.zeroes([5]usize);
+        g.saved_sb = std.array_list.Managed(u8).init(allocator);
+        errdefer g.saved_sb.deinit();
         g.dark_mode = try state.Signal(bool).init(allocator, true);
         errdefer g.dark_mode.deinit();
         // one function-scope errdefer frees the signals initialized so far
@@ -355,6 +361,9 @@ pub const Gallery = struct {
                 g.saved_tf_m3e_lens[i] = @min(txt.len, g.saved_tf_m3e[i].len - 1);
                 @memcpy(g.saved_tf_m3e[i][0..g.saved_tf_m3e_lens[i]], txt[0..g.saved_tf_m3e_lens[i]]);
             }
+            // the search bar's full text (the signal mirror caps at 255)
+            g.saved_sb.clearRetainingCapacity();
+            g.saved_sb.appendSlice(search_bar_w.text(g.refs.sb_m3e)) catch @panic("klaxon: out of memory");
         }
         const fresh = try buildTree(g, theme);
         if (g.tree) |old| {
@@ -404,6 +413,7 @@ pub const Gallery = struct {
         g.seg_change.deinit();
         g.split_press.deinit();
         g.split_trail.deinit();
+        g.saved_sb.deinit();
         g.sb_text.deinit();
         g.sb_change.deinit();
         g.sb_submit.deinit();
@@ -878,6 +888,9 @@ fn buildSearchBarSection(g: *Gallery, theme: Theme) !*Node {
     const col = try layout.column(a, .{ .gap = 8 });
     const sb = try search_bar_w.searchBar(a, g.sb_text, .{ .fn_ptr = sbChangeCb, .userdata = g }, .{ .fn_ptr = sbSubmitCb, .userdata = g }, .{ .placeholder = "Search songs, videos, books…", .theme = theme });
     g.refs.sb_m3e = sb;
+    // restore the entry captured before a theme rebuild (full length — the
+    // signal mirror caps at 255 bytes; setText also re-mirrors the signal)
+    if (g.saved_sb.items.len > 0) search_bar_w.setText(sb, g.saved_sb.items);
     col.add(sb);
     const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
     row.add(try text_w.BoundText(u32).text(a, g.sb_change, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
@@ -1951,6 +1964,34 @@ test "gallery: the M3E search bar takes focus, accepts text, submits and clears"
     g.sb_text.set(search_bar_w.bufFromText("Ada"));
     try std.testing.expectEqualStrings("Ada", search_bar_w.text(sb));
     try std.testing.expectEqualStrings("Ada", sb.semantics.?.value);
+}
+
+test "gallery: the M3E search bar's entry survives a theme switch at full length" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const sb = g.refs.sb_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, sb.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const b = sb.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + 100, .y = b.y + b.h / 2 - sy, .raw_x = b.x + 100, .raw_y = b.y + b.h / 2 - sy });
+    // type a query LONGER than the 255-byte signal mirror
+    var buf: [300]u8 = undefined;
+    @memset(&buf, 'a');
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = &buf });
+    try std.testing.expectEqual(@as(usize, 300), search_bar_w.text(sb).len);
+    // toggle the theme (the header sits above the scroll content)
+    const t = g.refs.theme_toggle.bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = t.x + t.w / 2, .y = t.y + t.h / 2 });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = t.x + t.w / 2, .y = t.y + t.h / 2 });
+    // the full entry survived the rebuild (not truncated to the mirror's 255)
+    const txt = search_bar_w.text(g.refs.sb_m3e);
+    try std.testing.expectEqual(@as(usize, 300), txt.len);
+    try std.testing.expect(txt[0] == 'a' and txt[299] == 'a');
 }
 
 test "gallery: the M3E navigation rails select on click and follow the signal" {

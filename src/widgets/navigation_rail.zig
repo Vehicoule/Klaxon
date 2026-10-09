@@ -156,7 +156,7 @@ fn pillWidth(s: *RailState, def: ItemDef) f32 {
 
 fn contentHeight(s: *RailState) f32 {
     const count: f32 = @floatFromInt(s.items.items.len);
-    return top_space + count * item_h + (count - 1) * item_gap;
+    return top_space + count * item_h + @max(0, count - 1) * item_gap;
 }
 
 /// Select an item: the state + the signal (if any) + focus + the a11y
@@ -244,6 +244,9 @@ fn railPaint(n: *Node, ctx: *kx.Ctx) void {
     // the container
     ui.paint.fillRect(ctx, b.x, b.y, b.w, b.h, cs.surface);
 
+    // the items clip to the rail's bounds: an overflowing destination never
+    // paints over nearby content (hit-testing already bounds-checks)
+    ui.paint.clipRect(ctx, b.x, b.y, b.w, b.h);
     for (s.items.items, 0..) |def, i| {
         const idx: i32 = @intCast(i);
         const ir = itemRect(b, i);
@@ -308,6 +311,7 @@ fn railPaint(n: *Node, ctx: *kx.Ctx) void {
             ui.paint.clipReset(ctx);
         }
     }
+    ui.paint.clipReset(ctx); // the rail-bounds clip
 }
 
 fn railOnPointer(n: *Node, ev: input.PointerEvent) bool {
@@ -675,4 +679,40 @@ test "navigation_rail: RTL mirrors the expanded row (the icon sits at the end si
     try std.testing.expectEqual(t.colors.secondary_container, f.pixelAt(@as(i32, @intFromFloat(pill_x)) + 4, @intFromFloat(iy + pill_h / 2)));
     // the icon ink moved to the end side (pill end - 16 - 24)
     try std.testing.expect(f.countColorIn(.{ .x = pill_x + pw - pill_icon_pad - icon_size, .y = iy + 16, .w = 24, .h = 24 }, t.colors.on_secondary_container) > 0);
+}
+
+test "navigation_rail: an empty rail measures the top space (44), not 40" {
+    const a = std.testing.allocator;
+    const n = try navigationRail(a, &.{}, null, null, .{});
+    defer n.deinit();
+    const m = n.measure(.{ .max_w = 2000, .max_h = std.math.inf(f32) });
+    try std.testing.expectEqual(top_space, m.h); // 44 + 0 items + max(0, -1) gap
+}
+
+test "golden: an overflowing rail clips its items to its bounds" {
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    // 4 items need 44 + 4*56 + 3*4 = 280; the rail gets 180 — the last two
+    // items overflow and must not paint below the rail's bottom edge (190)
+    const n = try navigationRail(a, &.{ .{ .label = "A" }, .{ .label = "B" }, .{ .label = "C" }, .{ .label = "D" } }, null, null, .{ .selected = 3, .theme = t });
+    defer n.deinit();
+    var r = try golden.Renderer.init(a, 120, 220);
+    defer r.deinit();
+    n.layout(.{ .x = 10, .y = 10, .w = 96, .h = 180 });
+    r.paint(n, 0xFFFFFFFF);
+    var f = try r.readback(a);
+    defer f.deinit();
+    // the 4th (selected) item's circle would center at y = 10 + 44 + 3*60 + 28
+    // = 262 — far below the rail's bottom edge: nothing paints there
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(58, 200));
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(58, 210));
+    // the 3rd item (y = 174..230) is clipped at the bottom edge: nothing of it
+    // paints below y = 190
+    try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(58, 195));
+    // control: inside the rail the unselected items paint normally — no
+    // indicator (surface at the circle interior), but their icon ink shows
+    const cx = 10 + (96 - circle_d) / 2 + 4;
+    try std.testing.expectEqual(t.colors.surface, f.pixelAt(@intFromFloat(cx), 82));
+    try std.testing.expectEqual(t.colors.surface, f.pixelAt(@intFromFloat(cx), 142));
+    try std.testing.expect(f.countColorIn(.{ .x = 46, .y = 130, .w = 24, .h = 24 }, t.colors.on_surface_variant) > 0); // item 1's icon
 }
