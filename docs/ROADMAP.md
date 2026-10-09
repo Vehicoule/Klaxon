@@ -149,7 +149,7 @@ AT-SPI registry daemon (absent on the dev Mac).
 - Gallery migrated to M3 roles; state layers replace hardcoded hover colors.
 - P1 widgets consume tokens (`theme: Theme` in the options struct, default `theme.light`); P0 widgets migrate progressively.
 
-### 2d-0.5. Platform adaptation tokens (desktop density) — IN PROGRESS (PR #18 + #19 merged; PR #20 cursors open; PR 4 migration next)
+### 2d-0.5. Platform adaptation tokens (desktop density) — DONE (PR #18 tokens, #19 scrollbar styles, #20 cursors, #21 focus ring + gallery density switch)
 
 M3E is mobile-first; the desktop gap is filled by a token layer, never by per-widget
 decisions: `Theme.platform` — control heights (48 mobile / 32-40 desktop), spacing scale,
@@ -192,7 +192,7 @@ Oppo navbars etc.) are absorbed as options/variants — never as a second visual
 (e.g. NavBar `indicator_style: .pill | .underline | .dot`, free item count, configurable
 height); a strong enough pattern is promoted to a framework variant.
 
-### 2d.2. Widgets — Inputs M3E (batch 2) — PLANNED
+### 2d.2. Widgets — Inputs M3E (batch 2) — IN PROGRESS (PR A: buttons x5 next)
 
 Buttons ×5 (elevated / filled / filled-tonal / outlined / text), icon buttons ×4,
 checkbox / radio / switch / slider M3E, chips ×5 (assist / elevated / filter / input /
