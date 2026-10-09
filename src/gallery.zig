@@ -39,6 +39,7 @@ const chip_w = widgets.chip;
 const text_field_w = widgets.text_field;
 const card_w = widgets.card;
 const list_item_w = widgets.list_item;
+const menu_w = widgets.menu;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -72,6 +73,7 @@ const Refs = struct {
     card_m3e: *Node, // the clickable M3E card (Cards section)
     li_m3e: *Node, // the clickable M3E list item (List items section)
     li_m3e_sel: *Node, // the selected M3E list item (List items section)
+    menu_m3e: *Node, // the M3E dropdown menu (Menus section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -127,6 +129,9 @@ pub const Gallery = struct {
     card_press: *state.Signal(u32), // the clickable card's counter
     li_press: *state.Signal(u32), // the clickable list item's counter
     li_selected: *state.Signal(bool), // the selected list item's state
+    // the menu's signals (M3E section, 2d.3 PR D2)
+    menu_open: *state.Signal(bool), // the menu's open state (toggled by the anchor)
+    menu_select: *state.Signal(u32), // the menu's selection counter
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -225,6 +230,10 @@ pub const Gallery = struct {
         errdefer g.li_press.deinit();
         g.li_selected = try state.Signal(bool).init(allocator, false);
         errdefer g.li_selected.deinit();
+        g.menu_open = try state.Signal(bool).init(allocator, false);
+        errdefer g.menu_open.deinit();
+        g.menu_select = try state.Signal(u32).init(allocator, 0);
+        errdefer g.menu_select.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -345,6 +354,8 @@ pub const Gallery = struct {
         g.card_press.deinit();
         g.li_press.deinit();
         g.li_selected.deinit();
+        g.menu_open.deinit();
+        g.menu_select.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -387,6 +398,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Text fields (M3E)", try buildTextFieldsSection(g, theme)));
     content.add(try section(a, theme, "Cards (M3E)", try buildCardsSection(g, theme)));
     content.add(try section(a, theme, "List items (M3E)", try buildListItemsSection(g, theme)));
+    content.add(try section(a, theme, "Menus (M3E)", try buildMenusSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -751,6 +763,23 @@ fn buildListItemsSection(g: *Gallery, theme: Theme) !*Node {
     li_row.add(try text_w.BoundText(u32).text(a, g.li_press, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(li_row);
     return col;
+}
+
+/// Menus (M3E, batch 2d.3 PR D2): an M3E dropdown menu anchored to an M3E
+/// button — the anchor opens/closes it, selecting an item fires the counter.
+fn buildMenusSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    const anchor = try button_w.button(a, .{ .fn_ptr = menuOpenCb, .userdata = g }, .{ .label = "Open menu", .icon = .arrow_down, .theme = theme });
+    const m = try menu_w.menu(a, anchor, &.{
+        .{ .label = "Copy", .leading_icon = .star },
+        .{ .label = "Paste", .trailing_text = "Ctrl+V" },
+        .{ .label = "Delete", .enabled = false },
+    }, g.menu_open, .{ .fn_ptr = menuSelectCb, .userdata = g }, .{ .theme = theme });
+    g.refs.menu_m3e = m;
+    row.add(m);
+    row.add(try text_w.BoundText(u32).text(a, g.menu_select, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    return row;
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.
@@ -1239,6 +1268,16 @@ fn listItemPressCb(userdata: ?*anyopaque) void {
     g.li_press.set(g.li_press.peek() + 1);
 }
 
+fn menuOpenCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.menu_open.set(!g.menu_open.peek()); // the anchor button toggles the menu
+}
+
+fn menuSelectCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.menu_select.set(g.menu_select.peek() + 1);
+}
+
 fn chipCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.chip_sel.set(!g.chip_sel.peek()); // the Chip widget only fires callbacks
@@ -1646,6 +1685,38 @@ test "gallery: the M3E list item fires on click; its selection follows the signa
     try std.testing.expectEqual(false, g.refs.li_m3e_sel.semantics.?.checked.?);
     g.li_selected.set(true);
     try std.testing.expectEqual(true, g.refs.li_m3e_sel.semantics.?.checked.?);
+}
+
+test "gallery: the M3E menu opens via the anchor, selects an item and closes" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Menus section sits below the List items section
+    const m = g.refs.menu_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, m.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // the anchor (the menu's first child) fills the menu's bounds: click it
+    const ab = m.children.items[0].bounds;
+    try std.testing.expect(!g.menu_open.peek());
+    try std.testing.expect(!menu_w.isOpen(m));
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = ab.x + ab.w / 2, .y = ab.y + ab.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = ab.x + ab.w / 2, .y = ab.y + ab.h / 2 - sy });
+    try std.testing.expect(g.menu_open.peek()); // opened via the anchor
+    try std.testing.expect(menu_w.isOpen(m));
+    try std.testing.expect(m.children.items[1].visible); // the item rows show
+    // the panel's first item row sits below the anchor (overlay): click it
+    const item0 = m.children.items[1].bounds;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = item0.x + 10, .y = item0.y + item0.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = item0.x + 10, .y = item0.y + item0.h / 2 - sy });
+    try std.testing.expectEqual(@as(u32, 1), g.menu_select.peek()); // the selection fired
+    try std.testing.expectEqual(@as(usize, 0), menu_w.selectedIndex(m));
+    try std.testing.expect(!g.menu_open.peek()); // closed after the selection
+    try std.testing.expect(!menu_w.isOpen(m));
+    try std.testing.expect(!m.children.items[1].visible);
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
