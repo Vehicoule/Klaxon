@@ -521,8 +521,9 @@ test "golden: a disabled split button paints the OnSurface@0.10 container + @0.3
     const lead_w = sz.w - between - tw;
     try std.testing.expectEqual(cont, f.pixelAt(24, 40));
     // the label ink: on_surface_variant @ 0.38 over the container (a double
-    // translucent blend — the raster's rounding is ±1, hence approx)
+    // translucent blend — the raster's rounding is ±1; count pixels within
+    // ±2 over the whole label zone: glyph positions are platform-dependent,
+    // so no single-pixel assertion)
     const dis = golden.blendOver(ui.paint.withAlphaScaled(t.colors.on_surface_variant, 0.38), cont);
-    try golden.expectPixelApprox(f, 38, 34, dis);
-    try std.testing.expect(f.countColorApproxIn(.{ .x = 24, .y = 30, .w = lead_w, .h = 20 }, dis) > 0);
+    try std.testing.expect(f.countColorApproxIn(.{ .x = 24, .y = 30, .w = lead_w, .h = 20 }, dis) > 4);
 }
