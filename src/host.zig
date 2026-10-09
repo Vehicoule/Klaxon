@@ -134,20 +134,33 @@ pub const Host = struct {
     /// system cursor. Fail-soft: without a video driver the creation returns
     /// null and cursors are simply never set.
     fn updateCursor(host: *Host) void {
-        if (!host.cursors or host.cursors_unavailable) return;
+        if (host.cursors_unavailable) return;
+        if (!host.cursors) {
+            // disabled (mobile preset): restore the default arrow once
+            if (host.current_cursor != .default) {
+                const cur = host.cursorFor(.default) orelse return;
+                if (!sdl.c.SDL_SetCursor(cur)) return;
+                host.current_cursor = .default;
+            }
+            return;
+        }
         const want = input_mod.cursorForNode(host.input.hoveredNode());
         if (want == host.current_cursor) return;
-        const idx: usize = @backingInt(want);
-        const cur = host.cursor_cache[idx] orelse blk: {
-            const created = sdl.c.SDL_CreateSystemCursor(sdlSystemCursor(want)) orelse {
-                host.cursors_unavailable = true; // headless: no cursors
-                return;
-            };
-            host.cursor_cache[idx] = created;
-            break :blk created;
-        };
+        const cur = host.cursorFor(want) orelse return;
         if (!sdl.c.SDL_SetCursor(cur)) return;
         host.current_cursor = want;
+    }
+
+    /// The SDL cursor for a shape (created lazily, cached).
+    fn cursorFor(host: *Host, c: input_mod.PointerCursor) ?*sdl.c.SDL_Cursor {
+        const idx: usize = @backingInt(c);
+        if (host.cursor_cache[idx]) |cur| return cur;
+        const created = sdl.c.SDL_CreateSystemCursor(sdlSystemCursor(c)) orelse {
+            host.cursors_unavailable = true; // headless: no cursors
+            return null;
+        };
+        host.cursor_cache[idx] = created;
+        return created;
     }
 
     pub fn deinit(host: *Host) void {
