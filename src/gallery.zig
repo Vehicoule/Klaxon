@@ -771,18 +771,20 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
         .item_height = 36,
     });
     g.refs.list_10k = list;
-    const list_row = try layout.row(a, .{ .gap = 8 });
+    // A Stack inside the bounding box: the scrollbar sits at the list's right
+    // edge — classic (mobile) takes 8dp at the end, overlay (desktop) floats
+    // over the content with no layout space. The scrollbar's parent is the
+    // stack (the list's viewport bounds), so the overlay track lands ON the
+    // content and stays hit-testable + draggable. The box bounds the height
+    // (the Scrollbar fills max_h; the content Column is vertically unbounded).
     const list_box = try layout.constrainedBox(a, .{ .max_w = 880, .max_h = 260 });
-    list_box.add(list);
-    list_row.add(list_box);
-    // The Scrollbar fills max_h like the lists — bound it (the content
-    // Column is vertically unbounded inside the ScrollView).
+    const list_stack = try layout.stack(a, .{ .alignment = .top_right });
+    list_stack.add(list);
     const sb = try widgets.scrollbar.scrollbar(a, .{ .scroll = list, .theme = theme, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
     g.refs.sb_list = sb;
-    const sb_box = try layout.constrainedBox(a, .{ .max_h = 260 });
-    sb_box.add(sb);
-    list_row.add(sb_box);
-    col.add(list_row);
+    list_stack.add(sb);
+    list_box.add(list_stack);
+    col.add(list_box);
     col.add(try text_w.text(a, "GridView — 500 items, 3 columns + Scrollbar", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     const grid = try widgets.grid_view.gridView(a, .{
         .item_count = 500,
@@ -791,16 +793,16 @@ fn buildScrollSection(g: *Gallery, theme: Theme) !*Node {
         .item_height = 44,
     });
     g.refs.grid = grid;
-    const grid_row = try layout.row(a, .{ .gap = 8 });
+    // Same stack structure as the list: the scrollbar overlays the grid's
+    // right edge (desktop) or sits at its end (mobile classic).
     const grid_box = try layout.constrainedBox(a, .{ .max_w = 880, .max_h = 160 });
-    grid_box.add(grid);
-    grid_row.add(grid_box);
+    const grid_stack = try layout.stack(a, .{ .alignment = .top_right });
+    grid_stack.add(grid);
     const gsb = try widgets.scrollbar.scrollbar(a, .{ .scroll = grid, .theme = theme, .track_color = theme.colors.outline_variant, .thumb_color = theme.colors.on_surface_variant });
     g.refs.sb_grid = gsb;
-    const gsb_box = try layout.constrainedBox(a, .{ .max_h = 160 });
-    gsb_box.add(gsb);
-    grid_row.add(gsb_box);
-    col.add(grid_row);
+    grid_stack.add(gsb);
+    grid_box.add(grid_stack);
+    col.add(grid_box);
     col.add(try text_w.text(a, "ScrollView — single child, wheel + drag", .{ .size = 12, .color = theme.colors.on_surface_variant }));
     const sv = try widgets.scroll_view.scrollView(a, .{});
     const sv_col = try layout.column(a, .{ .gap = 4 });
@@ -1107,6 +1109,13 @@ test "gallery: the density toggle switches to the desktop platform presets" {
     // the rebuilt scrollbars are overlay: no layout space (macOS-style)
     try std.testing.expectEqual(@as(f32, 0), g.refs.sb_list.measure(.{ .max_w = 400, .max_h = 260 }).w);
     try std.testing.expectEqual(@as(f32, 0), g.refs.sb_grid.measure(.{ .max_w = 400, .max_h = 160 }).w);
+    // the overlay track lands on the content's right edge (the stack is the
+    // list's viewport): the hit zone covers the last 8dp of the list
+    const lb = g.refs.list_10k.bounds;
+    const hb = g.refs.sb_list.vtable.hit_bounds.?(g.refs.sb_list);
+    try std.testing.expectEqual(lb.x + lb.w - 8, hb.x);
+    try std.testing.expectEqual(lb.y, hb.y);
+    try std.testing.expectEqual(@as(f32, 260), hb.h);
 }
 
 test "gallery: the chip toggles its selection signal" {
