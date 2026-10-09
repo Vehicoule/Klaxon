@@ -37,6 +37,8 @@ const switch_w = widgets.@"switch";
 const slider_w = widgets.slider;
 const chip_w = widgets.chip;
 const text_field_w = widgets.text_field;
+const card_w = widgets.card;
+const list_item_w = widgets.list_item;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -67,6 +69,9 @@ const Refs = struct {
     cb_m3e_btn: *Node, // the M3E checkbox (Selection controls section)
     chip_m3e_filter: *Node, // the M3E filter chip (Chips section)
     tf_m3e: [5]*Node, // the M3E text fields (Text fields section)
+    card_m3e: *Node, // the clickable M3E card (Cards section)
+    li_m3e: *Node, // the clickable M3E list item (List items section)
+    li_m3e_sel: *Node, // the selected M3E list item (List items section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -118,6 +123,10 @@ pub const Gallery = struct {
     // the chips' signals (M3E section, 2d.2 PR C1)
     chip_filter: *state.Signal(bool), // filter chip, clickable (unselected)
     chip_filter_on: *state.Signal(bool), // filter chip, selected
+    // the cards + list items' signals (M3E sections, 2d.3 PR D1)
+    card_press: *state.Signal(u32), // the clickable card's counter
+    li_press: *state.Signal(u32), // the clickable list item's counter
+    li_selected: *state.Signal(bool), // the selected list item's state
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -210,6 +219,12 @@ pub const Gallery = struct {
         errdefer g.chip_filter.deinit();
         g.chip_filter_on = try state.Signal(bool).init(allocator, true);
         errdefer g.chip_filter_on.deinit();
+        g.card_press = try state.Signal(u32).init(allocator, 0);
+        errdefer g.card_press.deinit();
+        g.li_press = try state.Signal(u32).init(allocator, 0);
+        errdefer g.li_press.deinit();
+        g.li_selected = try state.Signal(bool).init(allocator, false);
+        errdefer g.li_selected.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -327,6 +342,9 @@ pub const Gallery = struct {
         g.radio_m3e.deinit();
         g.chip_filter.deinit();
         g.chip_filter_on.deinit();
+        g.card_press.deinit();
+        g.li_press.deinit();
+        g.li_selected.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -367,6 +385,8 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Selection controls (M3E)", try buildSelectionSection(g, theme)));
     content.add(try section(a, theme, "Chips (M3E)", try buildChipsSection(g, theme)));
     content.add(try section(a, theme, "Text fields (M3E)", try buildTextFieldsSection(g, theme)));
+    content.add(try section(a, theme, "Cards (M3E)", try buildCardsSection(g, theme)));
+    content.add(try section(a, theme, "List items (M3E)", try buildListItemsSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -677,6 +697,59 @@ fn buildTextFieldsSection(g: *Gallery, theme: Theme) !*Node {
         g.refs.tf_m3e[i] = f;
         col.add(f);
     }
+    return col;
+}
+
+/// Cards (M3E, batch 2d.3 PR D1): the 3 variants in a row + a clickable card
+/// (counter) + a disabled card.
+fn buildCardsSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    const row = try layout.row(a, .{ .gap = 12 });
+    const variants = [_]card_w.CardVariant{ .filled, .elevated, .outlined };
+    const names = [_][]const u8{ "Filled", "Elevated", "Outlined" };
+    for (variants, names) |v, name| {
+        const c = try card_w.card(a, null, .{ .variant = v, .theme = theme });
+        c.add(try text_w.text(a, name, .{ .size = 14, .color = theme.colors.on_surface }));
+        row.add(c);
+    }
+    col.add(row);
+    // a clickable card with its counter beside it
+    const click_card = try card_w.card(a, .{ .fn_ptr = cardPressCb, .userdata = g }, .{ .theme = theme });
+    g.refs.card_m3e = click_card;
+    click_card.add(try text_w.text(a, "Clickable card", .{ .size = 14, .color = theme.colors.on_surface }));
+    const cc = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    cc.add(click_card);
+    cc.add(try text_w.BoundText(u32).text(a, g.card_press, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(cc);
+    // disabled
+    const dis = try card_w.card(a, null, .{ .enabled = false, .theme = theme });
+    dis.add(try text_w.text(a, "Disabled card", .{ .size = 14, .color = theme.colors.on_surface }));
+    col.add(dis);
+    return col;
+}
+
+/// List items (M3E, batch 2d.3 PR D1): one-line (leading icon), two-line
+/// (supporting + trailing icon), three-line (overline), selected (signal),
+/// clickable (counter), disabled.
+fn buildListItemsSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 0 });
+    col.add(try list_item_w.listItem(a, null, null, .{ .headline = "One line", .leading_icon = .home, .theme = theme }));
+    col.add(try list_item_w.listItem(a, null, null, .{ .headline = "Two lines", .supporting = "Supporting text", .lines = .two, .trailing_icon = .chevron_right, .theme = theme }));
+    col.add(try list_item_w.listItem(a, null, null, .{ .overline = "Overline", .headline = "Three lines", .supporting = "Supporting text", .lines = .three, .theme = theme }));
+    const sel_li = try list_item_w.listItem(a, g.li_selected, null, .{ .headline = "Selected (signal)", .leading_icon = .check, .theme = theme });
+    g.refs.li_m3e_sel = sel_li;
+    col.add(sel_li);
+    const click_li = try list_item_w.listItem(a, null, .{ .fn_ptr = listItemPressCb, .userdata = g }, .{ .headline = "Clickable", .trailing_text = "tap", .theme = theme });
+    g.refs.li_m3e = click_li;
+    col.add(click_li);
+    col.add(try list_item_w.listItem(a, null, null, .{ .enabled = false, .headline = "Disabled", .supporting = "Supporting text", .lines = .two, .theme = theme }));
+    // the clickable row's counter
+    const li_row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    li_row.add(try list_item_w.listItem(a, null, .{ .fn_ptr = listItemPressCb, .userdata = g }, .{ .headline = "Counter row", .leading_icon = .plus, .trailing_icon = .close, .trailing_text = "both", .theme = theme }));
+    li_row.add(try text_w.BoundText(u32).text(a, g.li_press, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(li_row);
     return col;
 }
 
@@ -1156,6 +1229,16 @@ fn pressCb(userdata: ?*anyopaque) void {
     g.press_count.set(g.press_count.peek() + 1);
 }
 
+fn cardPressCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.card_press.set(g.card_press.peek() + 1);
+}
+
+fn listItemPressCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.li_press.set(g.li_press.peek() + 1);
+}
+
 fn chipCb(userdata: ?*anyopaque) void {
     const g = galleryOf(userdata);
     g.chip_sel.set(!g.chip_sel.peek()); // the Chip widget only fires callbacks
@@ -1523,6 +1606,46 @@ test "gallery: the M3E text field's entry survives a theme switch" {
     router.dispatchPointer(g.root, .{ .phase = .up, .x = t.x + t.w / 2, .y = t.y + t.h / 2 });
     // the entry survived the rebuild
     try std.testing.expectEqualStrings("typed", text_field_w.text(g.refs.tf_m3e[0]));
+}
+
+test "gallery: the M3E card fires its callback on click" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Cards section sits below the Text fields section
+    const b = g.refs.card_m3e.bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    try std.testing.expectEqual(@as(u32, 0), g.card_press.peek());
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqual(@as(u32, 1), g.card_press.peek());
+}
+
+test "gallery: the M3E list item fires on click; its selection follows the signal" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the List items section sits below the Cards section
+    const b = g.refs.li_m3e.bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    try std.testing.expectEqual(@as(u32, 0), g.li_press.peek());
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqual(@as(u32, 1), g.li_press.peek());
+    // the selected item follows the external signal (a11y checked syncs)
+    try std.testing.expectEqual(false, g.refs.li_m3e_sel.semantics.?.checked.?);
+    g.li_selected.set(true);
+    try std.testing.expectEqual(true, g.refs.li_m3e_sel.semantics.?.checked.?);
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
