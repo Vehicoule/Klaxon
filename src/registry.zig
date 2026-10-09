@@ -36,6 +36,8 @@ const text_field_w = @import("widgets/text_field.zig");
 const card_w = @import("widgets/card.zig");
 const list_item_w = @import("widgets/list_item.zig");
 const menu_w = @import("widgets/menu.zig");
+const segmented_button_w = @import("widgets/segmented_button.zig");
+const split_button_w = @import("widgets/split_button.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -93,7 +95,9 @@ pub const WidgetEntry = struct {
 /// chips (2d.2 PR C1: the 5 M3E chip variants) + text field (2d.2 PR C2: the
 /// M3E text field, filled / outlined) + cards (2d.3 PR D1: the 3 M3E card
 /// variants) + list item (2d.3 PR D1: the M3E list item, 1-3 lines) +
-/// menu (2d.3 PR D2: the M3E dropdown menu — anchor slot + item rows).
+/// menu (2d.3 PR D2: the M3E dropdown menu — anchor slot + item rows) +
+/// segmented button (2d.3 PR D3: the M3E single-choice segmented button
+/// row) + split button (2d.3 PR D3: the M3E split button, filled, 5 sizes).
 /// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
@@ -115,6 +119,8 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "card", .category = "display", .build = buildCard, .schema = schemaCard },
     .{ .name = "list_item", .category = "display", .build = buildListItem, .schema = schemaListItem },
     .{ .name = "menu", .category = "display", .build = buildMenu, .schema = schemaMenu },
+    .{ .name = "segmented_button", .category = "input", .build = buildSegmentedButton, .schema = schemaSegmentedButton },
+    .{ .name = "split_button", .category = "input", .build = buildSplitButton, .schema = schemaSplitButton },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -635,6 +641,61 @@ fn parseMenuItems(allocator: std.mem.Allocator, v: Value) ![]menu_w.MenuItem {
     }
 }
 
+/// M3E segmented button (2d.3 PR D3): the segments are internal chrome —
+/// document children never serialize. The selection is ALWAYS live (like
+/// the text field, PR #26): a plain document keeps the default 0 and clicks
+/// round-trip. "items" is an option array parsed manually (optionsFromValue
+/// cannot map []SegmentedItem).
+fn buildSegmentedButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const sopts = try value_mod.optionsFromValue(segmented_button_w.SegmentedButtonOptions, opts, null, null);
+    const items = try parseSegmentedItems(allocator, opts.get("items") orelse Value.null);
+    errdefer allocator.free(items);
+    const sig = try buildUsizeSignal(allocator, opts, ctx); // "selected" (default 0)
+    const n = try segmented_button_w.segmentedButton(allocator, items, sig, null, sopts);
+    allocator.free(items); // the factory copies the labels
+    return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal }, .skip_children = true };
+}
+
+/// Parse the "items" option: an array of {label, icon?, enabled?} objects.
+/// The strings are BORROWED from the options snapshot (the factory copies
+/// them).
+fn parseSegmentedItems(allocator: std.mem.Allocator, v: Value) ![]segmented_button_w.SegmentedItem {
+    switch (v) {
+        .null => return allocator.alloc(segmented_button_w.SegmentedItem, 0),
+        .array => |arr| {
+            const items = try allocator.alloc(segmented_button_w.SegmentedItem, arr.len);
+            errdefer allocator.free(items);
+            for (arr, 0..) |iv, i| {
+                if (iv != .object) return error.ExpectedObject;
+                const label: []const u8 = if (iv.get("label")) |lv| switch (lv) {
+                    .string => |s| s,
+                    else => "",
+                } else "";
+                const icon: ?icon_w.IconName = if (iv.get("icon")) |lv| switch (lv) {
+                    .string => |s| std.meta.stringToEnum(icon_w.IconName, s) orelse return error.UnknownIcon,
+                    else => null,
+                } else null;
+                const enabled: bool = if (iv.get("enabled")) |ev| switch (ev) {
+                    .bool => |b| b,
+                    else => true,
+                } else true;
+                items[i] = .{ .label = label, .icon = icon, .enabled = enabled };
+            }
+            return items;
+        },
+        else => return error.ExpectedArray,
+    }
+}
+
+/// M3E split button (2d.3 PR D3): a leaf — the two halves are internal
+/// chrome (the label/icon are options data); document children never
+/// serialize. Clicks are app callbacks (not serializable).
+fn buildSplitButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const sopts = try value_mod.optionsFromValue(split_button_w.SplitButtonOptions, opts, null, null);
+    return .{ .node = try split_button_w.splitButton(allocator, null, null, sopts), .skip_children = true };
+}
+
 fn deinitTextSignal(p: *anyopaque) void {
     const s: *state.Signal(text_field_w.TextBuf) = @ptrCast(@alignCast(p));
     s.deinit(); // Signal.deinit frees itself (state.zig)
@@ -923,6 +984,20 @@ fn schemaMenu(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.appendSchemaProp(base, allocator, "open", .toggle, &.{}, .{ .bool = false });
 }
 
+fn schemaSegmentedButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // "items" is a structured array the inspector cannot edit generically
+    // yet (unsupported); "selected" (usize) is automatic (a number) and live
+    const base = try value_mod.schemaOf(segmented_button_w.SegmentedButtonOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "items", .unsupported, &.{}, .null);
+}
+
+fn schemaSplitButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // size (select), enabled (toggle), label (text), leading_icon/
+    // trailing_icon (select) — all automatic from the options type; theme is
+    // unsupported (global token set)
+    return value_mod.schemaOf(split_button_w.SplitButtonOptions, allocator);
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -996,7 +1071,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 30), widgets.len);
+    try std.testing.expectEqual(@as(usize, 32), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
@@ -1442,7 +1517,41 @@ test "registry: menu (M3E) round-trips (anchor slot + items, live open state, an
     try std.testing.expectEqualStrings(plain_doc, plain_out);
 }
 
-test "registry: card + list_item + menu (M3E) schemas expose the right editor kinds" {
+test "registry: segmented_button + split_button (M3E) round-trip (items + live selection, and plain)" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    // segmented_button: the "selected" option drives a live usize signal;
+    // the current selection round-trips; the items are preserved verbatim
+    const doc = "{\"name\":\"segmented_button\",\"options\":{\"items\":[{\"label\":\"Day\"},{\"label\":\"Week\",\"icon\":\"star\",\"enabled\":false}],\"selected\":1}}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    defer node.deinit();
+    try std.testing.expectEqual(@as(usize, 1), segmented_button_w.selectedIndex(node));
+    try std.testing.expectEqual(ui.semantics.Role.group, node.semantics.?.role);
+    try std.testing.expectEqualStrings("Week", node.semantics.?.value);
+    const out = try treeToJson(&ctx, node, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(doc, out);
+    // plain: no "selected" option -> the default 0 is live and round-trips
+    // (the export carries the current selection, like the text field)
+    const plain_doc = "{\"name\":\"segmented_button\",\"options\":{\"items\":[{\"label\":\"Day\"}]}}";
+    const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
+    defer plain.deinit();
+    try std.testing.expectEqual(@as(usize, 0), segmented_button_w.selectedIndex(plain));
+    const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out);
+    try std.testing.expectEqualStrings("{\"name\":\"segmented_button\",\"options\":{\"items\":[{\"label\":\"Day\"}],\"selected\":0}}", plain_out);
+    // split_button: every field is options data (no live state)
+    const sdoc = "{\"name\":\"split_button\",\"options\":{\"size\":\"medium\",\"enabled\":false,\"label\":\"Save\",\"leading_icon\":\"star\",\"trailing_icon\":\"arrow_down\"}}";
+    const snode = try treeFromJson(&ctx, std.testing.allocator, sdoc);
+    defer snode.deinit();
+    try std.testing.expectEqual(ui.semantics.Role.button, snode.semantics.?.role);
+    try std.testing.expect(snode.semantics.?.disabled);
+    const sout = try treeToJson(&ctx, snode, std.testing.allocator);
+    defer std.testing.allocator.free(sout);
+    try std.testing.expectEqualStrings(sdoc, sout);
+}
+
+test "registry: card + list_item + menu + segmented_button + split_button (M3E) schemas expose the right editor kinds" {
     const card_schema = try byName("card").?.schema(std.testing.allocator);
     defer {
         for (card_schema) |*p| p.deinit(std.testing.allocator);
@@ -1471,6 +1580,25 @@ test "registry: card + list_item + menu (M3E) schemas expose the right editor ki
     try std.testing.expectEqual(value_mod.EditorKind.unsupported, findProp(menu_schema, "items").?);
     try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(menu_schema, "open").?);
     try std.testing.expect(findProp(menu_schema, "theme") == null); // global token set
+    const seg_schema = try byName("segmented_button").?.schema(std.testing.allocator);
+    defer {
+        for (seg_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(seg_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.unsupported, findProp(seg_schema, "items").?);
+    try std.testing.expectEqual(value_mod.EditorKind.number, findProp(seg_schema, "selected").?);
+    try std.testing.expect(findProp(seg_schema, "theme") == null); // global token set
+    const split_schema = try byName("split_button").?.schema(std.testing.allocator);
+    defer {
+        for (split_schema) |*p| p.deinit(std.testing.allocator);
+        std.testing.allocator.free(split_schema);
+    }
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(split_schema, "size").?);
+    try std.testing.expectEqual(value_mod.EditorKind.toggle, findProp(split_schema, "enabled").?);
+    try std.testing.expectEqual(value_mod.EditorKind.text, findProp(split_schema, "label").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(split_schema, "leading_icon").?);
+    try std.testing.expectEqual(value_mod.EditorKind.select, findProp(split_schema, "trailing_icon").?);
+    try std.testing.expect(findProp(split_schema, "theme") == null); // global token set
 }
 
 test "registry: checkbox / slider / radio (M3E) round-trip with their live values" {

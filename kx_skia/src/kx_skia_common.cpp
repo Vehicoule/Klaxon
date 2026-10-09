@@ -209,6 +209,19 @@ void kx_stroke_rrect(kx_ctx* ctx, float x, float y, float w, float h, float radi
     ctx->canvas->drawRoundRect(SkRect::MakeXYWH(x, y, w, h), radius, radius, paint);
 }
 
+void kx_stroke_rrect_corners(kx_ctx* ctx, float x, float y, float w, float h, float tl, float tr, float br, float bl, float stroke_w, uint32_t rgba) {
+    if (!ctx || !ctx->canvas || stroke_w <= 0) return;
+    SkPaint paint;
+    paint.setColor(kx_to_skcolor(rgba));
+    paint.setAntiAlias(true);
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeWidth(stroke_w);
+    SkRRect rrect;
+    const SkVector radii[4] = {{tl, tl}, {tr, tr}, {br, br}, {bl, bl}};
+    rrect.setRectRadii(SkRect::MakeXYWH(x, y, w, h), radii);
+    ctx->canvas->drawRRect(rrect, paint);
+}
+
 void kx_stroke_polyline(kx_ctx* ctx, const float* xs, const float* ys, int count, float stroke_w, bool round_cap, uint32_t rgba) {
     if (!ctx || !ctx->canvas || !xs || !ys || count < 2 || stroke_w <= 0) return;
     SkPaint paint;
@@ -274,7 +287,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.7.0";
+    return "0.8.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {

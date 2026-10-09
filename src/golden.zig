@@ -91,6 +91,23 @@ pub const Frame = struct {
         const h: u64 = @intCast(@as(i32, @intFromFloat(r.h)));
         return w * h - f.countColorIn(rect, color);
     }
+
+    /// Count pixels within ±2 per channel of `color` inside a rect (clipped
+    /// to frame) — the raster's integer rounding of translucent blends makes
+    /// exact matches unreliable over a translucent container.
+    pub fn countColorApproxIn(f: Frame, rect: Rect, color: Color) u64 {
+        const r = f.clipToFrame(rect);
+        var n: u64 = 0;
+        var y = @as(i32, @intFromFloat(r.y));
+        while (y < @as(i32, @intFromFloat(r.y + r.h))) : (y += 1) {
+            var x = @as(i32, @intFromFloat(r.x));
+            while (x < @as(i32, @intFromFloat(r.x + r.w))) : (x += 1) {
+                const c = f.pixelAt(x, y);
+                if (channelDiff(c, color, 24) <= 2 and channelDiff(c, color, 16) <= 2 and channelDiff(c, color, 8) <= 2) n += 1;
+            }
+        }
+        return n;
+    }
 };
 
 /// Offscreen raster renderer — owns the kx ctx. For interactive golden tests:
