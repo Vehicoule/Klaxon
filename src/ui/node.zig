@@ -125,6 +125,12 @@ pub const Node = struct {
     // clipped to it (the surface is retained between frames).
     damage: Rect = .{},
     damage_valid: bool = false,
+    /// Paint that extends BEYOND the bounds (a floating label's upper half,
+    /// a cutout stroke margin): markDirty damages the bounds EXPANDED by
+    /// these insets (negative values would shrink — never set them). Widgets
+    /// painting outside their bounds set this so focus/state changes repaint
+    /// the overflow too (2d.2 PR C2: the outlined text field's cutout label).
+    damage_overflow: layout_mod.EdgeInsets = .{},
 
     pub fn create(allocator: std.mem.Allocator, vtable: *const VTable) !*Node {
         const node = try allocator.create(Node);
@@ -200,12 +206,18 @@ pub const Node = struct {
         unionDamage(n, r);
     }
 
-    /// Mark this node (and its ancestors) dirty. The node's own bounds —
-    /// mapped to its visible position through any transformed ancestors —
-    /// are unioned into the root's damage region.
+    /// Mark this node (and its ancestors) dirty. The node's own bounds
+    /// (expanded by damage_overflow) — mapped to its visible position through
+    /// any transformed ancestors — are unioned into the root's damage region.
     pub fn markDirty(node: *Node) void {
         markDirtyUp(node);
-        damageRectUp(node, node.bounds);
+        const o = node.damage_overflow;
+        damageRectUp(node, .{
+            .x = node.bounds.x - o.left,
+            .y = node.bounds.y - o.top,
+            .w = node.bounds.w + o.left + o.right,
+            .h = node.bounds.h + o.top + o.bottom,
+        });
     }
 
     /// Mark dirty + record an explicit damaged rect (given in the node's

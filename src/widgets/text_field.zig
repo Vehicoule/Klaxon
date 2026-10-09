@@ -89,6 +89,9 @@ const outline_w_focus: f32 = 2;
 const caret_w: f32 = 1;
 const cutout_pad: f32 = 4; // AboveLabelHorizontalPadding
 const supporting_top: f32 = 4; // SupportingTopPadding
+/// The outlined cutout label's paint overflow above the bounds: half the
+/// body_small line box (8) + the focused stroke half (1) + the AA margin.
+const cutout_overflow: f32 = 10;
 
 const TextFieldState = struct {
     buf: std.array_list.Managed(u8), // kept null-terminated: items[len] == 0
@@ -187,8 +190,9 @@ pub fn labelRect(n: *Node) ?Rect {
     return .{ .x = x, .y = y, .w = w, .h = style.line_height };
 }
 
-/// The input text's line box (position; the width is the content's). The text
-/// sits below the floated label in the filled variant, centered otherwise.
+/// The input text's line box (the LTR anchor; the width is the content's).
+/// The text sits below the floated label in the filled variant, centered
+/// otherwise. Paint mirrors the anchor (with the run width) in RTL.
 pub fn textRect(n: *Node) Rect {
     const s = stateOf(n);
     const t = s.opts.theme;
@@ -199,10 +203,7 @@ pub fn textRect(n: *Node) Rect {
         b.y + top_pad_label + bodySmall(t).line_height
     else
         b.y + (container_h - line_h) / 2;
-    const rtl = ui.i18n.direction() == .rtl;
-    var x = b.x + leftOffset(s);
-    if (rtl) x = b.x + b.w - (x - b.x); // the run's end is pinned (see paint)
-    return .{ .x = x, .y = y, .w = 0, .h = line_h };
+    return .{ .x = b.x + leftOffset(s), .y = y, .w = 0, .h = line_h };
 }
 
 /// The resolved colors for the current state (priority: disabled > error >
@@ -432,11 +433,13 @@ fn textFieldOnPointer(n: *Node, ev: input.PointerEvent) bool {
     return false;
 }
 
-/// An edit happened: repaint, sync the a11y value, mirror the signal, fire
-/// the callback.
+/// An edit happened: re-layout (the measured width is content-driven),
+/// repaint, sync the a11y value, mirror the signal, fire the callback.
 fn applyEdit(n: *Node, s: *TextFieldState) void {
+    n.markLayoutDirty();
     n.markDirty();
     if (n.semantics) |sem| sem.value = s.text(); // a11y: the value follows edits
+    ui.semantics.notifyControlChanged(n); // a11y: the control's value changed
     if (s.sig) |sig| sig.set(bufFromText(s.buf.items)); // the live mirror
     if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
 }
@@ -566,6 +569,11 @@ pub fn textField(allocator: std.mem.Allocator, sig: ?*ui.state.Signal(TextBuf), 
     if (sig) |sg| {
         sg.subscribe(.{ .callback = .{ .fn_ptr = textFieldSyncCb, .userdata = node } }); // external edits land in the buffer
     }
+    // The outlined cutout label paints above the bounds (half its line box +
+    // the stroke margin): markDirty must damage that overflow too.
+    if (opts.variant == .outlined and opts.label.len > 0) {
+        node.damage_overflow = .{ .top = cutout_overflow };
+    }
     return node;
 }
 
@@ -573,6 +581,19 @@ pub fn textField(allocator: std.mem.Allocator, sig: ?*ui.state.Signal(TextBuf), 
 /// the next edit or deinit).
 pub fn text(n: *Node) [:0]const u8 {
     return stateOf(n).text();
+}
+
+/// Replace the text (the gallery restores entries across theme rebuilds).
+pub fn setText(n: *Node, str: []const u8) void {
+    const s = stateOf(n);
+    s.buf.clearRetainingCapacity();
+    s.buf.appendSlice(str) catch @panic("klaxon: out of memory");
+    setSentinel(&s.buf);
+    n.markLayoutDirty();
+    n.markDirty();
+    if (n.semantics) |sem| sem.value = s.text();
+    ui.semantics.notifyControlChanged(n);
+    if (s.sig) |sig| sig.set(bufFromText(s.buf.items));
 }
 
 // --- tests ---
@@ -722,7 +743,29 @@ test "text_field: RTL mirrors the chrome (the label moves to the end side)" {
     // icon moved to the end side)
     try std.testing.expectEqual(@as(f32, 260 - (icon_size + icon_gap) - lw), lr.x);
     const tr = textRect(b);
-    try std.testing.expectEqual(@as(f32, 260 - (icon_size + icon_gap)), tr.x); // the run's end pinned
+    try std.testing.expectEqual(icon_size + icon_gap, tr.x); // the LTR anchor (paint mirrors it)
+}
+
+test "golden: RTL paints the input text at the end side" {
+    const i18n = try ui.i18n.I18n.init(std.testing.allocator, "en");
+    defer i18n.deinit();
+    try i18n.addArb("ar", "{\"x\":\"y\"}", .rtl);
+    ui.i18n.setCurrent(i18n);
+    defer ui.i18n.setCurrent(null);
+    try i18n.setLocale("ar");
+    const t = theme_mod.light;
+    const b = try textField(std.testing.allocator, null, null, null, .{ .initial = "Hi", .theme = t });
+    defer b.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 300, 80);
+    defer r.deinit();
+    b.layout(.{ .x = 20, .y = 12, .w = 260, .h = 56 });
+    r.paint(b, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    const m = ui.paint.measureText("Hi", 16, false);
+    // the run is end-aligned: ink at the right side, none where LTR paints
+    try std.testing.expect(f.countNotIn(.{ .x = 36, .y = 28, .w = m.width, .h = 24 }, 0xFFFFFFFF) == 0);
+    try std.testing.expect(f.countNotIn(.{ .x = 280 - m.width, .y = 28, .w = m.width, .h = 24 }, 0xFFFFFFFF) > 0);
 }
 
 test "golden: outlined field strokes the 1dp outline, transparent inside, expanded label" {

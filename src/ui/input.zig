@@ -309,6 +309,10 @@ pub const InputRouter = struct {
     }
 
     pub fn focus(self: *InputRouter, node: ?*Node) void {
+        // The previously focused node's focus styling (caret, focus border,
+        // unfloated label) must repaint — dirty it (its damage_overflow
+        // covers paint outside its bounds, e.g. a text field's cutout label).
+        if (self.focused) |old| if (old != node) old.markDirty();
         self.focused = node;
     }
 

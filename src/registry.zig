@@ -505,32 +505,46 @@ fn buildChip(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror
     return .{ .node = try chip_w.chip(allocator, null, null, copts), .skip_children = true };
 }
 
-/// M3E text field (2d.2 PR C2): a non-null "value" option drives a ctx-owned
-/// text signal (the live current text, mirrored both ways); without it, the
-/// text starts at the "initial" option. The widget is a leaf — document
-/// children never serialize.
+/// M3E text field (2d.2 PR C2): every registry field is editable, so every
+/// field gets a live binding — the serialized text is always the CURRENT
+/// buffer, read losslessly from the node (the fixed-size signal is only the
+/// two-way channel; reading it would truncate past 255 bytes). The live field
+/// is "value" when the document has one, "initial" when it only has that,
+/// else "value" (materialized on save — the checkbox convention). The widget
+/// is a leaf — document children never serialize.
 fn buildTextField(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const topts = try value_mod.optionsFromValue(text_field_w.TextFieldOptions, opts, null, null);
-    // a null "value" means the field default (no live signal)
-    const has_value = if (opts.get("value")) |v| v != .null else false;
-    if (has_value) {
-        const initial: []const u8 = switch (opts.get("value").?) {
+    const value_v = opts.get("value");
+    const initial_v = opts.get("initial");
+    const has_value = value_v != null and value_v.? != .null;
+    const has_initial = initial_v != null and initial_v.? != .null;
+    const field: []const u8 = if (has_value) "value" else if (has_initial) "initial" else "value";
+    const initial: []const u8 = if (has_value)
+        switch (value_v.?) {
             .string => |s| s,
             else => "",
-        };
-        const sig = try state.Signal(text_field_w.TextBuf).init(allocator, text_field_w.bufFromText(initial));
-        try ctx.track(sig, deinitTextSignal);
-        const n = try text_field_w.textField(allocator, sig, null, null, topts);
-        return .{ .node = n, .live = .{ .signal = sig, .field = "value", .read = readTextSignal } };
-    }
-    return .{ .node = try text_field_w.textField(allocator, null, null, null, topts) };
+        }
+    else if (has_initial)
+        switch (initial_v.?) {
+            .string => |s| s,
+            else => "",
+        }
+    else
+        "";
+    const sig = try state.Signal(text_field_w.TextBuf).init(allocator, text_field_w.bufFromText(initial));
+    try ctx.track(sig, deinitTextSignal);
+    const n = try text_field_w.textField(allocator, sig, null, null, topts);
+    // The signal mirror caps at 255 bytes (TextBuf = [256]u8, the two-way
+    // channel); the buffer is lossless — re-seed it when the initial text
+    // exceeds the mirror.
+    if (initial.len >= 256) text_field_w.setText(n, initial);
+    return .{ .node = n, .live = .{ .signal = @ptrCast(n), .field = field, .read = readTextFieldNode } };
 }
 
-fn readTextSignal(allocator: std.mem.Allocator, p: *anyopaque) anyerror!Value {
-    const s: *state.Signal(text_field_w.TextBuf) = @ptrCast(@alignCast(p));
-    const v = s.peek();
-    const len = std.mem.indexOfScalar(u8, &v, 0) orelse v.len;
-    return .{ .string = try allocator.dupe(u8, v[0..len]) }; // owned (Value.set takes ownership)
+/// The live text: the widget's CURRENT buffer (lossless), as an owned string.
+fn readTextFieldNode(allocator: std.mem.Allocator, p: *anyopaque) anyerror!Value {
+    const n: *Node = @ptrCast(@alignCast(p));
+    return .{ .string = try allocator.dupe(u8, text_field_w.text(n)) }; // owned (Value.set takes ownership)
 }
 
 fn deinitTextSignal(p: *anyopaque) void {
@@ -1203,7 +1217,7 @@ test "registry: text_field (M3E) round-trips (live value, and plain initial)" {
     const out2 = try treeToJson(&ctx, node, std.testing.allocator);
     defer std.testing.allocator.free(out2);
     try std.testing.expect(std.mem.indexOf(u8, out2, "\"value\":\"a@b.c!\"") != null);
-    // plain: no "value" → fixed initial text, no live binding
+    // plain: "initial" is the live field — it round-trips AND edits are saved
     const plain_doc = "{\"name\":\"text_field\",\"options\":{\"variant\":\"filled\",\"initial\":\"Hi\"}}";
     const plain = try treeFromJson(&ctx, std.testing.allocator, plain_doc);
     defer plain.deinit();
@@ -1211,6 +1225,33 @@ test "registry: text_field (M3E) round-trips (live value, and plain initial)" {
     defer std.testing.allocator.free(plain_out);
     try std.testing.expectEqualStrings(plain_doc, plain_out);
     try std.testing.expectEqualStrings("Hi", plain.semantics.?.value);
+    router.focus(plain);
+    _ = router.dispatchKey(.{ .kind = .text_input, .text = "!" });
+    const plain_out2 = try treeToJson(&ctx, plain, std.testing.allocator);
+    defer std.testing.allocator.free(plain_out2);
+    try std.testing.expect(std.mem.indexOf(u8, plain_out2, "\"initial\":\"Hi!\"") != null);
+    // no value/initial: the live "value" materializes on save (the checkbox
+    // convention: state fields appear once the tree is serialized)
+    const bare_doc = "{\"name\":\"text_field\",\"options\":{\"label\":\"Email\"}}";
+    const bare = try treeFromJson(&ctx, std.testing.allocator, bare_doc);
+    defer bare.deinit();
+    const bare_out = try treeToJson(&ctx, bare, std.testing.allocator);
+    defer std.testing.allocator.free(bare_out);
+    try std.testing.expectEqualStrings("{\"name\":\"text_field\",\"options\":{\"label\":\"Email\",\"value\":\"\"}}", bare_out);
+    // long text round-trips losslessly (the live value reads the widget's
+    // buffer, not the fixed-size signal mirror)
+    const long_text = blk: {
+        var t: [300]u8 = undefined;
+        @memset(&t, 'a');
+        break :blk &t;
+    };
+    const long_doc = try std.fmt.allocPrint(std.testing.allocator, "{{\"name\":\"text_field\",\"options\":{{\"value\":\"{s}\"}}}}", .{long_text});
+    defer std.testing.allocator.free(long_doc);
+    const long_node = try treeFromJson(&ctx, std.testing.allocator, long_doc);
+    defer long_node.deinit();
+    const long_out = try treeToJson(&ctx, long_node, std.testing.allocator);
+    defer std.testing.allocator.free(long_out);
+    try std.testing.expectEqualStrings(long_doc, long_out);
 }
 
 test "registry: text_field (M3E) schema exposes the right editor kinds" {
