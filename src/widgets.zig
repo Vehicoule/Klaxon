@@ -26,6 +26,8 @@
 // Selection controls (4): Checkbox / Radio / Switch / Slider M3E — Phase 2d.2
 // PR B2 (they replace the P0 checkbox/toggle/slider; the P0 fixtures stay
 // in input.zig for the legacy gallery sections).
+// Chips (5): the M3E chip variants (assist / elevated / filter / input /
+// suggestion) — Phase 2d.2 PR C1.
 // ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -40,6 +42,7 @@ pub const checkbox = @import("widgets/checkbox.zig");
 pub const radio = @import("widgets/radio.zig");
 pub const @"switch" = @import("widgets/switch.zig");
 pub const slider = @import("widgets/slider.zig");
+pub const chip = @import("widgets/chip.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");

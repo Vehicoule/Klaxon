@@ -35,6 +35,7 @@ const checkbox_w = widgets.checkbox;
 const radio_w = widgets.radio;
 const switch_w = widgets.@"switch";
 const slider_w = widgets.slider;
+const chip_w = widgets.chip;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -63,6 +64,7 @@ const Refs = struct {
     m3e_button: *Node, // the M3E filled button (Buttons M3E section)
     ib_heart: *Node, // the M3E filled icon toggle (Icon buttons M3E section)
     cb_m3e_btn: *Node, // the M3E checkbox (Selection controls section)
+    chip_m3e_filter: *Node, // the M3E filter chip (Chips section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -111,6 +113,9 @@ pub const Gallery = struct {
     sl_m3e: *state.Signal(f32), // slider, 0.25
     sl_dis: *state.Signal(f32), // slider, disabled
     radio_m3e: *state.Signal(usize), // the M3E radio group selection
+    // the chips' signals (M3E section, 2d.2 PR C1)
+    chip_filter: *state.Signal(bool), // filter chip, clickable (unselected)
+    chip_filter_on: *state.Signal(bool), // filter chip, selected
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -194,6 +199,10 @@ pub const Gallery = struct {
         errdefer g.sl_dis.deinit();
         g.radio_m3e = try state.Signal(usize).init(allocator, 0);
         errdefer g.radio_m3e.deinit();
+        g.chip_filter = try state.Signal(bool).init(allocator, false);
+        errdefer g.chip_filter.deinit();
+        g.chip_filter_on = try state.Signal(bool).init(allocator, true);
+        errdefer g.chip_filter_on.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -304,6 +313,8 @@ pub const Gallery = struct {
         g.sl_m3e.deinit();
         g.sl_dis.deinit();
         g.radio_m3e.deinit();
+        g.chip_filter.deinit();
+        g.chip_filter_on.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -342,6 +353,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Buttons (M3E)", try buildButtonsSection(g, theme)));
     content.add(try section(a, theme, "Icon buttons (M3E)", try buildIconButtonsSection(g, theme)));
     content.add(try section(a, theme, "Selection controls (M3E)", try buildSelectionSection(g, theme)));
+    content.add(try section(a, theme, "Chips (M3E)", try buildChipsSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -602,6 +614,32 @@ fn buildSelectionSection(g: *Gallery, theme: Theme) !*Node {
     const sl2 = try slider_w.slider(a, g.sl_dis, null, .{ .enabled = false, .a11y_label = "Disabled", .theme = theme });
     r4.add(sl2);
     col.add(r4);
+    return col;
+}
+
+/// Chips (M3E, batch 2d.2 PR C1): the 5 variants (assist / elevated / filter /
+/// suggestion / input) + states (selected filter, disabled, with icons).
+fn buildChipsSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    // the 5 variants (the filter chip toggles; the input chip carries the
+    // trailing close affordance)
+    const r1 = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    r1.add(try chip_w.chip(a, null, null, .{ .variant = .assist, .label = "Assist", .theme = theme }));
+    r1.add(try chip_w.chip(a, null, null, .{ .variant = .elevated, .label = "Elevated", .theme = theme }));
+    const flt = try chip_w.chip(a, g.chip_filter, null, .{ .variant = .filter, .label = "Filter", .theme = theme });
+    g.refs.chip_m3e_filter = flt;
+    r1.add(flt);
+    r1.add(try chip_w.chip(a, null, null, .{ .variant = .suggestion, .label = "Suggestion", .theme = theme }));
+    r1.add(try chip_w.chip(a, null, null, .{ .variant = .input, .label = "Input", .trailing_icon = .close, .theme = theme }));
+    col.add(r1);
+    // states: a selected filter chip (toggle, starts checked), a disabled
+    // chip, a chip with a leading icon
+    const r2 = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    r2.add(try chip_w.chip(a, g.chip_filter_on, null, .{ .variant = .filter, .label = "Selected", .theme = theme }));
+    r2.add(try chip_w.chip(a, null, null, .{ .enabled = false, .label = "Disabled", .theme = theme }));
+    r2.add(try chip_w.chip(a, null, null, .{ .variant = .suggestion, .label = "With icon", .leading_icon = .star, .theme = theme }));
+    col.add(r2);
     return col;
 }
 
@@ -1380,6 +1418,25 @@ test "gallery: the M3E checkbox toggles its signal on click" {
     router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
     router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
     try std.testing.expect(g.cb_m3e.peek()); // clicked -> checked
+}
+
+test "gallery: the M3E filter chip toggles its signal on click" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Chips section sits below the Selection controls section
+    const b = g.refs.chip_m3e_filter.bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    try std.testing.expect(!g.chip_filter.peek());
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expect(g.chip_filter.peek()); // clicked -> selected
+    try std.testing.expectEqual(true, g.refs.chip_m3e_filter.semantics.?.checked.?); // a11y follows
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
