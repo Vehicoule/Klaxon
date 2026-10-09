@@ -93,7 +93,8 @@ fn dimsFor(size: IconButtonSize) Dims {
     };
 }
 
-/// Compose minimumInteractiveComponentSize (the a11y hit-target floor).
+/// Compose minimumInteractiveComponentSize — the a11y floor applies to the
+/// HIT area (hit_bounds), never to the painted container.
 const min_target: f32 = 48;
 
 const IBColors = struct {
@@ -183,10 +184,18 @@ fn iconButtonMeasure(n: *Node, c: Constraints) Size {
         .narrow => d.space_narrow,
         .wide => d.space_wide,
     };
-    return c.constrain(.{
-        .w = @max(d.icon + sp * 2, min_target),
-        .h = @max(d.height, min_target),
-    });
+    // the painted container: icon + the width's spaces (the 48dp a11y floor
+    // is the hit target, not the container — see iconButtonHitBounds)
+    return c.constrain(.{ .w = d.icon + sp * 2, .h = d.height });
+}
+
+/// The interactive target: a 48x48 minimum centered on the container
+/// (Compose minimumInteractiveComponentSize).
+fn iconButtonHitBounds(n: *Node) Rect {
+    const b = n.bounds;
+    const w = @max(b.w, min_target);
+    const h = @max(b.h, min_target);
+    return .{ .x = b.x + (b.w - w) / 2, .y = b.y + (b.h - h) / 2, .w = w, .h = h };
 }
 
 fn iconButtonLayout(n: *Node, bounds: Rect) void {
@@ -342,6 +351,7 @@ const icon_button_vtable = ui.node.VTable{
     .deinit = iconButtonDeinit,
     .on_pointer = iconButtonOnPointer,
     .on_key = iconButtonOnKey,
+    .hit_bounds = iconButtonHitBounds,
 };
 
 /// An M3E icon button. `sig` = null → a plain button (fixed unselected
@@ -397,17 +407,39 @@ fn pressCounterCb(userdata: ?*anyopaque) void {
     c.* += 1;
 }
 
-test "icon_button: sizes measure the container + the 48dp a11y target floor" {
+test "icon_button: sizes measure the container (icon + spaces, height token)" {
     const sizes = [_]IconButtonSize{ .xsmall, .small, .medium, .large, .xlarge };
-    const heights = [_]f32{ 48, 48, 56, 96, 136 }; // XS/S clamp to the 48 target
+    const heights = [_]f32{ 32, 40, 56, 96, 136 };
     for (sizes, heights) |sz, h| {
         const b = try iconButton(std.testing.allocator, null, null, .{ .size = sz, .a11y_label = "x" });
         defer b.deinit();
         const m = b.measure(.{ .max_w = 2000, .max_h = 2000 });
         const d = dimsFor(sz);
         try std.testing.expectEqual(h, m.h);
-        try std.testing.expectEqual(@max(d.icon + d.space_default * 2, min_target), m.w);
+        try std.testing.expectEqual(d.icon + d.space_default * 2, m.w);
     }
+}
+
+test "icon_button: the 48dp a11y floor is the hit target, not the painted container" {
+    const b = try iconButton(std.testing.allocator, null, null, .{ .size = .xsmall, .a11y_label = "x" });
+    defer b.deinit();
+    // XS default: 20 + 6*2 = 32 — the painted container stays 32x32
+    const m = b.measure(.{ .max_w = 2000, .max_h = 2000 });
+    try std.testing.expectEqual(@as(f32, 32), m.w);
+    try std.testing.expectEqual(@as(f32, 32), m.h);
+    b.layout(.{ .x = 100, .y = 100, .w = 32, .h = 32 });
+    // the hit target grows to 48x48, centered on the container
+    const hb = b.vtable.hit_bounds.?(b);
+    try std.testing.expectEqual(@as(f32, 48), hb.w);
+    try std.testing.expectEqual(@as(f32, 48), hb.h);
+    try std.testing.expectEqual(@as(f32, 100 - 8), hb.x); // (32-48)/2
+    try std.testing.expectEqual(@as(f32, 100 - 8), hb.y);
+    // a size above the floor keeps its bounds
+    const big = try iconButton(std.testing.allocator, null, null, .{ .size = .medium, .a11y_label = "x" });
+    defer big.deinit();
+    big.layout(.{ .x = 0, .y = 0, .w = 56, .h = 56 });
+    const hbb = big.vtable.hit_bounds.?(big);
+    try std.testing.expectEqual(@as(f32, 56), hbb.w);
 }
 
 test "icon_button: the width families change the horizontal padding only" {
@@ -420,10 +452,10 @@ test "icon_button: the width families change the horizontal padding only" {
     const mn = narrow.measure(.{ .max_w = 2000, .max_h = 2000 });
     const mw = wide.measure(.{ .max_w = 2000, .max_h = 2000 });
     const md = def.measure(.{ .max_w = 2000, .max_h = 2000 });
-    // small: icon 24, spaces 8 (default) / 4 (narrow) / 14 (wide), floor 48
-    try std.testing.expectEqual(@as(f32, 48), mn.w); // 24+8 = 32 -> 48
-    try std.testing.expectEqual(@as(f32, 52), mw.w); // 24+28 = 52
-    try std.testing.expectEqual(@as(f32, 48), md.w); // 24+16 = 40 -> 48
+    // small: icon 24, spaces 8 (default) / 4 (narrow) / 14 (wide)
+    try std.testing.expectEqual(@as(f32, 32), mn.w); // 24+8
+    try std.testing.expectEqual(@as(f32, 52), mw.w); // 24+28
+    try std.testing.expectEqual(@as(f32, 40), md.w); // 24+16
     // heights unchanged
     try std.testing.expectEqual(mn.h, md.h);
 }

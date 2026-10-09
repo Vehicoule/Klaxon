@@ -148,9 +148,15 @@ pub const Gallery = struct {
         g.saved_grid = 0;
         g.dark_mode = try state.Signal(bool).init(allocator, true);
         errdefer g.dark_mode.deinit();
+        // one function-scope errdefer frees the signals initialized so far
+        // (a loop-body errdefer stops applying when its iteration ends)
+        var ib_init: usize = 0;
+        errdefer {
+            for (g.ib_toggles[0..ib_init]) |sig| sig.deinit();
+        }
         for (&g.ib_toggles, 0..) |*sig, i| {
             sig.* = try state.Signal(bool).init(allocator, i == 0); // the heart starts checked
-            errdefer sig.deinit();
+            ib_init += 1;
         }
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
@@ -495,7 +501,7 @@ fn buildIconButtonsSection(g: *Gallery, theme: Theme) !*Node {
     r2.add(try icon_button_w.iconButton(a, g.ib_toggles[2], null, .{ .variant = .filled_tonal, .icon = .heart, .a11y_label = "Tonal", .theme = theme }));
     r2.add(try icon_button_w.iconButton(a, g.ib_toggles[3], null, .{ .variant = .outlined, .icon = .heart, .a11y_label = "Outlined", .theme = theme }));
     col.add(r2);
-    // Sizes (filled toggle)
+    // Sizes (filled)
     const r3 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
     r3.add(try icon_button_w.iconButton(a, null, null, .{ .variant = .filled, .size = .xsmall, .icon = .star, .a11y_label = "XS", .theme = theme }));
     r3.add(try icon_button_w.iconButton(a, null, null, .{ .variant = .filled, .size = .small, .icon = .star, .a11y_label = "S", .theme = theme }));

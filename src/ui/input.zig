@@ -333,14 +333,15 @@ pub const InputRouter = struct {
 
 /// The pointer cursor for a hovered node (Phase 2d-0.5, desktop): the
 /// deepest node's VTable.cursor hook wins, then the semantic role
-/// (.button/.link → hand, .text_field → ibeam), else the default arrow.
+/// (interactive controls → hand, .text_field → ibeam), else the default
+/// arrow.
 pub fn cursorForNode(node: ?*Node) PointerCursor {
     var n = node;
     while (n) |cur| : (n = cur.parent) {
         if (cur.vtable.cursor) |c| return c(cur);
         if (cur.semantics) |sem| {
             switch (sem.role) {
-                .button, .link => return .hand,
+                .button, .link, .toggle, .checkbox, .radio => return .hand,
                 .text_field => return .ibeam,
                 else => {},
             }
@@ -639,6 +640,11 @@ test "cursors: cursorForNode maps the vtable hook, then the semantic role" {
     const child = try recNode(std.testing.allocator, false);
     parent.add(child);
     semantics_mod.attach(parent, .{ .role = .button, .label = "ok" });
+    try std.testing.expectEqual(PointerCursor.hand, cursorForNode(child));
+    // the interactive toggle roles → hand too
+    semantics_mod.attach(child, .{ .role = .toggle, .label = "t", .checked = false });
+    try std.testing.expectEqual(PointerCursor.hand, cursorForNode(child));
+    semantics_mod.attach(child, .{ .role = .checkbox, .label = "c", .checked = false });
     try std.testing.expectEqual(PointerCursor.hand, cursorForNode(child));
     // a .text_field semantic on the child → ibeam
     semantics_mod.attach(child, .{ .role = .text_field, .label = "name" });
