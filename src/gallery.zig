@@ -29,6 +29,7 @@ const image_w = widgets.image;
 const container_w = widgets.container;
 const divider_w = widgets.divider;
 const input_w = widgets.input;
+const button_w = widgets.button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
 const app_bar_w = widgets.app_bar;
@@ -54,6 +55,7 @@ const radio_labels = [_][]const u8{ "One", "Two", "Three" };
 /// Widget references into the current tree (refreshed on every rebuild).
 const Refs = struct {
     demo_button: *Node,
+    m3e_button: *Node, // the M3E filled button (Buttons M3E section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -277,6 +279,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     g.refs.scroll_view = sv;
     const content = try layout.column(a, .{ .gap = 16 });
     content.add(try section(a, theme, "Input", try buildInputSection(g, theme)));
+    content.add(try section(a, theme, "Buttons (M3E)", try buildButtonsSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -424,6 +427,40 @@ fn buildInputSection(g: *Gallery, theme: Theme) !*Node {
     r6.add(dd);
     r6.add(try text_w.BoundText(StatusBuf).text(a, g.pick_sig, fmtStatus, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(r6);
+    return col;
+}
+
+/// Buttons (M3E, batch 2d.2 PR A): the 5 variants, the 5 sizes, and the
+/// icon / disabled / square-shape combinations.
+fn buildButtonsSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    // Variants (small)
+    const r1 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
+    const filled = try button_w.button(a, .{ .fn_ptr = pressCb, .userdata = g }, .{ .label = "Filled", .theme = theme });
+    g.refs.m3e_button = filled;
+    r1.add(filled);
+    r1.add(try button_w.button(a, null, .{ .variant = .filled_tonal, .label = "Tonal", .theme = theme }));
+    r1.add(try button_w.button(a, null, .{ .variant = .elevated, .label = "Elevated", .theme = theme }));
+    r1.add(try button_w.button(a, null, .{ .variant = .outlined, .label = "Outlined", .theme = theme }));
+    r1.add(try button_w.button(a, null, .{ .variant = .text, .label = "Text", .theme = theme }));
+    col.add(r1);
+    // Sizes (filled)
+    const r2 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
+    r2.add(try button_w.button(a, null, .{ .size = .xsmall, .label = "XS", .theme = theme }));
+    r2.add(try button_w.button(a, null, .{ .size = .small, .label = "S", .theme = theme }));
+    r2.add(try button_w.button(a, null, .{ .size = .medium, .label = "M", .theme = theme }));
+    r2.add(try button_w.button(a, null, .{ .size = .large, .label = "L", .theme = theme }));
+    r2.add(try button_w.button(a, null, .{ .size = .xlarge, .label = "XL", .theme = theme }));
+    col.add(r2);
+    // Icon + disabled + square shape
+    const r3 = try layout.row(a, .{ .gap = 12, .cross_align = .center });
+    r3.add(try button_w.button(a, null, .{ .label = "Favorite", .icon = .heart, .theme = theme }));
+    r3.add(try button_w.button(a, null, .{ .variant = .outlined, .label = "Save", .icon = .star, .theme = theme }));
+    r3.add(try button_w.button(a, null, .{ .label = "Disabled", .enabled = false, .theme = theme }));
+    r3.add(try button_w.button(a, null, .{ .variant = .outlined, .label = "Disabled", .enabled = false, .theme = theme }));
+    r3.add(try button_w.button(a, null, .{ .shape = .square, .label = "Square", .theme = theme }));
+    col.add(r3);
     return col;
 }
 
@@ -1147,6 +1184,25 @@ test "gallery: pressing the demo button updates the bound text" {
     try std.testing.expectEqual(@as(u32, 2), g.press_count.peek());
     // the bound text was marked for re-layout (its size changed)
     try std.testing.expect(g.refs.press_text.layout_dirty);
+}
+
+test "gallery: the M3E button fires its callback on click" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    // the Buttons (M3E) section sits below the Input section: scroll it into
+    // the viewport (window = content - scroll_y)
+    const b = g.refs.m3e_button.bounds;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, b.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    const before = g.press_count.peek();
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = b.x + b.w / 2, .y = b.y + b.h / 2 - sy });
+    try std.testing.expectEqual(before + 1, g.press_count.peek());
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

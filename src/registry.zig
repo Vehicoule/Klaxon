@@ -25,6 +25,7 @@ const text_w = @import("widgets/text.zig");
 const icon_w = @import("widgets/icon.zig");
 const divider_w = @import("widgets/divider.zig");
 const input_w = @import("widgets/input.zig");
+const button_w = @import("widgets/button.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -72,7 +73,9 @@ pub const WidgetEntry = struct {
 /// Registry: layout + display + input (v1) + navigation chrome (v2, batch
 /// 2d.1 PR A: app_bar, nav_bar, drawer, tabs — M3E) + feedback batch
 /// (2d.1 PR B: bottom_sheet, dialog, progress, badge, badged_box, tooltip,
-/// snackbar — M3E). Batch 1+ widgets self-register here.
+/// snackbar — M3E) + buttons (2d.2 PR A: the M3E button replaces the P0
+/// button entry — the P0 stays in widgets/input.zig for legacy use).
+/// Batch 1+ widgets self-register here.
 pub const widgets = [_]WidgetEntry{
     .{ .name = "column", .category = "layout", .build = buildColumn, .schema = schemaColumn },
     .{ .name = "row", .category = "layout", .build = buildRow, .schema = schemaRow },
@@ -355,9 +358,13 @@ fn buildIcon(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror
     return .{ .node = try icon_w.icon(allocator, iname, iopts) };
 }
 
+/// M3E button (2d.2 PR A): the label and icon are data fields in the
+/// options (built as internal chrome by the factory) — document children
+/// would never serialize.
 fn buildButton(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     _ = ctx;
-    return .{ .node = try input_w.button(allocator, null, try value_mod.optionsFromValue(input_w.ButtonOptions, opts, null, null)) };
+    const bopts = try value_mod.optionsFromValue(button_w.ButtonOptions, opts, null, null);
+    return .{ .node = try button_w.button(allocator, null, bopts), .skip_children = true };
 }
 
 fn buildToggle(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
@@ -623,7 +630,10 @@ fn schemaIcon(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
 }
 
 fn schemaButton(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
-    return value_mod.schemaOf(input_w.ButtonOptions, allocator);
+    // variant/size/shape (select), enabled (toggle), label (text),
+    // icon (select) — all automatic from the options type; theme is
+    // unsupported (global token set)
+    return value_mod.schemaOf(button_w.ButtonOptions, allocator);
 }
 
 fn schemaToggle(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -726,7 +736,8 @@ test "registry: builds a node with defaults from a minimal value" {
 }
 
 test "registry: tree round-trip preserves the document" {
-    const doc = "{\"name\":\"column\",\"options\":{\"gap\":8,\"main_align\":\"center\"},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"Hello\",\"size\":20,\"color\":16777215}},{\"name\":\"button\",\"options\":{\"bg\":287454020,\"radius\":4},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"OK\"}}]}]}";
+    // the M3E button's label/icon are options data (internal chrome), not children
+    const doc = "{\"name\":\"column\",\"options\":{\"gap\":8,\"main_align\":\"center\"},\"children\":[{\"name\":\"text\",\"options\":{\"text\":\"Hello\",\"size\":20,\"color\":16777215}},{\"name\":\"button\",\"options\":{\"label\":\"OK\",\"variant\":\"outlined\"}}]}";
     var ctx = BuildCtx.init(std.testing.allocator);
     defer ctx.deinit();
     const node = try treeFromJson(&ctx, std.testing.allocator, doc);

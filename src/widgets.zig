@@ -18,6 +18,9 @@
 // — Phase 2b.
 // Navigation chrome (4): AppBar, NavBar, Drawer, Tabs — Phase 2d.1 batch 1
 // (M3E).
+// Button (1): the M3E button (5 variants x 5 sizes) — Phase 2d.2 PR A; the
+// P0 button stays in input.zig (legacy gallery sections, progressive
+// migration).
 // ~65 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
@@ -26,6 +29,7 @@ pub const image = @import("widgets/image.zig");
 pub const container = @import("widgets/container.zig");
 pub const divider = @import("widgets/divider.zig");
 pub const input = @import("widgets/input.zig");
+pub const button = @import("widgets/button.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");
