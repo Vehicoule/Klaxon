@@ -79,6 +79,11 @@ pub fn fillRRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, radius: f32, colo
     kx.c.kx_fill_rrect(ctx, x, y, w, h, radius, color);
 }
 
+/// Stroke a rounded rectangle's outline (ABI 0.6.0) — centered on the edge.
+pub fn strokeRRect(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, radius: f32, stroke_w: f32, color: Color) void {
+    kx.c.kx_stroke_rrect(ctx, x, y, w, h, radius, stroke_w, color);
+}
+
 /// Stroke a polyline through (xs, ys) (ABI 0.5.0) — arcs and wavy progress
 /// indicators are polylines generated in Zig; no path type crosses the ABI.
 pub fn strokePolyline(ctx: *kx.Ctx, xs: []const f32, ys: []const f32, stroke_w: f32, round_cap: bool, color: Color) void {
@@ -109,4 +114,10 @@ pub fn imageDestroy(ctx: *kx.Ctx, id: u64) void {
 
 pub fn imageDraw(ctx: *kx.Ctx, id: u64, x: f32, y: f32, w: f32, h: f32) void {
     kx.c.kx_draw_image(ctx, id, x, y, w, h);
+}
+
+// --- tests ---
+
+test "kx ABI version reports 0.6.0 (the stroke_rrect entry)" {
+    try std.testing.expectEqualStrings("0.6.0", std.mem.span(kx.c.kx_abi_version()));
 }
