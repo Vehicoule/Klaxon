@@ -23,6 +23,7 @@ const std = @import("std");
 const kx = @import("../kx.zig");
 const ui = @import("../ui.zig");
 const input = @import("../ui/input.zig");
+const gestures = @import("../ui/gestures.zig");
 const theme_mod = @import("../theme.zig");
 const golden = @import("../golden.zig"); // tests
 
@@ -60,6 +61,14 @@ const SliderState = struct {
     on_changed: ?Callback = null,
     pressed: bool = false,
     hovered: bool = false,
+    /// Gesture arbitration (raw coords): a horizontal drag edits the value,
+    /// a vertical drag is a scroll and bubbles to the scrollable.
+    dragging: bool = false,
+    scroll_won: bool = false,
+    /// The down position in raw (window) coordinates (drag deltas are
+    /// physical finger motion — see PointerEvent.raw_x/raw_y).
+    down_raw_x: f32 = 0,
+    down_raw_y: f32 = 0,
     /// The semantic value string ("42%") — borrowed by the semantics.
     value_buf: [16]u8 = std.mem.zeroes([16]u8),
     value_len: usize = 0,
@@ -150,20 +159,53 @@ fn sliderOnPointer(n: *Node, ev: input.PointerEvent) bool {
     const s = stateOf(n);
     if (!s.opts.enabled) return false;
     switch (ev.phase) {
-        // down/move: the router only delivers move while we are captured
-        // (drag). The drag IS the interaction — no slop cancel.
-        .down, .move => {
-            s.pressed = ev.phase == .down;
+        .down => {
+            s.pressed = true;
+            s.dragging = false;
+            s.scroll_won = false;
+            s.down_raw_x = ev.raw_x;
+            s.down_raw_y = ev.raw_y;
             const v = valueAt(s, n.bounds, ev.x);
             s.sig.set(v);
             if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
             n.markDirty();
             return true;
         },
+        .move => {
+            // the router only delivers move while we are captured (drag)
+            if (s.scroll_won) return false; // the scroll owns the gesture
+            if (!s.dragging) {
+                // gesture arbitration: past the touch slop, the dominant axis
+                // decides — horizontal = slider drag (claim), vertical =
+                // scroll (release: bubble to the scrollable)
+                const dx = ev.raw_x - s.down_raw_x;
+                const dy = ev.raw_y - s.down_raw_y;
+                if (dx * dx + dy * dy > gestures.SLOP * gestures.SLOP) {
+                    if (@abs(dy) > @abs(dx)) {
+                        s.scroll_won = true;
+                        s.pressed = false;
+                        n.markDirty();
+                        return false;
+                    }
+                    s.dragging = true;
+                }
+            }
+            if (s.dragging) {
+                s.pressed = true; // kept for the whole drag (pressed feedback)
+                const v = valueAt(s, n.bounds, ev.x);
+                s.sig.set(v);
+                if (s.on_changed) |cb| cb.fn_ptr(cb.userdata);
+                n.markDirty();
+            }
+            return s.dragging; // claim only the horizontal drag
+        },
         .up => {
+            const was_scrolling = s.scroll_won;
             s.pressed = false;
+            s.dragging = false;
+            s.scroll_won = false;
             n.markDirty();
-            return true;
+            return !was_scrolling; // a scroll-owned gesture: the up bubbles
         },
         .enter => {
             s.hovered = true;
@@ -201,11 +243,12 @@ fn sliderOnKey(n: *Node, ev: input.KeyEvent) bool {
     return false;
 }
 
-/// Repaint + keep the semantic value in sync (Phase 2c).
+/// Repaint + keep the semantic value in sync (Phase 2c). The announced value
+/// is clamped — an out-of-range signal must not announce beyond 0-100.
 fn sliderSyncCb(userdata: ?*anyopaque) void {
     const n: *Node = @ptrCast(@alignCast(userdata.?));
     const s = stateOf(n);
-    const str = std.fmt.bufPrint(&s.value_buf, "{d:.0}%", .{s.sig.peek() * 100}) catch return;
+    const str = std.fmt.bufPrint(&s.value_buf, "{d:.0}%", .{clampedValue(s) * 100}) catch return;
     s.value_len = str.len;
     if (n.semantics) |sem| sem.value = s.value_buf[0..s.value_len];
     n.markDirty();
@@ -302,6 +345,33 @@ test "slider: a down/drag sets the value from the pointer x (clamped)" {
     try std.testing.expectEqual(@as(f32, 1), sig.peek());
     _ = on_pointer(b, .{ .phase = .down, .x = -50, .y = 22 });
     try std.testing.expectEqual(@as(f32, 0), sig.peek());
+}
+
+test "slider: gesture arbitration — a vertical drag is a scroll, not an edit" {
+    const sig = try ui.state.Signal(f32).init(std.testing.allocator, 0.5);
+    defer sig.deinit();
+    const b = try slider(std.testing.allocator, sig, null, .{ .a11y_label = "x" });
+    defer b.deinit();
+    b.layout(.{ .x = 0, .y = 0, .w = 160, .h = 44 });
+    const on_pointer = b.vtable.on_pointer.?;
+    _ = on_pointer(b, .{ .phase = .down, .x = 80, .y = 22, .raw_x = 80, .raw_y = 22 });
+    const v0 = sig.peek();
+    // a vertical drag past the slop: the scroll wins (the move bubbles, the
+    // value is frozen, the pressed feedback is dropped)
+    try std.testing.expect(!on_pointer(b, .{ .phase = .move, .x = 80, .y = 45, .raw_x = 80, .raw_y = 45 }));
+    try std.testing.expectEqual(v0, sig.peek());
+    try std.testing.expect(!stateOf(b).pressed);
+    try std.testing.expect(!on_pointer(b, .{ .phase = .move, .x = 80, .y = 60, .raw_x = 80, .raw_y = 60 }));
+    try std.testing.expectEqual(v0, sig.peek());
+    try std.testing.expect(!on_pointer(b, .{ .phase = .up, .x = 80, .y = 60, .raw_x = 80, .raw_y = 60 })); // bubbles
+    // a horizontal drag edits the value and keeps the pressed feedback
+    _ = on_pointer(b, .{ .phase = .down, .x = 80, .y = 22, .raw_x = 80, .raw_y = 22 });
+    try std.testing.expect(on_pointer(b, .{ .phase = .move, .x = 100, .y = 22, .raw_x = 100, .raw_y = 22 }));
+    try std.testing.expect(stateOf(b).pressed);
+    try std.testing.expect(stateOf(b).dragging);
+    try std.testing.expect(sig.peek() > v0);
+    try std.testing.expect(on_pointer(b, .{ .phase = .up, .x = 100, .y = 22, .raw_x = 100, .raw_y = 22 }));
+    try std.testing.expect(!stateOf(b).pressed);
 }
 
 test "slider: arrows adjust the value (keyboard)" {

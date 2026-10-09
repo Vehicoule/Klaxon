@@ -124,6 +124,9 @@ pub const BuildCtx = struct {
     records: std.AutoHashMap(*Node, Record),
     tracked: std.array_list.Managed(Tracked),
     journal: std.array_list.Managed(JournalEntry), // per-build rollback log
+    /// Radio groups: radios sharing a "group" name share ONE selection
+    /// signal (a group = one selection). The keys are owned dupes.
+    radio_groups: std.StringHashMap(*state.Signal(usize)),
 
     const Record = struct {
         entry_name: []const u8,
@@ -146,6 +149,7 @@ pub const BuildCtx = struct {
             .records = std.AutoHashMap(*Node, Record).init(allocator),
             .tracked = std.array_list.Managed(Tracked).init(allocator),
             .journal = std.array_list.Managed(JournalEntry).init(allocator),
+            .radio_groups = std.StringHashMap(*state.Signal(usize)).init(allocator),
         };
     }
 
@@ -154,6 +158,7 @@ pub const BuildCtx = struct {
         ctx.records.deinit();
         ctx.tracked.deinit();
         ctx.journal.deinit();
+        ctx.radio_groups.deinit();
     }
 
     /// Free every record + tracked allocation; the ctx stays usable. The tree
@@ -166,6 +171,9 @@ pub const BuildCtx = struct {
         var it = ctx.records.valueIterator();
         while (it.next()) |rec| rec.opts.deinit(ctx.allocator);
         ctx.records.clearRetainingCapacity();
+        var git = ctx.radio_groups.keyIterator();
+        while (git.next()) |k| ctx.allocator.free(k.*);
+        ctx.radio_groups.clearRetainingCapacity(); // the signals live in `tracked`
         for (ctx.tracked.items) |t| t.deinit_fn(t.ptr);
         ctx.tracked.clearRetainingCapacity();
         ctx.journal.clearRetainingCapacity();
@@ -418,15 +426,32 @@ fn buildCheckbox(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anye
     return .{ .node = n, .live = .{ .signal = sig, .field = "checked", .read = readBoolSignal } };
 }
 
-/// M3E radio (2d.2 PR B2, new entry): an "index" option + a "selected"
-/// ctx-owned usize signal (the group value; checked = selected == index).
+/// M3E radio (2d.2 PR B2, new entry): an "index" option + a "selected" signal
+/// (the group value; checked = selected == index). Radios sharing a "group"
+/// name share ONE selection signal (a group = one selection).
 fn buildRadio(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const ropts = try value_mod.optionsFromValue(radio_w.RadioOptions, opts, null, null);
     const index: u32 = if (opts.get("index")) |x| switch (x) {
         .int => |i| std.math.cast(u32, i) orelse return error.ValueOutOfRange,
+        .float => |f| blk: {
+            if (!std.math.isFinite(f) or f < 0) return error.ValueOutOfRange;
+            break :blk std.math.cast(u32, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
+        },
         else => 0,
     } else 0;
-    const sig = try buildUsizeSignal(allocator, opts, ctx); // "selected"
+    const group: []const u8 = if (opts.get("group")) |g| switch (g) {
+        .string => |s| s,
+        else => "default",
+    } else "default";
+    const sig = blk: {
+        if (ctx.radio_groups.get(group)) |s| break :blk s; // shared group signal
+        const s = try buildUsizeSignal(allocator, opts, ctx); // "selected"
+        ctx.radio_groups.put(try allocator.dupe(u8, group), s) catch |e| {
+            s.deinit();
+            return e;
+        };
+        break :blk s;
+    };
     const n = try radio_w.radio(allocator, sig, index, ropts);
     return .{ .node = n, .live = .{ .signal = sig, .field = "selected", .read = readUsizeSignal } };
 }
@@ -691,7 +716,8 @@ fn schemaRadio(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     // enabled (toggle), a11y_label (text) — automatic; "selected" is live
     var base = try value_mod.schemaOf(radio_w.RadioOptions, allocator);
     base = try value_mod.appendSchemaProp(base, allocator, "selected", .number, &.{}, .{ .int = 0 });
-    return value_mod.appendSchemaProp(base, allocator, "index", .number, &.{}, .{ .int = 0 });
+    base = try value_mod.appendSchemaProp(base, allocator, "index", .number, &.{}, .{ .int = 0 });
+    return value_mod.appendSchemaProp(base, allocator, "group", .text, &.{}, .{ .string = "default" });
 }
 
 fn schemaSlider(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -1061,6 +1087,34 @@ test "registry: checkbox / slider / radio (M3E) round-trip with their live value
     defer std.testing.allocator.free(rd_out);
     try std.testing.expectEqualStrings(rd_doc, rd_out);
     try std.testing.expectEqual(true, rd.semantics.?.checked.?); // selected == index
+}
+
+test "registry: radios in the same group share one selection signal" {
+    var ctx = BuildCtx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const doc = "{\"name\":\"column\",\"children\":[{\"name\":\"radio\",\"options\":{\"group\":\"g\",\"index\":0,\"selected\":0}},{\"name\":\"radio\",\"options\":{\"group\":\"g\",\"index\":1,\"selected\":0}}]}";
+    const node = try treeFromJson(&ctx, std.testing.allocator, doc);
+    // one shared signal for the whole group
+    try std.testing.expectEqual(@as(usize, 1), ctx.tracked.items.len);
+    try std.testing.expectEqual(@as(usize, 1), ctx.radio_groups.count());
+    const r0 = node.children.items[0];
+    const r1 = node.children.items[1];
+    try std.testing.expectEqual(true, r0.semantics.?.checked.?);
+    try std.testing.expectEqual(false, r1.semantics.?.checked.?);
+    // selecting r1 unchecks r0 (the shared signal)
+    _ = r1.vtable.on_pointer.?(r1, .{ .phase = .down, .x = 10, .y = 10, .raw_x = 10, .raw_y = 10 });
+    _ = r1.vtable.on_pointer.?(r1, .{ .phase = .up, .x = 10, .y = 10, .raw_x = 10, .raw_y = 10 });
+    try std.testing.expectEqual(false, r0.semantics.?.checked.?);
+    try std.testing.expectEqual(true, r1.semantics.?.checked.?);
+    // a decimal index is accepted (not silently zeroed)
+    const dec = try treeFromJson(&ctx, std.testing.allocator, "{\"name\":\"radio\",\"options\":{\"group\":\"g2\",\"index\":1.0,\"selected\":1}}");
+    try std.testing.expectEqual(true, dec.semantics.?.checked.?); // index 1.0 == 1
+    // the trees must be deinit'd BEFORE reset (the ctx owns the signals)
+    dec.deinit();
+    node.deinit();
+    ctx.reset();
+    try std.testing.expectEqual(@as(usize, 0), ctx.radio_groups.count());
+    try std.testing.expectEqual(@as(usize, 0), ctx.tracked.items.len);
 }
 
 test "registry: PR B schemas expose the right editor kinds" {
