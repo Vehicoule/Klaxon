@@ -164,27 +164,16 @@ pub const InputRouter = struct {
                 // A click outside an open popup closes it and is consumed
                 // (barrier semantics — the next click reaches the tree).
                 if (self.open_popup) |popup| {
-                    // Popup children live outside the popup's bounds (overlay):
-                    // hit-test within the popup subtree without the
-                    // ancestor-bounds gate. The point is mapped into the
-                    // popup's parent space first (it may sit in a scrollable).
-                    const p = Node.mapPointToParentSpace(popup, ev.x, ev.y);
-                    const hit: ?*Node = if (hitTestSubtree(popup, p.x, p.y)) |h|
-                        h
-                    else if (root.hitTestMapped(ev.x, ev.y)) |m|
-                        m.node
-                    else
-                        null;
-                    const inside = if (hit) |h| isDescendant(h, popup) else false;
+                    const hit = hitPopupOrRoot(root, popup, ev.x, ev.y);
+                    const inside = if (hit) |h| isDescendant(h.node, popup) else false;
                     if (!inside) {
                         self.open_popup = null;
                         _ = sendPointer(popup, .{ .phase = .outside_down, .x = ev.x, .y = ev.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .pointer = ev.pointer, .time_ms = ev.time_ms });
                         return;
                     }
                     if (hit) |t| {
-                        self.captureSet(ev.pointer, t);
-                        const local = Node.mapPointToParentSpace(t, ev.x, ev.y);
-                        _ = sendPointer(t, .{ .phase = ev.phase, .x = local.x, .y = local.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
+                        self.captureSet(ev.pointer, t.node);
+                        _ = sendPointer(t.node, .{ .phase = ev.phase, .x = t.x, .y = t.y, .raw_x = ev.raw_x, .raw_y = ev.raw_y, .button = ev.button, .pointer = ev.pointer, .time_ms = ev.time_ms });
                     }
                     return;
                 }
@@ -277,7 +266,10 @@ pub const InputRouter = struct {
     /// hover: nav bar / tabs track across cell gaps; a separate phase on
     /// purpose — uncaptured hover must never reach drag consumers of `.move`).
     fn updateHover(self: *InputRouter, root: *Node, x: f32, y: f32, send_move: bool) void {
-        const hit = root.hitTestMapped(x, y);
+        // An open popup's overflow children (a menu's item rows live outside
+        // the popup's bounds) are hoverable too — without the popup-aware
+        // hit-test the mouse could never hover them.
+        const hit = if (self.open_popup) |popup| hitPopupOrRoot(root, popup, x, y) else root.hitTestMapped(x, y);
         const hovered = if (hit) |h| h.node else null;
         if (hovered != self.hovered) {
             if (self.hovered) |h| _ = sendPointer(h, .{ .phase = .leave, .x = x, .y = y, .raw_x = x, .raw_y = y, .pointer = 0, .time_ms = 0 });
@@ -427,6 +419,21 @@ fn hitTestSubtree(node: *Node, px: f32, py: f32) ?*Node {
     const b = if (node.vtable.hit_bounds) |hb| hb(node) else node.bounds;
     if (b.contains(px, py)) return node;
     return null;
+}
+
+/// Hit-test a point that may land on an open popup's overflow content:
+/// popup children live outside the popup's bounds (overlay), so the popup
+/// subtree is hit-tested WITHOUT the ancestor-bounds gate — the point is
+/// mapped into the popup's parent space first (it may sit in a scrollable).
+/// Anything else falls back to the regular mapped hit-test. Shared by the
+/// down barrier and hover (updateHover).
+fn hitPopupOrRoot(root: *Node, popup: *Node, x: f32, y: f32) ?Node.MappedHit {
+    const p = Node.mapPointToParentSpace(popup, x, y);
+    if (hitTestSubtree(popup, p.x, p.y)) |h| {
+        const lp = Node.mapPointToParentSpace(h, x, y);
+        return .{ .node = h, .x = lp.x, .y = lp.y };
+    }
+    return root.hitTestMapped(x, y);
 }
 
 // --- process-global current router (single-window P0) ---

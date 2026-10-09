@@ -80,6 +80,11 @@ pub const VTable = struct {
     /// post_children_paint (the canvas state is restored right after).
     pre_children_paint: ?*const fn (node: *Node, ctx: *kx.Ctx) void = null,
     post_children_paint: ?*const fn (node: *Node, ctx: *kx.Ctx) void = null,
+    /// Popup overlay pass (Phase 2d.3 PR D2): the host paints the open
+    /// popup's hook after the whole tree (above later siblings — a popup's
+    /// content overflows its anchor), before the focus ring. Children with
+    /// defer_paint paint here, not in the normal children pass.
+    paint_overlay: ?*const fn (node: *Node, ctx: *kx.Ctx) void = null,
     /// Map a rect from this node's child space into its parent space — the
     /// inverse of the paint transform (pre_children_paint). Dirty marks
     /// under a transformed ancestor land at the child's VISIBLE position.
@@ -120,6 +125,13 @@ pub const Node = struct {
     /// node is part of the tree (paint/hit-test) but is NOT document data —
     /// the registry's treeToValue skips it (the widget rebuilds it).
     internal: bool = false,
+    /// Defer this node's paint to the popup overlay pass: the parent's
+    /// children paint loop skips it, and the host paints the open popup's
+    /// paint_overlay hook AFTER the tree — so popup content overflowing its
+    /// anchor (a menu panel over later siblings) renders above them. The
+    /// node still hit-tests normally (the router's popup barrier hit-tests
+    /// popup children outside the ancestor-bounds gate).
+    defer_paint: bool = false,
     // Dirty-rect (Phase 1e): the root accumulates the damaged region — the
     // union of every dirty mark's rect — and the host repaints the tree
     // clipped to it (the surface is retained between frames).
@@ -257,7 +269,10 @@ pub const Node = struct {
         if (!node.visible) return;
         node.vtable.paint(node, ctx);
         if (node.vtable.pre_children_paint) |pre| pre(node, ctx);
-        for (node.children.items) |child| child.paint(ctx);
+        for (node.children.items) |child| {
+            if (child.defer_paint) continue; // paints in the popup overlay pass
+            child.paint(ctx);
+        }
         if (node.vtable.post_children_paint) |post| post(node, ctx);
         node.dirty = false;
     }

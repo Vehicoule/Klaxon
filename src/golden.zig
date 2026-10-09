@@ -117,7 +117,16 @@ pub const Renderer = struct {
         kx.c.kx_begin_frame(r.ctx);
         kx.c.kx_clear(r.ctx, bg);
         root.paint(r.ctx);
+        paintOverlayPass(root, r.ctx); // the popup overlay, above the tree (like the host)
         kx.c.kx_end_frame(r.ctx);
+    }
+
+    /// The popup overlay pass: every node with a paint_overlay hook paints
+    /// after the whole tree (the host paints the open popup's hook; goldens
+    /// have no router, so the hook is found by walking the tree).
+    fn paintOverlayPass(n: *Node, ctx: *kx.Ctx) void {
+        if (n.vtable.paint_overlay) |po| po(n, ctx);
+        for (n.children.items) |child| paintOverlayPass(child, ctx);
     }
 
     pub fn readback(r: *Renderer, allocator: std.mem.Allocator) !Frame {

@@ -15,13 +15,17 @@
 //     OnSurfaceVariant; the state layer = on_surface @ hover 0.08 /
 //     focus 0.10 / pressed 0.12 over the panel; disabled items OnSurface@0.38
 //   - position: below the anchor, start-aligned, intrinsic width (the widest
-//     item); clamped to the parent width
+//     item), clamped to the window width (a long label stays onscreen)
 //
 // The menu is a wrapper: the anchor is a document child (it sizes the menu);
 // the item rows are internal chrome overlaying below the anchor (the P0
 // dropdown pattern: hidden children + the router's open-popup barrier closes
 // the menu on an outside click). On open the menu takes the keyboard focus
-// (arrow/enter/escape navigation) and restores it on close.
+// (arrow/enter/escape navigation); on close the focus returns to the anchor.
+// The panel + rows paint in the popup OVERLAY pass (the host paints the open
+// popup after the tree): the panel overflows below the anchor into later
+// siblings' territory and must render above them (the rows are defer_paint
+// children — they never paint in the normal children pass).
 //
 // v1 deviations (documented, fixed later):
 //   - Flat panel (no Level2 shadow — Phase 3); no submenus, no checkable
@@ -34,6 +38,7 @@ const ui = @import("../ui.zig");
 const input = @import("../ui/input.zig");
 const theme_mod = @import("../theme.zig");
 const icon_w = @import("icon.zig");
+const layout_w = @import("layout.zig"); // tests
 const golden = @import("../golden.zig"); // tests
 
 const Node = ui.node.Node;
@@ -84,8 +89,6 @@ const MenuState = struct {
     pressed_index: i32 = -1,
     /// The last selected index (pub accessor `selectedIndex`).
     selected: usize = 0,
-    /// The focus to restore on close.
-    prev_focus: ?*Node = null,
 };
 
 fn stateOf(n: *Node) *MenuState {
@@ -112,6 +115,21 @@ fn panelWidth(s: *MenuState, t: Theme) f32 {
     return w;
 }
 
+/// The panel width clamped to the window: a long label must not push the
+/// panel offscreen. The available width runs from the panel's start edge to
+/// the root's end (RTL: the window's start to the panel's end edge). A
+/// standalone menu (no parent — tests/goldens) is unclamped.
+fn panelWidthFit(n: *Node, s: *MenuState, t: Theme, bounds: Rect) f32 {
+    const pw = panelWidth(s, t);
+    const parent = n.parent orelse return pw;
+    var root = parent;
+    while (root.parent) |p| root = p;
+    const rtl = ui.i18n.direction() == .rtl;
+    const px = if (rtl) bounds.x + bounds.w - pw else bounds.x;
+    const avail = if (rtl) px else root.bounds.w - px;
+    return @min(pw, @max(avail, 0));
+}
+
 /// Damage covers the anchor AND the item rows: the panel paints below the
 /// menu's bounds (overflow), so the dirty-rect clip must include it for the
 /// panel to appear (open) and disappear (close).
@@ -132,13 +150,13 @@ fn applyOpen(n: *Node, s: *MenuState, open: bool) void {
     markMenuDirty(n);
     if (open) {
         input.setOpenPopup(n); // the router's barrier closes on outside clicks
-        // take the keyboard focus (arrow/enter/escape), restore it on close
-        if (input.current()) |r| s.prev_focus = r.focused;
-        input.requestFocus(n);
+        input.requestFocus(n); // keyboard focus while open (arrow/enter/escape)
     } else {
         input.setOpenPopup(null);
-        input.requestFocus(s.prev_focus);
-        s.prev_focus = null;
+        // M3: dismiss returns the focus to the invoker (the anchor). The
+        // anchor lives and dies with the menu — restoring it can never
+        // dangle across a tree rebuild (unlike a captured prev focus).
+        input.requestFocus(s.anchor);
     }
 }
 
@@ -331,7 +349,8 @@ fn menuLayout(n: *Node, bounds: Rect) void {
     // the anchor fills the menu's bounds (the menu sizes to the anchor)
     s.anchor.layout(bounds);
     // the panel overlays below the anchor, start-aligned, intrinsic width
-    const pw = panelWidth(s, t);
+    // (clamped to the window — a long label can't push it offscreen)
+    const pw = panelWidthFit(n, s, t, bounds);
     const rtl = ui.i18n.direction() == .rtl;
     const px = if (rtl) bounds.x + bounds.w - pw else bounds.x;
     const py = bounds.y + bounds.h + panel_v_pad;
@@ -346,15 +365,29 @@ fn menuLayout(n: *Node, bounds: Rect) void {
 }
 
 fn menuPaint(n: *Node, ctx: *kx.Ctx) void {
+    // Nothing here: the panel + item rows paint in the popup OVERLAY pass
+    // (paint_overlay) — the panel overflows below the anchor into later
+    // siblings' territory and must render above them. The anchor child
+    // paints itself in the normal pass.
+    _ = n;
+    _ = ctx;
+}
+
+/// The popup overlay pass (the host paints the open popup after the tree):
+/// the panel + the visible item rows, above any later sibling.
+fn menuPaintOverlay(n: *Node, ctx: *kx.Ctx) void {
     const s = stateOf(n);
     if (!s.open) return;
     const t = s.opts.theme;
     const b = n.bounds;
-    const pw = panelWidth(s, t);
+    const pw = panelWidthFit(n, s, t, b);
     const ph = panel_v_pad * 2 + @as(f32, @floatFromInt(s.items.items.len)) * item_h;
     const rtl = ui.i18n.direction() == .rtl;
     const px = if (rtl) b.x + b.w - pw else b.x;
     ui.paint.fillRRect(ctx, px, b.y + b.h, pw, ph, panel_radius, t.colors.surface_container);
+    for (n.children.items[1..]) |child| { // [0] = the anchor
+        if (child.visible) itemPaint(child, ctx);
+    }
 }
 
 fn menuOnPointer(n: *Node, ev: input.PointerEvent) bool {
@@ -403,8 +436,12 @@ fn menuOnKey(n: *Node, ev: input.KeyEvent) bool {
 fn menuDeinit(n: *Node) void {
     const s = stateOf(n);
     if (s.sig) |sig| sig.unsubscribe(.{ .callback = .{ .fn_ptr = menuSyncCb, .userdata = n } });
+    // Node.deinit calls input.releaseNode(n) FIRST: it clears the router's
+    // open_popup only when it still points to THIS node. No unconditional
+    // setOpenPopup(null) here — a rebuild replaces an open menu with a new
+    // one (which re-registers); clearing unconditionally would strip the new
+    // menu's popup registration (outside-click dismissal + overlay hit-test).
     input.releaseNode(n);
-    if (s.open) input.setOpenPopup(null);
     for (s.items.items) |*def| {
         n.allocator.free(def.label);
         n.allocator.free(def.trailing_text);
@@ -417,6 +454,7 @@ const menu_vtable = ui.node.VTable{
     .measure = menuMeasure,
     .layout = menuLayout,
     .paint = menuPaint,
+    .paint_overlay = menuPaintOverlay,
     .deinit = menuDeinit,
     .on_pointer = menuOnPointer,
     .on_key = menuOnKey,
@@ -439,35 +477,42 @@ pub fn menu(allocator: std.mem.Allocator, anchor: *Node, items: []const MenuItem
         .sig = sig,
         .on_select = on_select,
     };
-    errdefer s.items.deinit();
+    // One ownership boundary: on ANY failure below, this errdefer frees the
+    // appended defs' strings (menuDeinit owns them only once the node is
+    // returned to the caller).
+    errdefer {
+        for (s.items.items) |*def| {
+            allocator.free(def.label);
+            allocator.free(def.trailing_text);
+        }
+        s.items.deinit();
+    }
     for (items) |item| {
         const label = try dupeZ(allocator, item.label);
-        errdefer allocator.free(label);
+        errdefer allocator.free(label); // iteration scope: runs only if THIS iteration fails before the append
         const trailing = try dupeZ(allocator, item.trailing_text);
         errdefer allocator.free(trailing);
-        s.items.append(.{
+        // No catch-free here: on append failure the iteration errdefers free
+        // the unappended copies (the outer errdefer owns the appended ones).
+        try s.items.append(.{
             .label = label,
             .leading_icon = item.leading_icon,
             .trailing_text = trailing,
             .enabled = item.enabled,
-        }) catch {
-            allocator.free(label);
-            allocator.free(trailing);
-            return error.OutOfMemory;
-        };
+        });
     }
     node.state = s;
-    // The anchor is slot-owned (the registry round-trips it through the
-    // "anchor" option — document children never serialize for this widget),
-    // so it is marked internal like the item rows: child-walking serializers
-    // must not see it as document data. No effect on hit-testing, painting
-    // or semantics — the anchor stays fully interactive.
-    anchor.internal = true;
-    node.add(anchor);
-    // the item rows (internal chrome, hidden until open)
+    // The item rows (internal chrome, hidden until open): created UNATTACHED
+    // — on failure the errdefer deinits exactly the rows created so far.
+    const rows = try allocator.alloc(*Node, s.items.items.len);
+    var row_count: usize = 0;
+    errdefer {
+        for (rows[0..row_count]) |rn| rn.deinit(); // unattached: frees the row + its state
+        allocator.free(rows);
+    }
     for (0..s.items.items.len) |i| {
         const item_node = try Node.create(allocator, &item_vtable);
-        errdefer item_node.allocator.destroy(item_node);
+        errdefer item_node.allocator.destroy(item_node); // no state yet
         const is = try allocator.create(ItemState);
         errdefer allocator.destroy(is);
         is.* = .{ .def_index = i, .owner = node };
@@ -475,8 +520,23 @@ pub fn menu(allocator: std.mem.Allocator, anchor: *Node, items: []const MenuItem
         item_node.visible = false;
         item_node.internal = true; // chrome: never serialized
         item_node.exclude_semantics = true; // the menu node carries the semantics
-        node.add(item_node);
+        item_node.defer_paint = true; // the rows paint in the popup overlay pass
+        rows[row_count] = item_node;
+        row_count += 1;
     }
+    // Everything fallible has succeeded — attach (Node.add is infallible).
+    // The anchor FIRST (children[0] — it sizes the menu; the rows follow at
+    // children[1..]). The anchor stays caller-owned until here: on any
+    // failure above, the caller's errdefer still owns it (no double
+    // ownership). It is slot-owned (the registry round-trips it through the
+    // "anchor" option — document children never serialize for this widget),
+    // so it is marked internal like the item rows: child-walking serializers
+    // must not see it as document data. No effect on hit-testing, painting
+    // or semantics — the anchor stays fully interactive.
+    anchor.internal = true;
+    node.add(anchor);
+    for (rows) |item_node| node.add(item_node);
+    allocator.free(rows);
     ui.semantics.attach(node, .{
         .role = .menu,
         .label = "Menu",
@@ -557,7 +617,8 @@ test "menu: open/close via the signal; item click selects + closes; keyboard nav
     try std.testing.expectEqual(@as(u32, 1), count);
     try std.testing.expectEqual(@as(usize, 2), selectedIndex(m)); // "Paste" (index 1 skipped)
     try std.testing.expect(!isOpen(m)); // closed after the selection
-    try std.testing.expect(!input.isFocused(m)); // focus restored (null here)
+    try std.testing.expect(!input.isFocused(m));
+    try std.testing.expect(input.isFocused(anchor)); // the focus returns to the anchor (the invoker)
     try std.testing.expectEqualStrings("Paste", m.semantics.?.value); // a11y follows
     // pointer: open, hover highlights, click selects (the item row is at
     // y = 40 + 8 = 48..96 — the click lands inside its bounds)
@@ -579,6 +640,44 @@ test "menu: open/close via the signal; item click selects + closes; keyboard nav
     sig.set(true);
     _ = router.dispatchKey(.{ .kind = .key_down, .key = .escape });
     try std.testing.expect(!isOpen(m));
+}
+
+test "menu: mouse hover over a row highlights it (the popup-aware hover)" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    const anchor = try anchorBox(a, 120, 40);
+    const m = try menu(a, anchor, &.{ .{ .label = "Copy" }, .{ .label = "Paste" } }, null, null, .{});
+    defer m.deinit();
+    m.layout(.{ .x = 0, .y = 0, .w = 120, .h = 40 });
+    setOpen(m, true);
+    // the first item row is at y = 48..96 — OUTSIDE the menu's bounds (the
+    // panel overflows): the router's hover must still hit it
+    router.dispatchPointer(m, .{ .phase = .move, .x = 10, .y = 60 });
+    try std.testing.expectEqual(@as(i32, 0), stateOf(m).highlight);
+    // moving to the second row moves the highlight (leave + enter)
+    router.dispatchPointer(m, .{ .phase = .move, .x = 10, .y = 60 + 48 });
+    try std.testing.expectEqual(@as(i32, 1), stateOf(m).highlight);
+}
+
+test "menu: the panel width is clamped to the window (a long label stays onscreen)" {
+    const a = std.testing.allocator;
+    var buf: [300]u8 = undefined;
+    @memset(&buf, 'a');
+    const anchor = try anchorBox(a, 120, 40);
+    const m = try menu(a, anchor, &.{.{ .label = &buf }}, null, null, .{});
+    const win = try layout_w.column(a, .{});
+    win.add(m);
+    defer win.deinit();
+    win.layout(.{ .x = 0, .y = 0, .w = 200, .h = 400 });
+    // the intrinsic width (~324) exceeds the window: the panel is clamped to
+    // the width available from its start edge to the window's end
+    const intrinsic = panelWidth(stateOf(m), theme_mod.light);
+    const avail = 200 - m.bounds.x;
+    try std.testing.expect(intrinsic > avail); // the label is really too wide
+    const item0 = m.children.items[1];
+    try std.testing.expectEqual(@min(intrinsic, avail), item0.bounds.w);
 }
 
 test "menu: semantics — role menu, focusable, value follows the selection" {
@@ -650,4 +749,32 @@ test "golden: disabled menu item paints the OnSurface@0.38 label" {
     // the label ink: on_surface @ 0.38 over the panel
     const dis = golden.blendOver(ui.paint.withAlphaScaled(t.colors.on_surface, 0.38), t.colors.surface_container);
     try std.testing.expect(f.countColorIn(.{ .x = 32, .y = 68 + 8 + 12, .w = 80, .h = 24 }, dis) > 0);
+}
+
+test "golden: the open menu paints ABOVE a later sibling (the overlay pass)" {
+    // The panel overflows below the anchor into the next sibling's territory:
+    // the overlay pass must paint it over the sibling's opaque background.
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    const anchor = try anchorBox(a, 120, 40);
+    const m = try menu(a, anchor, &.{ .{ .label = "Copy" }, .{ .label = "Paste" } }, null, null, .{ .theme = t });
+    const cover = try golden.solidBox(a, 300, 200, 0xFF00FFFF); // opaque magenta
+    const col = try layout_w.column(a, .{ .gap = 0 });
+    col.add(m);
+    col.add(cover);
+    defer col.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 320, 260);
+    defer r.deinit();
+    col.layout(.{ .x = 0, .y = 0, .w = 320, .h = 260 });
+    setOpen(m, true);
+    r.paint(col, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    // the anchor paints in the normal pass
+    try std.testing.expectEqual(@as(Color, 0x888888FF), f.pixelAt(60, 20));
+    // the panel's top padding (y = 40..48) is NOT covered by the magenta box:
+    // it paints in the overlay pass, above the later sibling
+    try std.testing.expectEqual(t.colors.surface_container, f.pixelAt(30, 44));
+    // below the panel (y > 40 + 8 + 96 + 8 = 152) the sibling shows through
+    try std.testing.expectEqual(@as(Color, 0xFF00FFFF), f.pixelAt(30, 200));
 }

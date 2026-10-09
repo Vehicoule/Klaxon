@@ -278,10 +278,12 @@ pub const Host = struct {
             kx.c.kx_clip_rect(host.ctx, d.x, d.y, d.w, d.h);
             kx.c.kx_clear(host.ctx, 0);
             root.paint(host.ctx);
+            host.paintPopupOverlay(); // above the tree (a popup overflows its anchor), below the ring
             if (focus) |fm| fm.paintRing(host.ctx);
             kx.c.kx_clip_reset(host.ctx);
         } else {
             root.paint(host.ctx);
+            host.paintPopupOverlay();
             if (focus) |fm| fm.paintRing(host.ctx); // full repaint: ring included
         }
         kx.c.kx_end_frame(host.ctx);
@@ -295,6 +297,16 @@ pub const Host = struct {
         // Frame budget signal (1e.7): low-priority animations pause on overrun.
         host.timeline.frame_overrun = host.stats.paint_time_ms > FRAME_BUDGET_MS;
         if (host.ppm_path != null and host.stats.frames == 30) host.dumpPpm();
+    }
+
+    /// Paint the open popup's overlay pass: popup content overflows its
+    /// anchor (a menu panel over later siblings), so it paints after the
+    /// whole tree — above everything except the focus ring. Inside the
+    /// damage clip: the popup's dirty marks already cover its overflow.
+    fn paintPopupOverlay(host: *Host) void {
+        if (host.input.open_popup) |popup| {
+            if (popup.vtable.paint_overlay) |po| po(popup, host.ctx);
+        }
     }
 
     /// Pace one loop iteration to the frame budget: delay only the remainder
