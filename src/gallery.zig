@@ -45,6 +45,7 @@ const search_bar_w = widgets.search_bar;
 const navigation_rail_w = widgets.navigation_rail;
 const side_sheet_w = widgets.side_sheet;
 const pull_to_refresh_w = widgets.pull_to_refresh;
+const loading_indicator_w = widgets.loading_indicator;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -88,6 +89,8 @@ const Refs = struct {
     ss_m3e: *Node, // the M3E side sheet (Side sheet section)
     ss_btn: *Node, // the side sheet's toggle button (Side sheet section)
     ptr_m3e: *Node, // the M3E pull-to-refresh container (Pull to refresh section)
+    load_m3e: *Node, // the M3E plain indeterminate loading indicator (Loading indicator section)
+    load_det_m3e: *Node, // the M3E contained determinate loading indicator (Loading indicator section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -164,6 +167,7 @@ pub const Gallery = struct {
     ss_closed: *state.Signal(u32), // the side sheet's close counter
     ptr_refreshing: *state.Signal(bool), // the PTR's refreshing state
     ptr_refresh: *state.Signal(u32), // the PTR's refresh counter
+    li_progress: *state.Signal(f32), // the determinate loading indicator's progress (0..1)
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -302,6 +306,8 @@ pub const Gallery = struct {
         errdefer g.ptr_refreshing.deinit();
         g.ptr_refresh = try state.Signal(u32).init(allocator, 0);
         errdefer g.ptr_refresh.deinit();
+        g.li_progress = try state.Signal(f32).init(allocator, 0.35);
+        errdefer g.li_progress.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -443,6 +449,7 @@ pub const Gallery = struct {
         g.ss_closed.deinit();
         g.ptr_refreshing.deinit();
         g.ptr_refresh.deinit();
+        g.li_progress.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -492,6 +499,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Navigation rail (M3E)", try buildNavRailSection(g, theme)));
     content.add(try section(a, theme, "Side sheet (M3E)", try buildSideSheetSection(g, theme)));
     content.add(try section(a, theme, "Pull to refresh (M3E)", try buildPullToRefreshSection(g, theme)));
+    content.add(try section(a, theme, "Loading indicator (M3E)", try buildLoadingIndicatorSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1004,6 +1012,27 @@ fn buildPullToRefreshSection(g: *Gallery, theme: Theme) !*Node {
     row.add(try text_w.BoundText(u32).text(a, g.ptr_refresh, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     row.add(try text_w.BoundText(bool).text(a, g.ptr_refreshing, fmtRefreshing, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(row);
+    return col;
+}
+
+/// Loading indicator (M3E): plain indeterminate, contained indeterminate, and
+/// contained determinate (the progress signal drives the shape + rotation).
+fn buildLoadingIndicatorSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const row = try layout.row(a, .{ .gap = 24, .cross_align = .center });
+    const plain = try loading_indicator_w.loadingIndicator(a, null, .{ .theme = theme });
+    row.add(plain);
+    g.refs.load_m3e = plain;
+    const contained = try loading_indicator_w.loadingIndicator(a, null, .{ .contained = true, .theme = theme });
+    row.add(contained);
+    const det = try loading_indicator_w.loadingIndicator(a, g.li_progress, .{ .contained = true, .theme = theme });
+    row.add(det);
+    g.refs.load_det_m3e = det;
+    col.add(row);
+    const lab = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    lab.add(try text_w.BoundText(f32).text(a, g.li_progress, fmtProgress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(lab);
     return col;
 }
 
@@ -1687,6 +1716,10 @@ fn fmtDrawerOpen(v: bool, buf: []u8) []const u8 {
 fn fmtRefreshing(v: bool, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "Refreshing {s}", .{if (v) "yes" else "no"}) catch "Refreshing";
 }
+
+fn fmtProgress(v: f32, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Progress {d:.2}", .{v}) catch "Progress";
+}
 fn fmtStatus(v: StatusBuf, buf: []u8) []const u8 {
     const s = std.mem.sliceTo(&v, 0);
     @memcpy(buf[0..s.len], s);
@@ -2225,6 +2258,19 @@ test "gallery: the M3E pull-to-refresh triggers on a pull past the threshold" {
     try std.testing.expectEqual(@as(u32, 2), g.ptr_refresh.peek()); // the second pull fired too
     try std.testing.expect(g.ptr_refreshing.peek());
     g.ptr_refreshing.set(false);
+}
+
+test "gallery: the M3E loading indicator (determinate) follows its progress signal" {
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const det = g.refs.load_det_m3e;
+    // determinate: rotation = -progress × 180 (initial 0.35 → -63°)
+    try std.testing.expectApproxEqAbs(@as(f32, -0.35 * 180), loading_indicator_w.shapeRotation(det), 0.01);
+    g.li_progress.set(0.75);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.75 * 180), loading_indicator_w.shapeRotation(det), 0.01);
+    // the plain indicator is indeterminate: static without a timeline (shape 0)
+    try std.testing.expectEqual(@as(usize, 0), loading_indicator_w.morphIndex(g.refs.load_m3e));
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {

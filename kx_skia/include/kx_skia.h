@@ -26,6 +26,9 @@
 //   0.8.0 — Phase 2d.3 PR D3: + kx_stroke_rrect_corners (per-corner radii
 //           stroke — the M3E segmented/split buttons' 1dp borders on
 //           start/end/middle shapes).
+//   0.9.0 — Phase 2d.4 PR #32: + kx_fill_polygon (a closed polygon fill —
+//           the M3E loading indicator's morphing shapes; no path type
+//           crosses this boundary, like kx_stroke_polyline).
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -108,6 +111,11 @@ void kx_layer_alpha(kx_ctx* ctx, float alpha);
 // indicators). Arcs and wavy indicators are polylines generated in Zig —
 // no path type crosses this boundary.
 void kx_stroke_polyline(kx_ctx* ctx, const float* xs, const float* ys, int count, float stroke_w, bool round_cap, uint32_t rgba);
+// Fill a closed polygon through (xs, ys) (added in 0.9.0): moveTo/lineTo
+// through the `count` points, closed, with a solid color — the M3E loading
+// indicator's shapes are polygons generated in Zig (rounded corners are a
+// follow-up: Skia fills the polygon as given).
+void kx_fill_polygon(kx_ctx* ctx, const float* xs, const float* ys, int count, uint32_t rgba);
 
 // Text metrics for widget layout. Ctx-independent: fonts are process-global.
 //   width   — advance width in pixels

@@ -103,6 +103,13 @@ pub fn strokePolyline(ctx: *kx.Ctx, xs: []const f32, ys: []const f32, stroke_w: 
     kx.c.kx_stroke_polyline(ctx, xs.ptr, ys.ptr, @intCast(xs.len), stroke_w, round_cap, color);
 }
 
+/// Fill a closed polygon through (xs, ys) (ABI 0.9.0) — the M3E loading
+/// indicator's shapes are polygons generated in Zig; no path type crosses
+/// the ABI.
+pub fn fillPolygon(ctx: *kx.Ctx, xs: []const f32, ys: []const f32, color: Color) void {
+    kx.c.kx_fill_polygon(ctx, xs.ptr, ys.ptr, @intCast(xs.len), color);
+}
+
 pub fn text(ctx: *kx.Ctx, str: [:0]const u8, x: f32, baseline_y: f32, size: f32, bold: bool, color: Color) void {
     kx.c.kx_draw_text_styled(ctx, str, x, baseline_y, size, bold, color);
 }
@@ -131,6 +138,6 @@ pub fn imageDraw(ctx: *kx.Ctx, id: u64, x: f32, y: f32, w: f32, h: f32) void {
 
 // --- tests ---
 
-test "kx ABI version reports 0.8.0 (the stroke_rrect_corners entry)" {
-    try std.testing.expectEqualStrings("0.8.0", std.mem.span(kx.c.kx_abi_version()));
+test "kx ABI version reports 0.9.0 (the fill_polygon entry)" {
+    try std.testing.expectEqualStrings("0.9.0", std.mem.span(kx.c.kx_abi_version()));
 }
