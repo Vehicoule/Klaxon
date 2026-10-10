@@ -1,0 +1,26 @@
+// Klaxon gallery — top-level Gradle build file (Phase 3d).
+// AGP rides the buildscript classpath so app/build.gradle can use the
+// `plugins { id 'com.android.application' }` DSL.
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.7.3'
+
+        // NOTE: Do not place application dependencies here; they belong
+        // in the individual module build.gradle files.
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

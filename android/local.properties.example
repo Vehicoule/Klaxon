@@ -1,0 +1,4 @@
+# Copy to local.properties (gitignored) and point at your local Android SDK.
+# sdk.dir is required; ndk.dir is optional (AGP picks the newest installed NDK).
+# sdk.dir=/Users/<you>/Library/Android/sdk
+# ndk.dir=/Users/<you>/Library/Android/sdk/ndk/<version>

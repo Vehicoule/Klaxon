@@ -2,11 +2,30 @@
 // Builds the gallery tree, runs it through the Host (window + dirty-flag
 // event loop). Backend: raster by default, `metal` for Graphite-Metal.
 const std = @import("std");
+const builtin = @import("builtin");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
 const input_mod = @import("ui/input.zig");
 const host_mod = @import("host.zig");
 const gallery_mod = @import("gallery.zig");
+
+// Phase 3d Android: the app is built as a static lib (build.zig android-lib)
+// and linked into libmain.so by CMake/NDK. SDLActivity loads libmain.so and
+// runs the exported SDL_main() below on SDL's main thread.
+comptime {
+    if (builtin.os.tag == .linux and builtin.abi == .android) {
+        @export(&SDL_main, .{ .name = "SDL_main", .linkage = .strong });
+    }
+}
+
+/// Android entry point (called by SDLActivity through libSDL3.so). No argv
+/// parsing on device — the raster backend is the only one wired up for now.
+fn SDL_main(argc: c_int, argv: [*:null]?[*:0]u8) callconv(.c) c_int {
+    _ = argc;
+    _ = argv;
+    galleryMain(.{ .backend = kx.c.KX_BACKEND_RASTER }) catch return 1;
+    return 0;
+}
 
 const width: c_int = gallery_mod.WINDOW_W;
 const height: c_int = gallery_mod.WINDOW_H;
@@ -50,8 +69,12 @@ fn onFrame(ctx: ?*anyopaque, frame: u64) void {
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
-    const opts = optsFromArgs(init.args);
+    try galleryMain(optsFromArgs(init.args));
+}
 
+/// App body, shared by the native entry point (main) and the Android
+/// SDL_main entry point above.
+fn galleryMain(opts: Options) !void {
     var debug_alloc = std.heap.DebugAllocator(.{}){};
     defer _ = debug_alloc.deinit();
     const allocator = debug_alloc.allocator();

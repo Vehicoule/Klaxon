@@ -1,0 +1,77 @@
+// Klaxon gallery — Android app module (Phase 3d).
+//
+// Native split: Zig builds the app as a static library
+// (`zig build -Dtarget=aarch64-linux-android android-lib` -> zig-out/lib/libgallery.a),
+// CMake/NDK builds libmain.so (kx_skia shim + libgallery.a + Skia + SDL3).
+// SDLActivity loads libSDL3.so + libmain.so and runs the exported SDL_main().
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.klaxon.gallery'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.klaxon.gallery'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_PLATFORM=android-26', '-DANDROID_STL=c++_static'
+                abiFilters 'arm64-v8a'
+            }
+        }
+    }
+
+    // Release signing: KX_KEYSTORE (+ KX_KEYSTORE_PASSWORD / KX_KEY_ALIAS /
+    // KX_KEY_PASSWORD) when present, the SDK debug key otherwise — the latter
+    // keeps `assembleRelease` installable on a local emulator with no setup.
+    signingConfigs {
+        release {
+            def ks = System.getenv('KX_KEYSTORE')
+            if (ks != null) {
+                storeFile file(ks)
+                storePassword System.getenv('KX_KEYSTORE_PASSWORD') ?: ''
+                keyAlias System.getenv('KX_KEY_ALIAS') ?: ''
+                keyPassword System.getenv('KX_KEY_PASSWORD') ?: ''
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig System.getenv('KX_KEYSTORE') != null ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+        }
+    }
+
+    // Store .so files uncompressed + page-aligned in the APK, paired with
+    // android:extractNativeLibs="false" in the manifest.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+}
