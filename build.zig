@@ -290,6 +290,10 @@ fn addWasmWeb(
         "-std=c++20",  "-fno-exceptions", "-fno-rtti",
         "-DSK_GANESH", "-DSK_GL",         "-DSK_FORCE_8_BYTE_ALIGNMENT",
         "-DNDEBUG",
+        // Disable all default include paths: zig cc adds its own musl/libc++
+        // headers which conflict with the emscripten sysroot. All include paths
+        // are provided explicitly below (sysroot + c++/v1 + project headers).
+        "-nostdinc", "-nostdinc++",
     };
     kx_skia.root_module.addCSourceFiles(.{
         .files = &.{
