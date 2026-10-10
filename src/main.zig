@@ -54,6 +54,42 @@ fn animate(ctx: ?*anyopaque, frame: u64) void {
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
+    if (builtin.os.tag == .emscripten) {
+        // Wasm (Phase 3f): the browser owns the main thread — runWasm installs
+        // the rAF loop with simulate_infinite_loop = 1, which unwinds main()'s
+        // stack (defers never run). Host and Demo therefore live in stable
+        // storage (page_allocator, intentional leak: the page lives as long as
+        // the tab) so the rAF callback never reuses a dangling stack pointer
+        // (Devin issue #2).
+        const stable = std.heap.page_allocator;
+        // No argv parsing on emscripten: hardcoded Ganesh WebGL2 backend.
+        const host_ptr = try stable.create(host_mod.Host);
+        host_ptr.* = try host_mod.Host.init(stable, width, height, kx.c.KX_BACKEND_GANESH_WEBGL2, null);
+        // No defer host.deinit(): the host lives as long as the page.
+        input_mod.setCurrent(&host_ptr.input); // the router is process-global (single-window P0)
+        ui.anim.setCurrent(&host_ptr.timeline); // the animation timeline, same pattern
+        host_ptr.cursors = true; // pointer cursors (Phase 2d-0.5): hand over the button
+        // the focus ring follows the theme's platform tokens (Phase 2d-0.5)
+        if (ui.semantics.currentFocus()) |fm| {
+            fm.ring_width = @import("theme.zig").light.platform.focus_ring_width;
+            fm.ring_offset = @import("theme.zig").light.platform.focus_ring_offset;
+        }
+
+        const demo_ptr = try stable.create(demo_mod.Demo);
+        demo_ptr.* = try demo_mod.buildTree(stable);
+        // No defer demo.deinit(): same stable-storage rationale as the host.
+        const root = demo_ptr.root;
+
+        root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) });
+
+        std.debug.print("klaxon hello (Skia {s}) — widget tree: {d} nodes, reactive bg\n", .{ host_ptr.stats.backend, countNodes(root) });
+        // Installs the rAF main loop — one runIteration per animation frame,
+        // never blocking. demo_ptr.bg is a *Signal(u32) owned by the
+        // heap-allocated Demo: stable for the lifetime of the page.
+        platform_wasm.runWasm(host_ptr, root, max_frames, animate, demo_ptr.bg);
+        return; // unreachable with simulate_infinite_loop = 1
+    }
+
     const opts = optsFromArgs(init.args);
 
     var debug_alloc = std.heap.DebugAllocator(.{}){};
@@ -78,14 +114,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) });
 
     std.debug.print("klaxon hello (Skia {s}) — widget tree: {d} nodes, reactive bg\n", .{ host.stats.backend, countNodes(root) });
-    if (builtin.os.tag == .emscripten) {
-        // Wasm (Phase 3f): install the rAF main loop — one runIteration per
-        // animation frame, never blocking. simulate_infinite_loop = 1 unwinds
-        // main()'s stack (the defers above do not run: the host lives as
-        // long as the page); the loop stops on quit or max_frames.
-        platform_wasm.runWasm(&host, root, max_frames, animate, demo.bg);
-        return; // unreachable with simulate_infinite_loop = 1
-    }
     try host.run(root, max_frames, animate, demo.bg);
     std.debug.print("rendered {d} frames, last frame {d:.2} ms, done\n", .{ host.stats.frames, host.stats.frame_time_ms });
 }

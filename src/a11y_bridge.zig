@@ -6,9 +6,12 @@
 //   - kx_a11y_free_string: frees a string allocated by kx_a11y_dump_tree
 //
 // The dump format (one line per visible semantic node):
-//   "depth|role|label|value|focusable|x|y|w|h\n"
-// depth is the indentation level (0 = root). The macOS bridge parses this
-// to build the NSAccessibility hierarchy.
+//   "depth|role|label|value|focusable|ptr|checked|x|y|w|h\n"
+// depth is the indentation level (0 = root). ptr is the Node pointer in
+// decimal — bridges match it against the node_id of focus_changed /
+// control_changed events. checked is 0 = null, 1 = false, 2 = true.
+// x/y/w/h are reserved (always 0). The macOS bridge parses this to build
+// the NSAccessibility hierarchy; the web bridge mirrors it to ARIA.
 const std = @import("std");
 const ui = @import("ui.zig");
 const Node = ui.node.Node;
@@ -52,15 +55,19 @@ export fn kx_a11y_free_string(s: ?[*]u8) callconv(.c) void {
 }
 
 fn dumpNode(sn: *sem.SemanticNode, depth: usize, buf: *std.array_list.Managed(u8)) !void {
-    // Format: "depth|role|label|value|focusable|x|y|w|h\n"
+    // Format: "depth|role|label|value|focusable|ptr|checked|x|y|w|h\n"
     const role_str = @tagName(sn.role);
     const label = if (sn.label.len > 0) sn.label else "";
     const value = if (sn.value.len > 0) sn.value else "";
     const focusable: u8 = if (sn.focusable) 1 else 0;
+    const ptr: u64 = @intFromPtr(sn.node);
+    // checked: 0 = null, 1 = false, 2 = true (?bool unwrapped — Zig does
+    // not switch on an optional directly).
+    const checked: u8 = if (sn.checked) |on| (if (on) 2 else 1) else 0;
 
-    var line_buf: [1024]u8 = undefined;
-    const line = std.fmt.bufPrint(&line_buf, "{d}|{s}|{s}|{s}|{d}|0|0|0|0\n", .{
-        depth, role_str, label, value, focusable,
+    var line_buf: [2048]u8 = undefined;
+    const line = std.fmt.bufPrint(&line_buf, "{d}|{s}|{s}|{s}|{d}|{d}|{d}|0|0|0|0\n", .{
+        depth, role_str, label, value, focusable, ptr, checked,
     }) catch return;
     try buf.appendSlice(line);
 

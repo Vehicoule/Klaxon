@@ -80,6 +80,11 @@ pub const Host = struct {
     cursors_unavailable: bool = false, // headless / no driver: fail-soft
     current_cursor: input_mod.PointerCursor = .default,
     cursor_cache: [5]?*sdl.c.SDL_Cursor = .{ null, null, null, null, null },
+    /// Emscripten (wasm): the WebGL2 context created before kx.create — the
+    /// GPU shim (kx_skia_wasm.cpp) requires a current GL context at init.
+    /// Null on native. SDL_GLContext is already an optional pointer in the
+    /// Zig translation.
+    gl_ctx: sdl.c.SDL_GLContext = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -94,11 +99,40 @@ pub const Host = struct {
         }
         errdefer sdl.c.SDL_Quit();
 
-        const window = sdl.c.SDL_CreateWindow("klaxon hello", width, height, 0) orelse {
+        // Emscripten (wasm): request a WebGL2 (ES 3.0) context before window
+        // creation — the GPU shim (kx_skia_wasm.cpp) needs a current GL
+        // context when kx.create runs. Double-buffered, no depth buffer,
+        // 8-bit stencil.
+        if (is_emscripten) {
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_MAJOR_VERSION), 3);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_MINOR_VERSION), 0);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_PROFILE_MASK), sdl.c.SDL_GL_CONTEXT_PROFILE_ES);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_DOUBLEBUFFER), 1);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_DEPTH_SIZE), 0);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_STENCIL_SIZE), 8);
+        }
+        const window_flags: u64 = if (is_emscripten) sdl.c.SDL_WINDOW_OPENGL else 0;
+        const window = sdl.c.SDL_CreateWindow("klaxon hello", width, height, window_flags) orelse {
             std.debug.print("SDL_CreateWindow failed: {s}\n", .{sdl.c.SDL_GetError()});
             return error.SdlWindow;
         };
         errdefer sdl.c.SDL_DestroyWindow(window);
+
+        // Emscripten (wasm): create the WebGL2 context and make it current
+        // BEFORE kx.create — gpu_init checks SDL_GL_GetCurrentContext.
+        var gl_ctx: sdl.c.SDL_GLContext = null;
+        if (is_emscripten) {
+            gl_ctx = sdl.c.SDL_GL_CreateContext(window);
+            if (gl_ctx == null) {
+                std.debug.print("SDL_GL_CreateContext failed: {s}\n", .{sdl.c.SDL_GetError()});
+                return error.SdlGlContext;
+            }
+            _ = sdl.c.SDL_GL_MakeCurrent(window, gl_ctx);
+            _ = sdl.c.SDL_GL_SetSwapInterval(0); // rAF paces the frame loop
+        }
+        errdefer {
+            if (gl_ctx) |ctx| _ = sdl.c.SDL_GL_DestroyContext(ctx);
+        }
 
         // Text input events flow from window creation (TextField focus is
         // managed by the input router; refine per-platform later).
@@ -137,6 +171,7 @@ pub const Host = struct {
             .allocator = allocator,
             .window = window,
             .ctx = ctx,
+            .gl_ctx = gl_ctx,
             .renderer = renderer,
             .texture = texture,
             .pixels = pixels,
@@ -190,6 +225,7 @@ pub const Host = struct {
         if (host.texture) |t| sdl.c.SDL_DestroyTexture(t);
         if (host.renderer) |r| sdl.c.SDL_DestroyRenderer(r);
         kx.c.kx_destroy(host.ctx);
+        if (host.gl_ctx) |ctx| _ = sdl.c.SDL_GL_DestroyContext(ctx);
         sdl.c.SDL_DestroyWindow(host.window);
         sdl.c.SDL_Quit();
         host.allocator.free(host.pixels);

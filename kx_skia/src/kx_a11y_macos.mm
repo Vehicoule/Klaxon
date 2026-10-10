@@ -30,8 +30,8 @@ extern "C" {
                             void* userdata);
     // Build the semantic tree and return a JSON-ish flat description.
     // Returns a malloc'd string (caller frees) or NULL on error.
-    // Format: "role|label|value|focusable|rect_x|rect_y|rect_w|rect_h\n" per node,
-    // with indentation (2 spaces per depth) for hierarchy.
+    // Format: "depth|role|label|value|focusable|ptr|checked|x|y|w|h\n" per node
+    // (ptr = Node pointer in decimal, checked = 0/1/2; both ignored here).
     char* kx_a11y_dump_tree(void* root_node);
     void kx_a11y_free_string(char* s);
 }
@@ -114,7 +114,9 @@ static void* g_zig_root_node = NULL;
 static KXA11yElement* buildHierarchy(const char* dump) {
     if (!dump) return nil;
     // v1: create a single root group (full hierarchy rebuild is a follow-up).
-    // The dump format is "depth|role|label|value|focusable|x|y|w|h\n" per line.
+    // The dump format is "depth|role|label|value|focusable|ptr|checked|x|y|w|h\n"
+    // per line. ptr/checked are parsed for format compatibility and ignored
+    // — this bridge keys off the x/y/w/h rects.
     KXA11yElement* root = [[KXA11yElement alloc] initWithRole:@"group"
                                                         label:@"Klaxon"
                                                         value:nil
@@ -131,17 +133,20 @@ static KXA11yElement* buildHierarchy(const char* dump) {
     p = dump;
     int idx = 0;
     while (*p && idx < line_count) {
-        // Parse: depth|role|label|value|focusable|x|y|w|h
+        // Parse: depth|role|label|value|focusable|ptr|checked|x|y|w|h
         int depth = 0;
         char role[64] = {0};
         char label[256] = {0};
         char value[256] = {0};
         int focusable = 0;
+        unsigned long long ptr = 0; // node pointer — ignored (v1 keys off rects)
+        int checked = 0;            // 0=null 1=false 2=true — ignored
         float x = 0, y = 0, w = 0, h = 0;
         int consumed = 0;
         // Simple sscanf-like parse (depth is the leading integer before '|').
-        if (sscanf(p, "%d|%63[^|]|%255[^|]|%255[^|]|%d|%f|%f|%f|%f%n",
-                   &depth, role, label, value, &focusable, &x, &y, &w, &h, &consumed) >= 5) {
+        if (sscanf(p, "%d|%63[^|]|%255[^|]|%255[^|]|%d|%llu|%d|%f|%f|%f|%f%n",
+                   &depth, role, label, value, &focusable, &ptr, &checked,
+                   &x, &y, &w, &h, &consumed) >= 5) {
             KXA11yElement* child = [[KXA11yElement alloc] initWithRole:
                 [NSString stringWithUTF8String:role]
                 label:[NSString stringWithUTF8String:label]

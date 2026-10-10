@@ -4,7 +4,9 @@
 // Zig → JS (wasm imports implemented here):
 //   kx_a11y_event(kind, node_id, text_ptr, text_len, region)
 //     kind    0=tree_dirty 1=focus_changed 2=announce 3=control_changed
-//     node_id flat index of the node in the kx_a11y_dump_tree dump order
+//     node_id Node pointer (decimal) — focus_changed/control_changed carry it;
+//             ptrToIndex maps it to the kx_a11y_dump_tree dump order index.
+//             tree_dirty carries the ROOT node pointer instead.
 //     text    UTF-8 announce payload (borrowed during the call only).
 //     region  0=off 1=polite 2=assertive (semantics.LiveRegion).
 //   kx_js_a11y_event(...) — alias import, same signature.
@@ -24,6 +26,7 @@ mergeInto(LibraryManager.library, {
     liveAssertive: null,
     nodes: [],
     focusedIndex: -1,
+    ptrToIndex: {},
     rootNodePtr: 0,
     rootNodeTried: false,
     warnedNoRoot: false,
@@ -99,22 +102,27 @@ mergeInto(LibraryManager.library, {
       while (root.firstChild) root.removeChild(root.firstChild);
       var nodes = [];
       var stack = [];
+      KX_A11Y.ptrToIndex = {};
       var lines = dump.split('\n');
       for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         if (!line) continue;
         var parts = line.split('|');
-        if (parts.length < 5) continue;
+        // depth|role|label|value|focusable|ptr|checked|x|y|w|h
+        if (parts.length < 7) continue;
         var depth = parseInt(parts[0], 10);
         if (isNaN(depth)) continue;
         var role = parts[1];
-        var el = KX_A11Y.buildElement(role, parts[2], parts[3], parts[4] === '1');
+        var ptr = parseInt(parts[5], 10);
+        var checked = parseInt(parts[6], 10);
+        var el = KX_A11Y.buildElement(role, parts[2], parts[3], parts[4] === '1', checked);
         while (stack.length > depth) stack.pop();
         var parent = stack.length > 0 ? stack[stack.length - 1] : root;
         parent.appendChild(el);
         stack.push(el);
         el.setAttribute('data-kx-index', String(nodes.length));
-        nodes.push({ el: el, role: role });
+        nodes.push({ el: el, role: role, ptr: ptr });
+        KX_A11Y.ptrToIndex[ptr] = nodes.length - 1;
       }
       KX_A11Y.nodes = nodes;
       if (KX_A11Y.focusedIndex >= 0 && KX_A11Y.focusedIndex < nodes.length) {
@@ -147,7 +155,7 @@ mergeInto(LibraryManager.library, {
       }
     },
 
-    buildElement: function (role, label, value, focusable) {
+    buildElement: function (role, label, value, focusable, checked) {
       var el = document.createElement('div');
       el.setAttribute('data-kx-role', role);
       var aria = KX_A11Y.ariaRole(role);
@@ -162,6 +170,11 @@ mergeInto(LibraryManager.library, {
         if (!isNaN(n)) el.setAttribute('aria-valuenow', String(n));
       } else if (role === 'text_field') {
         el.textContent = value;
+      }
+      // checked: 0 = null, 1 = false, 2 = true (only tri-state roles use it).
+      if (role === 'toggle' || role === 'checkbox' || role === 'radio') {
+        if (checked === 2) el.setAttribute('aria-checked', 'true');
+        else if (checked === 1) el.setAttribute('aria-checked', 'false');
       }
       if (focusable) {
         el.setAttribute('tabindex', '0');
@@ -180,9 +193,11 @@ mergeInto(LibraryManager.library, {
           break;
         }
         case 1: {
-          KX_A11Y.focusedIndex = nodeId;
-          if (nodeId >= 0 && nodeId < KX_A11Y.nodes.length) {
-            try { KX_A11Y.nodes[nodeId].el.focus({ preventScroll: true }); } catch (e) {}
+          // nodeId is a Node pointer, not a dump index — resolve via ptrToIndex.
+          var idx = KX_A11Y.ptrToIndex[nodeId];
+          if (idx !== undefined && idx >= 0 && idx < KX_A11Y.nodes.length) {
+            KX_A11Y.focusedIndex = idx;
+            try { KX_A11Y.nodes[idx].el.focus({ preventScroll: true }); } catch (e) {}
           }
           break;
         }
@@ -194,6 +209,13 @@ mergeInto(LibraryManager.library, {
               live.textContent = KX_A11Y.decode(textPtr, textLen);
             }
           }
+          break;
+        }
+        case 3: {
+          // control_changed: a toggle/slider value flipped — re-dump so the
+          // mirrored ARIA values (aria-checked, aria-valuenow, ...) refresh.
+          var dump = KX_A11Y.dumpTree();
+          if (dump !== null) KX_A11Y.rebuild(dump);
           break;
         }
       }
