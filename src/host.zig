@@ -4,6 +4,12 @@
 // every loop iteration), repaints clipped to the damage region (dirty-rect,
 // the surface is retained between frames), and paces rendering to the
 // 8.3 ms frame budget (~120 fps).
+// Phase 3f (wasm): the loop body is extracted into runIteration() — one
+// pass of drain/tick/render. Native run() keeps its blocking waits
+// (SDL_WaitEvent / SDL_WaitEventTimeout); on emscripten run() delegates to
+// the rAF main loop in platform_wasm.zig — the browser owns the main
+// thread, so nothing in the loop may block (SDL_WaitEvent/SDL_Delay
+// busy-poll without Asyncify and freeze the tab).
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -19,6 +25,13 @@ const semantics_mod = @import("ui/semantics.zig");
 const anim = @import("ui/anim.zig");
 
 const Node = ui.node.Node;
+
+/// Emscripten target (wasm32-emscripten). The rAF main loop paces the frame
+/// loop (platform_wasm.zig); every blocking wait and the SDL_Delay pacing
+/// are compiled out under this flag.
+pub const is_emscripten = builtin.os.tag == .emscripten;
+
+const platform_wasm = if (is_emscripten) @import("platform_wasm.zig") else struct {};
 
 /// Frame budget: 8.33 ms → 120 fps target (the metrics gate). The whole loop
 /// iteration is paced to the budget (slow iterations run unthrottled and flag
@@ -67,6 +80,11 @@ pub const Host = struct {
     cursors_unavailable: bool = false, // headless / no driver: fail-soft
     current_cursor: input_mod.PointerCursor = .default,
     cursor_cache: [5]?*sdl.c.SDL_Cursor = .{ null, null, null, null, null },
+    /// Emscripten (wasm): the WebGL2 context created before kx.create — the
+    /// GPU shim (kx_skia_wasm.cpp) requires a current GL context at init.
+    /// Null on native. SDL_GLContext is already an optional pointer in the
+    /// Zig translation.
+    gl_ctx: sdl.c.SDL_GLContext = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -81,11 +99,40 @@ pub const Host = struct {
         }
         errdefer sdl.c.SDL_Quit();
 
-        const window = sdl.c.SDL_CreateWindow("klaxon hello", width, height, 0) orelse {
+        // Emscripten (wasm): request a WebGL2 (ES 3.0) context before window
+        // creation — the GPU shim (kx_skia_wasm.cpp) needs a current GL
+        // context when kx.create runs. Double-buffered, no depth buffer,
+        // 8-bit stencil.
+        if (is_emscripten) {
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_MAJOR_VERSION), 3);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_MINOR_VERSION), 0);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_PROFILE_MASK), sdl.c.SDL_GL_CONTEXT_PROFILE_ES);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_DOUBLEBUFFER), 1);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_DEPTH_SIZE), 0);
+            _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_STENCIL_SIZE), 8);
+        }
+        const window_flags: u64 = if (is_emscripten) sdl.c.SDL_WINDOW_OPENGL else 0;
+        const window = sdl.c.SDL_CreateWindow("klaxon hello", width, height, window_flags) orelse {
             std.debug.print("SDL_CreateWindow failed: {s}\n", .{sdl.c.SDL_GetError()});
             return error.SdlWindow;
         };
         errdefer sdl.c.SDL_DestroyWindow(window);
+
+        // Emscripten (wasm): create the WebGL2 context and make it current
+        // BEFORE kx.create — gpu_init checks SDL_GL_GetCurrentContext.
+        var gl_ctx: sdl.c.SDL_GLContext = null;
+        if (is_emscripten) {
+            gl_ctx = sdl.c.SDL_GL_CreateContext(window);
+            if (gl_ctx == null) {
+                std.debug.print("SDL_GL_CreateContext failed: {s}\n", .{sdl.c.SDL_GetError()});
+                return error.SdlGlContext;
+            }
+            _ = sdl.c.SDL_GL_MakeCurrent(window, gl_ctx);
+            _ = sdl.c.SDL_GL_SetSwapInterval(0); // rAF paces the frame loop
+        }
+        errdefer {
+            if (gl_ctx) |ctx| _ = sdl.c.SDL_GL_DestroyContext(ctx);
+        }
 
         // Text input events flow from window creation (TextField focus is
         // managed by the input router; refine per-platform later).
@@ -124,6 +171,7 @@ pub const Host = struct {
             .allocator = allocator,
             .window = window,
             .ctx = ctx,
+            .gl_ctx = gl_ctx,
             .renderer = renderer,
             .texture = texture,
             .pixels = pixels,
@@ -177,88 +225,123 @@ pub const Host = struct {
         if (host.texture) |t| sdl.c.SDL_DestroyTexture(t);
         if (host.renderer) |r| sdl.c.SDL_DestroyRenderer(r);
         kx.c.kx_destroy(host.ctx);
+        if (host.gl_ctx) |ctx| _ = sdl.c.SDL_GL_DestroyContext(ctx);
         sdl.c.SDL_DestroyWindow(host.window);
         sdl.c.SDL_Quit();
         host.allocator.free(host.pixels);
     }
 
-    /// Frame loop. Renders only when the tree is dirty; at idle it blocks on
-    /// SDL_WaitEvent — 0 frames, 0 wakeups. `on_frame` is the app tick (it may
-    /// mark nodes dirty). The animation timeline is ticked every iteration:
-    /// active animations update signals → nodes mark dirty → the frame
-    /// renders below (time-based values — the tick rate is the loop rate,
-    /// ~120 Hz while animating).
+    /// Frame loop (native). Renders only when the tree is dirty; at idle it
+    /// blocks on SDL_WaitEvent — 0 frames, 0 wakeups. `on_frame` is the app
+    /// tick (it may mark nodes dirty). The animation timeline is ticked every
+    /// iteration: active animations update signals → nodes mark dirty → the
+    /// frame renders below (time-based values — the tick rate is the loop
+    /// rate, ~120 Hz while animating).
+    ///
+    /// On emscripten this delegates to platform_wasm.runWasm: the browser
+    /// owns the main thread and paces the loop with rAF (never blocks).
     pub fn run(host: *Host, root: *Node, max_frames: u64, on_frame: ?OnFrame, on_frame_ctx: ?*anyopaque) !void {
-    // macOS: initialize the NSAccessibility bridge.
-    if (builtin.os.tag == .macos) {
-        kx.a11yInit(@ptrCast(root));
-        defer kx.a11yShutdown();
-    }
+        if (is_emscripten) {
+            platform_wasm.runWasm(host, root, max_frames, on_frame, on_frame_ctx);
+            return;
+        }
+        // macOS: initialize the NSAccessibility bridge.
+        if (builtin.os.tag == .macos) {
+            kx.a11yInit(@ptrCast(root));
+            defer kx.a11yShutdown();
+        }
         var quit = false;
         while (!quit and host.stats.frames < max_frames) {
-            const iter_start_ns = sdl.c.SDL_GetTicksNS();
-            // Animations (1e): advance the timeline — active animations update
-            // signals → nodes mark dirty → the frame renders below. The clock
-            // never runs past a queued event: a release stamped before a
-            // long-press deadline is processed before the deadline fires.
-            const now = sdl.c.SDL_GetTicks();
-            var peek: sdl.c.SDL_Event = undefined;
-            const tick_time: u64 = if (sdl.c.SDL_PeepEvents(&peek, 1, @intCast(sdl.c.SDL_PEEKEVENT), @intCast(sdl.c.SDL_EVENT_FIRST), @intCast(sdl.c.SDL_EVENT_LAST)) > 0)
-                @min(now, peek.common.timestamp / 1_000_000)
-            else
-                now;
-            host.timeline.tick(tick_time);
-            var event: sdl.c.SDL_Event = undefined;
-            if (root.dirty) {
-                // Active: drain events without blocking.
-                while (sdl.c.SDL_PollEvent(&event)) {
-                    if (host.handleEvent(root, &event)) quit = true;
-                }
-            } else if (on_frame != null) {
-                // Clean but the app ticks: wait out the rest of the frame
-                // budget (the app may mark nodes dirty → rendered below).
-                const elapsed_ms = (sdl.c.SDL_GetTicksNS() - iter_start_ns) / 1_000_000;
-                if (elapsed_ms < FRAME_BUDGET_WAIT_MS) {
-                    const wait_ms = FRAME_BUDGET_WAIT_MS - @as(u32, @intCast(elapsed_ms));
-                    if (sdl.c.SDL_WaitEventTimeout(&event, @intCast(wait_ms))) {
-                        if (host.handleEvent(root, &event)) quit = true;
-                        while (sdl.c.SDL_PollEvent(&event)) {
-                            if (host.handleEvent(root, &event)) quit = true;
-                        }
-                    }
-                }
-            } else if (host.timeline.hasTimedWork()) {
-                // Timed work pending (running animation / held pointer waiting
-                // for a long-press deadline): wake at the timeline's
-                // granularity (~240 Hz) instead of blocking indefinitely.
-                if (sdl.c.SDL_WaitEventTimeout(&event, 4)) {
-                    if (host.handleEvent(root, &event)) quit = true;
-                    while (sdl.c.SDL_PollEvent(&event)) {
-                        if (host.handleEvent(root, &event)) quit = true;
-                    }
-                }
-            } else {
-                // True idle: block until an event arrives (0 wakeups).
-                if (sdl.c.SDL_WaitEvent(&event)) {
+            quit = try host.runIteration(root, on_frame, on_frame_ctx);
+        }
+    }
+
+    /// One pass of the frame loop (Phase 3f extraction): tick the animation
+    /// timeline, drain pending events, run the app tick, render when the tree
+    /// is dirty, pace the iteration. Returns true when the app requested quit.
+    ///
+    /// Native: the event wait blocks per the loop's state — dirty (drain,
+    /// non-blocking), app ticking (wait out the rest of the frame budget),
+    /// timed work pending (wake at the timeline's granularity, ~240 Hz),
+    /// true idle (block on SDL_WaitEvent: 0 wakeups). The iteration is paced
+    /// to the frame budget (~120 fps active).
+    ///
+    /// Emscripten: NEVER blocks. SDL_WaitEvent / SDL_WaitEventTimeout /
+    /// SDL_Delay busy-poll without Asyncify and freeze the tab; the rAF main
+    /// loop (platform_wasm.zig) paces the iteration, so only a non-blocking
+    /// SDL_PollEvent drain runs and the pacing delay is compiled out.
+    pub fn runIteration(host: *Host, root: *Node, on_frame: ?OnFrame, on_frame_ctx: ?*anyopaque) !bool {
+        const iter_start_ns = sdl.c.SDL_GetTicksNS();
+        // Animations (1e): advance the timeline — active animations update
+        // signals → nodes mark dirty → the frame renders below. The clock
+        // never runs past a queued event: a release stamped before a
+        // long-press deadline is processed before the deadline fires.
+        const now = sdl.c.SDL_GetTicks();
+        var peek: sdl.c.SDL_Event = undefined;
+        const tick_time: u64 = if (sdl.c.SDL_PeepEvents(&peek, 1, @intCast(sdl.c.SDL_PEEKEVENT), @intCast(sdl.c.SDL_EVENT_FIRST), @intCast(sdl.c.SDL_EVENT_LAST)) > 0)
+            @min(now, peek.common.timestamp / 1_000_000)
+        else
+            now;
+        host.timeline.tick(tick_time);
+        var event: sdl.c.SDL_Event = undefined;
+        var quit = false;
+        if (is_emscripten) {
+            // Wasm: non-blocking drain only — SDL's emscripten backend fills
+            // the queue from its JS event handlers; the rAF callback paces
+            // the loop. Blocking here would freeze the tab.
+            while (sdl.c.SDL_PollEvent(&event)) {
+                if (host.handleEvent(root, &event)) quit = true;
+            }
+        } else if (root.dirty) {
+            // Active: drain events without blocking.
+            while (sdl.c.SDL_PollEvent(&event)) {
+                if (host.handleEvent(root, &event)) quit = true;
+            }
+        } else if (on_frame != null) {
+            // Clean but the app ticks: wait out the rest of the frame
+            // budget (the app may mark nodes dirty → rendered below).
+            const elapsed_ms = (sdl.c.SDL_GetTicksNS() - iter_start_ns) / 1_000_000;
+            if (elapsed_ms < FRAME_BUDGET_WAIT_MS) {
+                const wait_ms = FRAME_BUDGET_WAIT_MS - @as(u32, @intCast(elapsed_ms));
+                if (sdl.c.SDL_WaitEventTimeout(&event, @intCast(wait_ms))) {
                     if (host.handleEvent(root, &event)) quit = true;
                     while (sdl.c.SDL_PollEvent(&event)) {
                         if (host.handleEvent(root, &event)) quit = true;
                     }
                 }
             }
-            // App tick every iteration (may mark nodes dirty). An app tick
-            // means the app drives a continuous animation: render EVERY
-            // iteration — a tick that changes nothing (e.g. an animation
-            // value quantized to the same integer) must not stall the loop
-            // (frames < max_frames with frames frozen = infinite loop).
-            if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
-            // Render when the tree is dirty (or the app ticks: continuous).
-            if (!quit and (root.dirty or on_frame != null)) host.renderFrame(root);
-            // Pointer cursor follows the hovered node (desktop, Phase 2d-0.5).
-            host.updateCursor();
-            // Pace the whole iteration to the frame budget (~120 fps active).
-            host.paceIteration(iter_start_ns);
+        } else if (host.timeline.hasTimedWork()) {
+            // Timed work pending (running animation / held pointer waiting
+            // for a long-press deadline): wake at the timeline's
+            // granularity (~240 Hz) instead of blocking indefinitely.
+            if (sdl.c.SDL_WaitEventTimeout(&event, 4)) {
+                if (host.handleEvent(root, &event)) quit = true;
+                while (sdl.c.SDL_PollEvent(&event)) {
+                    if (host.handleEvent(root, &event)) quit = true;
+                }
+            }
+        } else {
+            // True idle: block until an event arrives (0 wakeups).
+            if (sdl.c.SDL_WaitEvent(&event)) {
+                if (host.handleEvent(root, &event)) quit = true;
+                while (sdl.c.SDL_PollEvent(&event)) {
+                    if (host.handleEvent(root, &event)) quit = true;
+                }
+            }
         }
+        // App tick every iteration (may mark nodes dirty). An app tick
+        // means the app drives a continuous animation: render EVERY
+        // iteration — a tick that changes nothing (e.g. an animation
+        // value quantized to the same integer) must not stall the loop
+        // (frames < max_frames with frames frozen = infinite loop).
+        if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
+        // Render when the tree is dirty (or the app ticks: continuous).
+        if (!quit and (root.dirty or on_frame != null)) host.renderFrame(root);
+        // Pointer cursor follows the hovered node (desktop, Phase 2d-0.5).
+        host.updateCursor();
+        // Pace the whole iteration to the frame budget (~120 fps active).
+        host.paceIteration(iter_start_ns);
+        return quit;
     }
 
     fn renderFrame(host: *Host, root: *Node) void {
@@ -321,8 +404,11 @@ pub const Host = struct {
     }
 
     /// Pace one loop iteration to the frame budget: delay only the remainder
-    /// of the 8.3 ms budget (slow iterations run unthrottled).
+    /// of the 8.3 ms budget (slow iterations run unthrottled). Compiled out
+    /// on emscripten — the rAF main loop paces the iteration; SDL_Delay
+    /// would busy-poll and freeze the tab.
     fn paceIteration(host: *Host, iter_start_ns: u64) void {
+        if (is_emscripten) return;
         _ = host;
         const elapsed = sdl.c.SDL_GetTicksNS() - iter_start_ns;
         if (elapsed < FRAME_BUDGET_NS) {

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Klaxon</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none;
+      outline: none;
+    }
+    #kx-a11y-root {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+    #kx-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      color: #888;
+      font: 14px/1.4 system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" tabindex="0"></canvas>
+  <div id="kx-a11y-root"></div>
+  <div id="kx-loader">Loading…</div>
+  <script>
+    var Module = {
+      preRun: function () {
+        Module.canvas = document.getElementById('canvas');
+      },
+      postRun: function () {
+        var loader = document.getElementById('kx-loader');
+        if (loader) loader.style.display = 'none';
+      },
+      onRuntimeInitialized: function () {
+        var canvas = document.getElementById('canvas');
+        if (canvas && document.activeElement === document.body) canvas.focus();
+      },
+      printErr: function (e) { console.error(e); },
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
