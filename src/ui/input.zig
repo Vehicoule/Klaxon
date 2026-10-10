@@ -331,7 +331,14 @@ pub const InputRouter = struct {
     }
 
     /// Clear the hover (the pointer is over a devtools panel, not the tree).
+    /// The previously hovered node gets a .leave first — without it a widget
+    /// keeps its hover style until the next pointer transition (a button
+    /// stays highlighted under the panel). Coordinates follow updateHover's
+    /// convention: the primary pointer's last window position.
     pub fn clearHover(self: *InputRouter) void {
+        if (self.hovered) |h| {
+            _ = sendPointer(h, .{ .phase = .leave, .x = self.last_x, .y = self.last_y, .raw_x = self.last_x, .raw_y = self.last_y, .pointer = 0, .time_ms = 0 });
+        }
         self.hovered = null;
     }
 
@@ -633,6 +640,24 @@ test "hover: enter and leave fire on move" {
     try std.testing.expectEqual(@as(usize, 2), log.len);
     try std.testing.expectEqual(PointerPhase.enter, log[0]);
     try std.testing.expectEqual(PointerPhase.leave, log[1]);
+}
+
+test "clearHover sends a leave to the hovered node before clearing" {
+    const root = try recNode(std.testing.allocator, true);
+    defer root.deinit();
+    root.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    var router = InputRouter{};
+    router.dispatchPointer(root, .{ .phase = .move, .x = 50, .y = 50 }); // enter
+    try std.testing.expect(router.hovered == root);
+    router.clearHover();
+    try std.testing.expect(router.hoveredNode() == null);
+    const log = recState(root).log.items;
+    try std.testing.expectEqual(@as(usize, 2), log.len);
+    try std.testing.expectEqual(PointerPhase.enter, log[0]);
+    try std.testing.expectEqual(PointerPhase.leave, log[1]);
+    // Clearing again is a no-op (no duplicate leave).
+    router.clearHover();
+    try std.testing.expectEqual(@as(usize, 2), log.len);
 }
 
 test "hover phases bubble past a child that reports them handled" {

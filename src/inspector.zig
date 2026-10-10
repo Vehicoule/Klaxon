@@ -77,16 +77,23 @@ pub const Inspector = struct {
     }
 
     /// Rebuild the flattened tree (DFS, visible nodes only, depth-tracked).
-    /// If the selected node is no longer in the tree, the selection is dropped.
-    fn rebuildRows(insp: *Inspector, root: *Node) void {
+    /// If the selected node is no longer in the tree, the selection is
+    /// dropped; otherwise sel_index is re-synced to the selected node's row
+    /// (rows above it may have appeared or vanished since the last rebuild).
+    /// Public: the host calls this BEFORE paintHighlight so a selected node
+    /// destroyed since the last frame (e.g. a virtualized list scrolled) never
+    /// reaches the highlight paint (use-after-free).
+    pub fn rebuildRows(insp: *Inspector, root: *Node) void {
         insp.rows.clearRetainingCapacity();
         rebuildRowsInner(insp, root, 0);
-        // Drop the selection if the node vanished from the tree.
+        // Drop the selection if the node vanished from the tree; otherwise
+        // re-sync sel_index to its row (the walk order may have shifted).
         if (insp.selected) |sel| {
             var found = false;
-            for (insp.rows.items) |row| {
+            for (insp.rows.items, 0..) |row, i| {
                 if (row.node == sel) {
                     found = true;
+                    insp.sel_index = i;
                     break;
                 }
             }
@@ -134,10 +141,28 @@ pub const Inspector = struct {
         return .tree; // header + tree rows (both consumed, header is a no-op)
     }
 
+    /// The scrollable tree area (below the header, above the property view),
+    /// in window coordinates.
+    fn treeRect(w: c_int, h: c_int) Rect {
+        const pw = @as(f32, @floatFromInt(w));
+        const ph = @as(f32, @floatFromInt(h));
+        return .{
+            .x = pw - PANEL_W,
+            .y = HEADER_H,
+            .w = PANEL_W,
+            .h = ph - HEADER_H - PROPS_H,
+        };
+    }
+
     /// Handle a click inside the panel (tree zone: select/expand; props: no-op).
     pub fn clickAt(insp: *Inspector, root: *Node, x: f32, y: f32, w: c_int, h: c_int) void {
         const zone = insp.hitZone(x, y, w, h);
         if (zone != .tree) return; // props zone: consumed, nothing in v1
+        // hitZone's .tree also covers the header: a click there (or below the
+        // tree area) must not hit a row — with scroll_y > 0 the header would
+        // otherwise resolve to a valid row index.
+        const tree = treeRect(w, h);
+        if (y < tree.y or y >= tree.y + tree.h) return;
         insp.tree_focus = true;
         insp.rebuildRows(root); // rows must be fresh for the click hit-test
         const px = @as(f32, @floatFromInt(w)) - PANEL_W;
@@ -166,6 +191,9 @@ pub const Inspector = struct {
     }
 
     /// Scroll the tree view by `dy` wheel clicks (clamped to [0, maxScroll]).
+    /// Positive dy scrolls the content down (scroll_y grows) — the same
+    /// convention as the widget scrollables. SDL3 reports wheel.y < 0 for a
+    /// wheel-down, so the host negates the event value at the call site.
     pub fn scrollBy(insp: *Inspector, dy: f32, w: c_int, h: c_int) void {
         _ = w;
         const ph = @as(f32, @floatFromInt(h));
@@ -509,6 +537,27 @@ test "collapse hides descendants / expand restores them" {
     try std.testing.expectEqual(@as(usize, 3), insp.rows.items.len);
 }
 
+test "rebuild re-syncs sel_index when rows above the selection change" {
+    var insp = try testInspector();
+    defer insp.deinit();
+    const root = try testNode(100, 100);
+    defer root.deinit();
+    const a = try testNode(10, 10);
+    const b = try testNode(10, 10);
+    root.add(a);
+    root.add(b);
+    insp.rebuildRows(root);
+    insp.select(b); // row 2
+    try std.testing.expectEqual(@as(usize, 2), insp.sel_index);
+    // Remove `a` (a row above the selection): `b` shifts from row 2 to row 1.
+    _ = root.remove(a);
+    a.deinit(); // caller owns the detached child
+    insp.rebuildRows(root);
+    try std.testing.expectEqual(b, insp.selected.?);
+    try std.testing.expectEqual(@as(usize, 1), insp.sel_index);
+    try std.testing.expectEqual(b, insp.rows.items[insp.sel_index].node);
+}
+
 test "select syncs sel_index" {
     var insp = try testInspector();
     defer insp.deinit();
@@ -613,6 +662,25 @@ test "keyboard: enter/space toggle expand" {
     try std.testing.expectEqual(true, insp.expanded.get(a).?);
 }
 
+test "scroll direction: SDL wheel down (y < 0) scrolls the content down" {
+    var insp = try testInspector();
+    defer insp.deinit();
+    const root = try testNode(100, 100);
+    defer root.deinit();
+    for (0..20) |_| {
+        root.add(try testNode(10, 10));
+    }
+    insp.rebuildRows(root);
+    // The host negates SDL's wheel.y at the call site (SDL3: y > 0 = scroll
+    // up, y < 0 = scroll down); scrollBy's positive dy grows scroll_y.
+    const wheel_down: f32 = -1; // SDL_EVENT_MOUSE_WHEEL, scrolled down
+    insp.scrollBy(-wheel_down, 640, 480);
+    try std.testing.expectEqual(ROW_H, insp.scroll_y);
+    const wheel_up: f32 = 1; // scrolled up
+    insp.scrollBy(-wheel_up, 640, 480);
+    try std.testing.expectEqual(@as(f32, 0), insp.scroll_y);
+}
+
 test "scroll clamps to [0, maxScroll]" {
     var insp = try testInspector();
     defer insp.deinit();
@@ -681,6 +749,34 @@ test "clickAt on chevron toggles expand, on label selects" {
     const label_x = chevron_x + CHEVRON_W + 4;
     insp.clickAt(root, label_x, row1_y, w, h);
     try std.testing.expectEqual(a, insp.selected.?);
+}
+
+test "clickAt ignores the header zone (above the tree area)" {
+    var insp = try testInspector();
+    defer insp.deinit();
+    const w: c_int = 640;
+    const h: c_int = 480;
+    const root = try testNode(100, 100);
+    defer root.deinit();
+    const a = try testNode(10, 10);
+    root.add(a);
+    insp.enabled = true;
+    insp.rebuildRows(root);
+    const px = @as(f32, @floatFromInt(w)) - PANEL_W;
+    // Click in the header (y < HEADER_H): no selection, no tree focus.
+    insp.clickAt(root, px + 10, HEADER_H / 2, w, h);
+    try std.testing.expect(insp.selected == null);
+    try std.testing.expect(!insp.tree_focus);
+    // Same with the tree scrolled: the header must not resolve to row 0.
+    insp.scroll_y = 5 * ROW_H;
+    insp.clickAt(root, px + 10, HEADER_H / 2, w, h);
+    try std.testing.expect(insp.selected == null);
+    try std.testing.expect(!insp.tree_focus);
+    // Sanity: with the tree back at the top, a click on the first row
+    // (depth 0, past the chevron) selects the root.
+    insp.scroll_y = 0;
+    insp.clickAt(root, px + 40, HEADER_H + ROW_H / 2, w, h);
+    try std.testing.expectEqual(root, insp.selected.?);
 }
 
 test "pickAt selects the deepest hit node" {

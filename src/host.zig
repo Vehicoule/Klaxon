@@ -402,6 +402,11 @@ pub const Host = struct {
         // ring (over the tree, under the panel), the panel paints after that —
         // above everything, always unclipped (like the DevTools overlay).
         if (host.inspector.enabled) {
+            // Rebuild FIRST: a selected node destroyed since the last frame
+            // (e.g. a virtualized list scrolled) must be dropped before the
+            // highlight paint dereferences it (use-after-free). paint()
+            // rebuilds again — idempotent, same tree.
+            host.inspector.rebuildRows(root);
             host.inspector.paintHighlight(host.ctx);
             host.inspector.paint(host.ctx, root, host.width, host.height);
         }
@@ -465,6 +470,10 @@ pub const Host = struct {
         if (event.type == sdl.c.SDL_EVENT_KEY_DOWN and event.key.key == sdl.c.SDLK_F11 and !event.key.repeat) {
             host.inspector.toggle();
             root.dirty = true; // force a repaint to show/hide the panel
+            // Invalidate the damage too: closing the panel re-enables the
+            // dirty-rect path, and a widget-sized clip would leave the old
+            // panel/highlight pixels outside it on the retained surface.
+            root.clearDamage();
             return false;
         }
         if (event.type == sdl.c.SDL_EVENT_WINDOW_RESIZED) {
@@ -490,8 +499,13 @@ pub const Host = struct {
             // tracks pointer 0 only). Touches keep their own IDs (multi-touch).
             sdl.c.SDL_EVENT_MOUSE_MOTION => {
                 // Inspector (Phase 4a.2): motion over the panel clears hover
-                // and skips widget routing (the pointer is over the panel).
-                if (host.inspector.enabled and host.inspector.hitZone(event.motion.x, event.motion.y, host.width, host.height) != .none) {
+                // and skips widget routing (the pointer is over the panel) —
+                // unless a widget holds the pointer capture (an active drag):
+                // the captured node keeps receiving moves even outside its
+                // bounds, and dropping them would leave a stale drag whose
+                // release lands later as an accidental click.
+                const has_capture = host.input.capturedNode(0) != null;
+                if (host.inspector.enabled and !has_capture and host.inspector.hitZone(event.motion.x, event.motion.y, host.width, host.height) != .none) {
                     host.input.clearHover();
                     return false; // skip routing
                 }
@@ -565,7 +579,10 @@ pub const Host = struct {
                 // Inspector (Phase 4a.2): wheel over the panel scrolls the
                 // tree view (consumed — no widget scroll).
                 if (host.inspector.enabled and host.inspector.hitZone(event.wheel.mouse_x, event.wheel.mouse_y, host.width, host.height) != .none) {
-                    host.inspector.scrollBy(event.wheel.y, host.width, host.height);
+                    // SDL3: wheel.y > 0 = scroll up (toward the start),
+                    // wheel.y < 0 = scroll down. scrollBy's positive dy grows
+                    // scroll_y (content moves down) → negate the event value.
+                    host.inspector.scrollBy(-event.wheel.y, host.width, host.height);
                     root.dirty = true;
                     return false; // consume
                 }
