@@ -45,6 +45,7 @@ const pull_to_refresh_w = @import("widgets/pull_to_refresh.zig");
 const loading_indicator_w = @import("widgets/loading_indicator.zig");
 const date_picker_w = @import("widgets/date_picker.zig");
 const time_picker_w = @import("widgets/time_picker.zig");
+const color_picker_w = @import("widgets/color_picker.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -141,6 +142,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "loading_indicator", .category = "feedback", .build = buildLoadingIndicator, .schema = schemaLoadingIndicator },
     .{ .name = "date_picker", .category = "input", .build = buildDatePicker, .schema = schemaDatePicker },
     .{ .name = "time_picker", .category = "input", .build = buildTimePicker, .schema = schemaTimePicker },
+    .{ .name = "color_picker", .category = "input", .build = buildColorPicker, .schema = schemaColorPicker },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -916,6 +918,35 @@ fn deinitI32Signal(p: *anyopaque) void {
     s.deinit(); // Signal.deinit frees itself (state.zig)
 }
 
+/// M3E color picker (2d.4 PR #34): a LEAF panel (skip_children). "color" is
+/// ALWAYS live (a Signal(Color) of 0xRRGGBBAA, alpha forced to 0xFF —
+/// round-trips).
+fn buildColorPicker(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const copts = try value_mod.optionsFromValue(color_picker_w.ColorPickerOptions, opts, null, null);
+    const raw: u32 = if (opts.get("color")) |x| switch (x) {
+        .int => |i| std.math.cast(u32, i) orelse return error.ValueOutOfRange,
+        .float => |f| floatToInt(u32, f) orelse return error.ValueOutOfRange,
+        else => 0xFF0000FF, // opaque red
+    } else 0xFF0000FF;
+    // Force alpha to 0xFF (v1: no alpha slider).
+    const val = (raw & 0xFFFFFF00) | 0xFF;
+    const sig = try state.Signal(u32).init(allocator, val);
+    try ctx.track(sig, deinitColorSignal);
+    const n = try color_picker_w.colorPicker(allocator, sig, null, copts);
+    return .{ .node = n, .live = .{ .signal = sig, .field = "color", .read = readColorSignal }, .skip_children = true };
+}
+
+fn readColorSignal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
+    const s: *state.Signal(u32) = @ptrCast(@alignCast(p));
+    // Save what the picker displays: alpha forced to 0xFF.
+    return .{ .int = @as(i64, (s.peek() & 0xFFFFFF00) | 0xFF) };
+}
+
+fn deinitColorSignal(p: *anyopaque) void {
+    const s: *state.Signal(u32) = @ptrCast(@alignCast(p));
+    s.deinit();
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1300,6 +1331,12 @@ fn schemaTimePicker(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchem
     return value_mod.appendSchemaProp(base, allocator, "time", .number, &.{}, .{ .int = 630 });
 }
 
+fn schemaColorPicker(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    // width (number) — automatic; "color" is live; theme is unsupported
+    const base = try value_mod.schemaOf(color_picker_w.ColorPickerOptions, allocator);
+    return value_mod.appendSchemaProp(base, allocator, "color", .number, &.{}, .{ .int = 0xFF0000FF });
+}
+
 // --- batch 2d.1 PR A schemas ---
 
 fn schemaAppBar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
@@ -1373,7 +1410,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 39), widgets.len);
+    try std.testing.expectEqual(@as(usize, 40), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {

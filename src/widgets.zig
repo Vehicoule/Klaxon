@@ -86,6 +86,7 @@ pub const pull_to_refresh = @import("widgets/pull_to_refresh.zig");
 pub const loading_indicator = @import("widgets/loading_indicator.zig");
 pub const date_picker = @import("widgets/date_picker.zig");
 pub const time_picker = @import("widgets/time_picker.zig");
+pub const color_picker = @import("widgets/color_picker.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");
