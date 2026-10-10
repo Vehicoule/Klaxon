@@ -166,16 +166,14 @@ pub fn readRssMb() f32 {
 }
 
 fn readRssMbLinux() f32 {
-    var file = std.fs.openFileAbsolute("/proc/self/status", .{}) catch return 0.0;
-    defer file.close();
+    // C stdio (std.fs.openFileAbsolute was removed in Zig 0.17; the C API
+    // is what host.zig's dumpPpm already uses — same pattern).
+    const f = std.c.fopen("/proc/self/status", "r") orelse return 0.0;
+    defer _ = std.c.fclose(f);
     var buf: [8192]u8 = undefined;
-    var total: usize = 0;
-    while (total < buf.len) {
-        const n = file.read(buf[total..]) catch return 0.0;
-        if (n == 0) break;
-        total += n;
-    }
-    const status = buf[0..total];
+    const n = std.c.fread(&buf, 1, buf.len, f);
+    if (n == 0) return 0.0;
+    const status = buf[0..n];
     const idx = std.mem.indexOf(u8, status, "VmRSS:") orelse return 0.0;
     var i = idx + "VmRSS:".len;
     while (i < status.len and (status[i] == ' ' or status[i] == '\t')) i += 1;
