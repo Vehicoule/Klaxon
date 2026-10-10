@@ -23,6 +23,7 @@ const ui = @import("ui.zig");
 const input_mod = @import("ui/input.zig");
 const semantics_mod = @import("ui/semantics.zig");
 const anim = @import("ui/anim.zig");
+const devtools_mod = @import("devtools.zig");
 
 const Node = ui.node.Node;
 
@@ -71,6 +72,9 @@ pub const Host = struct {
     height: c_int,
     ppm_path: ?[:0]const u8,
     stats: Stats,
+    /// DevTools overlay (Phase 4a): disabled by default — F12 (handleEvent)
+    /// or --devtools (main) enables it. Zero cost when off.
+    devtools: devtools_mod.DevTools = .{},
     input: input_mod.InputRouter,
     timeline: anim.Timeline,
     frame_start_ns: u64 = 0,
@@ -362,7 +366,11 @@ pub const Host = struct {
         // retained pixels) → full repaint until retained composition lands.
         const raster = kx.c.kx_backend_of(host.ctx) == kx.c.KX_BACKEND_RASTER;
         const focus = semantics_mod.currentFocus();
-        if (raster and root.damage_valid) {
+        // The DevTools overlay paints translucent pixels over the whole panel
+        // area; a dirty-rect partial repaint would blend the new overlay over
+        // retained old overlay pixels (ghosting). Force a full repaint when
+        // the overlay is enabled so the panel area is cleared first.
+        if (raster and root.damage_valid and !host.devtools.enabled) {
             // Repaint the tree clipped to the damaged region — and clear the
             // clip first (SkCanvas::clear is clip-aware): vacated pixels
             // (moving widgets) are erased, not trailed. The focus ring paints
@@ -379,6 +387,14 @@ pub const Host = struct {
             root.paint(host.ctx);
             host.paintPopupOverlay();
             if (focus) |fm| fm.paintRing(host.ctx); // full repaint: ring included
+        }
+        // DevTools overlay (Phase 4a): painted after the tree and the focus
+        // ring, outside the damage clip — above everything, always unclipped.
+        // The stats still hold the PREVIOUS frame's times here (they update
+        // after present, below): recordFrame + paint show last frame's numbers.
+        if (host.devtools.enabled) {
+            host.devtools.recordFrame(host.stats.frame_time_ms);
+            host.devtools.paint(host.ctx, host.width, host.height, &host.stats);
         }
         kx.c.kx_end_frame(host.ctx);
         const t_paint = sdl.c.SDL_GetTicksNS();
@@ -420,6 +436,14 @@ pub const Host = struct {
     /// Returns true if the event requests quit.
     fn handleEvent(host: *Host, root: *Node, event: *sdl.c.SDL_Event) bool {
         if (event.type == sdl.c.SDL_EVENT_QUIT) return true;
+        // DevTools (Phase 4a): F12 toggles the overlay — checked before any
+        // other key handling so it works regardless of the focused node.
+        // Key-repeat events are ignored (holding F12 would toggle per repeat).
+        if (event.type == sdl.c.SDL_EVENT_KEY_DOWN and event.key.key == sdl.c.SDLK_F12 and !event.key.repeat) {
+            host.devtools.toggle();
+            root.dirty = true; // force a repaint to show/hide the overlay
+            return false;
+        }
         if (event.type == sdl.c.SDL_EVENT_WINDOW_RESIZED) {
             const w: c_int = @intCast(event.window.data1);
             const h: c_int = @intCast(event.window.data2);
