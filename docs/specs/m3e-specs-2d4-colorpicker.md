@@ -1,17 +1,19 @@
-# M3E specs — 2d.4 PR #35: color picker
+# M3E specs — 2d.4 PR #34: color picker
 
 Sources: **no official M3/M3E color picker exists** (checked 2026-10-10 — no
 m3.material.io component page, no compose-material3 / material-components-android
 / m3e-canvas / matraic-m3e port; the Android 14+ system color picker lives in
 SystemUI/Settings, not a library). This is a **framework-original design**,
 tokenized from `src/theme.zig` (ADR-0010), cross-referenced with the researched
-pickers below. PR #34 landed the paint primitive it renders with:
-`kx_fill_rrect_gradient` (ABI 0.10.0 — a 2..8-stop linear gradient clipped to a
-rounded rect, premul interpolation; no shader type crosses the ABI).
+pickers below. Painted with `kx_fill_rrect_gradient` (ABI 0.10.0, commit
+7c8fe5c — a 2..8-stop linear gradient clipped to a rounded rect, premul
+interpolation; no shader type crosses the ABI).
 
 This document supersedes the earlier draft of this file (320x344, no alpha
 slider, no research section); the draft's SV saturation-overlay stops were also
-reversed (see Research, VS Code note).
+reversed (see Research, VS Code note). The v1 implementation shipped in
+PR #34 (commit d03332c) was built from that draft — the deltas between the
+shipped widget and this spec are listed under "v1 deviations" below.
 
 ## Research — what existing color pickers do
 
@@ -321,6 +323,36 @@ hardcoded in the widget (ADR-0010 consumption rules).
   `alphaTrackRect` / `swatchRect` / `hexFieldRect` (bounds + opts → Rect, the
   pickers' rect-helper style), and the color conversions.
 - **v1 deviations** (documented, fixed later):
+  - **The shipped v1 (commit d03332c) was implemented from the earlier draft,
+    not from this spec** — it deviates as follows (each is a fix-forward item):
+    - Panel 320x344dp (20dp padding, 16dp gaps) vs this spec's 320x488dp
+      (16dp padding, 8dp gaps; the height formula W+168 / W+116).
+    - SV area 280x200dp (not a square) vs 288x288dp; a 20dp cursor (2dp
+      `OnSurface` stroke, fill = the selected color, white halo) vs the 12dp
+      contrast-adaptive ring with a transparent center.
+    - Hue slider 280x24dp bar with a 4x32dp `OnSurface` cursor vs the 44dp
+      row with a 16dp pill track and the 4x44dp white pill thumb (+ 1dp
+      `Outline` stroke).
+    - **The SV saturation overlay's stops are REVERSED**
+      (`0xFFFFFF00 → 0xFFFFFFFF` L→R — transparent white at S=0, opaque at
+      S=1): the square renders the pure hue on the LEFT and white on the
+      RIGHT while the cursor/color mapping is standard (S=0 at the left) —
+      the gradient under the cursor does not match the picked color (the
+      square is mirrored). This spec's stops are `0xFFFFFFFF → 0xFFFFFF00`
+      (white opaque at S=0 — VS Code's reference). Fix: swap the two stops
+      in `cpPaint`.
+    - No alpha slider at all (no `enable_alpha` option; alpha forced to
+      0xFF) vs this spec's optional alpha row.
+    - Preview swatch 48x48dp vs 56x56dp.
+    - Hex entry is a simplified single-line input (Enter applies, blur
+      reverts — no live parse), not the M3E outlined TextField.
+    - No M3 state layers painted (hover is tracked, but no hover/focus/
+      pressed overlay at the cursor/thumb).
+    - A11y: role `.group` only ("Color picker", value = "#RRGGBB", the single
+      leaf focusable, arrows adjust s/v/h) — no per-slider roles/labels/
+      values, no focusable children, no Home/End.
+    - Registry: no `enable_alpha` option; `color` accepts int/float only (no
+      "#hex" string), default `0xFF0000FF` (red) vs this spec's `0x6750A4FF`.
   - Framework-original: no official M3/M3E color picker exists — this spec IS
     the design (tokenized M3E, not a port).
   - Hex-only entry: no RGB/HSL/HSB fields, no color-model dropdown (Figma, VS
@@ -381,6 +413,16 @@ hardcoded in the widget (ADR-0010 consumption rules).
 
 ## Follow-ups
 
+- **Fix the shipped v1's reversed SV saturation stops** (swap the two stops
+  in `cpPaint` — see v1 deviations; the square is mirrored vs the picked
+  color).
+- **Reconcile the shipped widget with this spec** (it was built from the
+  draft): panel 320x488 / square 288x288 / contrast-adaptive ring cursor /
+  44dp slider rows with pill tracks + white pill thumbs / 56x56 swatch / the
+  M3E outlined TextField with live hex parse / state layers / per-slider a11y
+  roles / the `enable_alpha` option / registry `color` as a string + default
+  `0x6750A4FF`. The alternative is amending this spec to the shipped v1 —
+  the maintainer's call; this document is the researched target design.
 - Eyedropper (a platform screen-capture layer).
 - Color-model fields (RGB/HSL/HSB + a model dropdown — Figma / VS Code).
 - Swatch palettes / history / recents (iOS / flutter / Chrome DevTools).

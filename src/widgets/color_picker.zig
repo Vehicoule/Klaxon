@@ -333,8 +333,8 @@ fn cpPaint(n: *Node, ctx: *kx.Ctx) void {
     // 1. Base: pure hue color.
     const pure_hue = hsvToColor(s.h, 1, 1);
     ui.paint.fillRRect(ctx, sv.x, sv.y, sv.w, sv.h, sv_corner, pure_hue);
-    // 2. Saturation overlay: horizontal white gradient (transparent → opaque).
-    const sat_stops = [_]Color{ 0xFFFFFF00, 0xFFFFFFFF };
+    // 2. Saturation overlay: horizontal white gradient (S=0 white opaque → S=1 transparent).
+    const sat_stops = [_]Color{ 0xFFFFFFFF, 0xFFFFFF00 };
     ui.paint.fillRRectGradient(ctx, sv.x, sv.y, sv.w, sv.h, sv_corner, sv.x, sv.y, sv.x + sv.w, sv.y, &sat_stops);
     // 3. Value overlay: vertical black gradient (transparent → opaque).
     const val_stops = [_]Color{ 0x00000000, 0xFF000000 };
@@ -908,6 +908,39 @@ test "golden: the panel paints SurfaceContainerHigh; the SV square paints the hu
     try std.testing.expect(pr > 200); // high red
     try std.testing.expect(pg > 100 and pg < 200); // mid green (white overlay)
     try std.testing.expect(pb > 100 and pb < 200); // mid blue
+}
+
+test "golden: the SV saturation gradient goes white (S=0, left) → pure hue (S=1, right)" {
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    // Initial color = red (h=0, s=1, v=1).
+    const n = try colorPicker(a, null, null, .{ .theme = t });
+    defer n.deinit();
+    var r = try golden.Renderer.init(std.testing.allocator, 360, 380);
+    defer r.deinit();
+    n.layout(.{ .x = 20, .y = 20, .w = 320, .h = 344 });
+    r.paint(n, 0xFFFFFFFF);
+    var f = try r.readback(std.testing.allocator);
+    defer f.deinit();
+    const s = stateOf(n);
+    const sv = s.sv_rect;
+    // Sample at 10% from each horizontal edge, near the top (V≈0.9, away
+    // from the rounded corners which have a 12dp radius).
+    const y = @as(i32, @intFromFloat(sv.y + sv.h * 0.1));
+    const left_x = @as(i32, @intFromFloat(sv.x + sv.w * 0.05));
+    const right_x = @as(i32, @intFromFloat(sv.x + sv.w * 0.95));
+    const left_px = f.pixelAt(left_x, y);
+    const right_px = f.pixelAt(right_x, y);
+    // Left (S≈0.05): much whiter than right (S≈0.95).
+    const l_lum = ((left_px >> 24) & 0xFF) + ((left_px >> 16) & 0xFF) + ((left_px >> 8) & 0xFF);
+    const r_lum = ((right_px >> 24) & 0xFF) + ((right_px >> 16) & 0xFF) + ((right_px >> 8) & 0xFF);
+    try std.testing.expect(l_lum > r_lum + 200); // left is significantly brighter
+    // Right (S≈0.95): red-dominant (high R, low G/B).
+    const rr = (right_px >> 24) & 0xFF;
+    const rg = (right_px >> 16) & 0xFF;
+    const rb = (right_px >> 8) & 0xFF;
+    try std.testing.expect(rr > rg + 50);
+    try std.testing.expect(rr > rb + 50);
 }
 
 test "golden: the preview swatch paints the selected color" {
