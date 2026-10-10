@@ -155,6 +155,14 @@ pub fn build(b: *std.Build) void {
     const run_golden = b.addRunArtifact(golden_tests);
     const golden_step = b.step("test-golden", "Run golden tests only");
     golden_step.dependOn(&run_golden.step);
+
+    // --- package-macos: build + bundle a .app (macOS only) ---
+    if (is_macos) {
+        const pkg = b.addSystemCommand(&.{ "scripts/package-macos.sh", "gallery", "./dist" });
+        pkg.step.dependOn(b.getInstallStep());
+        const pkg_step = b.step("package-macos", "Build + package gallery into a .app bundle (macOS)");
+        pkg_step.dependOn(&pkg.step);
+    }
 }
 
 /// Create an app executable: module + C bindings + runtime link.
