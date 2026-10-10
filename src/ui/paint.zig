@@ -110,6 +110,14 @@ pub fn fillPolygon(ctx: *kx.Ctx, xs: []const f32, ys: []const f32, color: Color)
     kx.c.kx_fill_polygon(ctx, xs.ptr, ys.ptr, @intCast(xs.len), color);
 }
 
+/// Fill an rrect with a linear gradient (ABI 0.10.0): 2..8 evenly-spaced
+/// color stops from (x0,y0) to (x1,y1), clipped to the rounded rect. The color
+/// picker's gradients (the SV square's overlays, the hue slider) are stop
+/// lists generated in Zig; no shader type crosses the ABI.
+pub fn fillRRectGradient(ctx: *kx.Ctx, x: f32, y: f32, w: f32, h: f32, radius: f32, x0: f32, y0: f32, x1: f32, y1: f32, colors: []const Color) void {
+    kx.c.kx_fill_rrect_gradient(ctx, x, y, w, h, radius, x0, y0, x1, y1, colors.ptr, @intCast(colors.len));
+}
+
 pub fn text(ctx: *kx.Ctx, str: [:0]const u8, x: f32, baseline_y: f32, size: f32, bold: bool, color: Color) void {
     kx.c.kx_draw_text_styled(ctx, str, x, baseline_y, size, bold, color);
 }
@@ -138,6 +146,6 @@ pub fn imageDraw(ctx: *kx.Ctx, id: u64, x: f32, y: f32, w: f32, h: f32) void {
 
 // --- tests ---
 
-test "kx ABI version reports 0.9.0 (the fill_polygon entry)" {
-    try std.testing.expectEqualStrings("0.9.0", std.mem.span(kx.c.kx_abi_version()));
+test "kx ABI version reports 0.10.0 (the fill_rrect_gradient entry)" {
+    try std.testing.expectEqualStrings("0.10.0", std.mem.span(kx.c.kx_abi_version()));
 }

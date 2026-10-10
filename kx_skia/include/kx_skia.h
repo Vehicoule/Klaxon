@@ -29,6 +29,10 @@
 //   0.9.0 — Phase 2d.4 PR #32: + kx_fill_polygon (a closed polygon fill —
 //           the M3E loading indicator's morphing shapes; no path type
 //           crosses this boundary, like kx_stroke_polyline).
+//   0.10.0 — Phase 2d.4 PR #34: + kx_fill_rrect_gradient (a 2..8-stop linear
+//           gradient fill clipped to a rounded rect — the color picker's SV
+//           square overlays + hue slider; no shader type crosses this
+//           boundary).
 #ifndef KX_SKIA_H
 #define KX_SKIA_H
 
@@ -116,6 +120,14 @@ void kx_stroke_polyline(kx_ctx* ctx, const float* xs, const float* ys, int count
 // indicator's shapes are polygons generated in Zig (rounded corners are a
 // follow-up: Skia fills the polygon as given).
 void kx_fill_polygon(kx_ctx* ctx, const float* xs, const float* ys, int count, uint32_t rgba);
+// Fill an rrect with a linear gradient (added in 0.10.0): 2..8 evenly-spaced
+// color stops running from (x0,y0) to (x1,y1), clipped to the rounded rect.
+// Colors are 0xRRGGBBAA; the gradient interpolates in premul (correct alpha
+// fades). The color picker's gradients are generated in Zig — no shader type
+// crosses this boundary.
+void kx_fill_rrect_gradient(kx_ctx* ctx, float x, float y, float w, float h, float radius,
+                            float x0, float y0, float x1, float y1,
+                            const uint32_t* colors, int count);
 
 // Text metrics for widget layout. Ctx-independent: fonts are process-global.
 //   width   — advance width in pixels

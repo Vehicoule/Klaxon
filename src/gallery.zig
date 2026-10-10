@@ -48,6 +48,7 @@ const pull_to_refresh_w = widgets.pull_to_refresh;
 const loading_indicator_w = widgets.loading_indicator;
 const date_picker_w = widgets.date_picker;
 const time_picker_w = widgets.time_picker;
+const color_picker_w = widgets.color_picker;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -95,6 +96,7 @@ const Refs = struct {
     load_det_m3e: *Node, // the M3E contained determinate loading indicator (Loading indicator section)
     dp_m3e: *Node, // the M3E date picker panel (Date picker section)
     tp_m3e: *Node, // the M3E time picker panel (Time picker section)
+    cp_m3e: *Node, // the M3E color picker panel (Color picker section)
     theme_toggle: *Node,
     desktop_toggle: *Node, // mobile/desktop density switch (Phase 2d-0.5)
     sb_list: *Node, // the list scrollbar (style follows the platform tokens)
@@ -177,6 +179,8 @@ pub const Gallery = struct {
     dp_ok: *state.Signal(u32), // the date picker's OK counter
     tp_time: *state.Signal(i32), // the time picker's time (minutes since midnight)
     tp_ok: *state.Signal(u32), // the time picker's OK counter
+    cp_color: *state.Signal(u32), // the color picker's color (0xRRGGBBAA)
+    cp_changed: *state.Signal(u32), // the color picker's change counter
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -328,6 +332,10 @@ pub const Gallery = struct {
         errdefer g.tp_time.deinit();
         g.tp_ok = try state.Signal(u32).init(allocator, 0);
         errdefer g.tp_ok.deinit();
+        g.cp_color = try state.Signal(u32).init(allocator, 0x3F51B5FF); // Indigo
+        errdefer g.cp_color.deinit();
+        g.cp_changed = try state.Signal(u32).init(allocator, 0);
+        errdefer g.cp_changed.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -475,6 +483,8 @@ pub const Gallery = struct {
         g.dp_ok.deinit();
         g.tp_time.deinit();
         g.tp_ok.deinit();
+        g.cp_color.deinit();
+        g.cp_changed.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -527,6 +537,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Loading indicator (M3E)", try buildLoadingIndicatorSection(g, theme)));
     content.add(try section(a, theme, "Date picker (M3E)", try buildDatePickerSection(g, theme)));
     content.add(try section(a, theme, "Time picker (M3E)", try buildTimePickerSection(g, theme)));
+    content.add(try section(a, theme, "Color picker (M3E)", try buildColorPickerSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1089,6 +1100,22 @@ fn buildTimePickerSection(g: *Gallery, theme: Theme) !*Node {
     const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
     row.add(try text_w.BoundText(i32).text(a, g.tp_time, fmtTime, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     row.add(try text_w.BoundText(u32).text(a, g.tp_ok, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    col.add(row);
+    return col;
+}
+
+/// Color picker (M3E): the SV square + hue slider + preview/hex — drag the
+/// SV square or the hue slider to change the color; the hex field shows the
+/// current #RRGGBB.
+fn buildColorPickerSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 8 });
+    const cp = try color_picker_w.colorPicker(a, g.cp_color, .{ .fn_ptr = cpChangedCb, .userdata = g }, .{ .theme = theme });
+    g.refs.cp_m3e = cp;
+    col.add(cp);
+    const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+    row.add(try text_w.BoundText(u32).text(a, g.cp_color, fmtColorHex, .{ .size = 13, .color = theme.colors.on_surface_variant }));
+    row.add(try text_w.BoundText(u32).text(a, g.cp_changed, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(row);
     return col;
 }
@@ -1803,6 +1830,17 @@ fn fmtTime(v: i32, buf: []u8) []const u8 {
     const s = time_picker_w.formatTime(v, false, &b);
     return std.fmt.bufPrint(buf, "{s}", .{s}) catch "?";
 }
+
+fn cpChangedCb(userdata: ?*anyopaque) void {
+    const g = galleryOf(userdata);
+    g.cp_changed.set(g.cp_changed.peek() + 1);
+}
+
+fn fmtColorHex(v: u32, buf: []u8) []const u8 {
+    var hexbuf: [8]u8 = undefined;
+    const s = color_picker_w.colorToHex(v, &hexbuf);
+    return std.fmt.bufPrint(buf, "{s}", .{s}) catch "?";
+}
 fn fmtStatus(v: StatusBuf, buf: []u8) []const u8 {
     const s = std.mem.sliceTo(&v, 0);
     @memcpy(buf[0..s.len], s);
@@ -2398,6 +2436,32 @@ test "gallery: the M3E time picker selects a tapped dial position (the signal ro
     router.dispatchPointer(g.root, .{ .phase = .up, .x = cx + 101, .y = cy, .raw_x = cx + 101, .raw_y = cy });
     try std.testing.expectEqual(@as(i32, 3 * 60 + 30), g.tp_time.peek()); // round-trips
     try std.testing.expectEqual(@as(i32, 210), time_picker_w.timeMinutes(tp));
+}
+
+test "gallery: the M3E color picker drags the SV square (the signal round-trips)" {
+    var router = input_mod.InputRouter{};
+    input_mod.setCurrent(&router);
+    defer input_mod.setCurrent(null);
+    var g = try Gallery.init(std.testing.allocator);
+    defer g.deinit();
+    g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(WINDOW_W), .h = @floatFromInt(WINDOW_H) });
+    const cp = g.refs.cp_m3e;
+    const sv = g.refs.scroll_view;
+    _ = widgets.scroll_view.setScrollOffset(sv, @max(0.0, cp.bounds.y - sv.bounds.y));
+    const sy = widgets.scroll_view.scrollOffset(sv);
+    // The SV square's center: s=0.5, v=0.5 (h stays at the initial indigo hue).
+    const cp_state = color_picker_w.stateOf(cp);
+    const sv_rect = cp_state.sv_rect;
+    const cx = sv_rect.x + sv_rect.w / 2;
+    const cy = sv_rect.y + sv_rect.h / 2 - sy;
+    router.dispatchPointer(g.root, .{ .phase = .down, .x = cx, .y = cy, .raw_x = cx, .raw_y = cy });
+    router.dispatchPointer(g.root, .{ .phase = .up, .x = cx, .y = cy, .raw_x = cx, .raw_y = cy });
+    // The signal round-trips: the color changed from the initial indigo.
+    try std.testing.expect(g.cp_color.peek() != 0x3F51B5FF);
+    try std.testing.expectEqual(@as(u32, 1), g.cp_changed.peek());
+    // The picker's HSV reflects s=0.5, v=0.5.
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), cp_state.s, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), cp_state.v, 0.01);
 }
 
 test "gallery: navigation chrome — nav bar, tabs and drawer are wired" {
