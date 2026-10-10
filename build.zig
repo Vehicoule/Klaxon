@@ -9,10 +9,18 @@ pub fn build(b: *std.Build) void {
 
     // Phase 3f: wasm32-emscripten web target (docs/specs/phase-3f-wasm-plan.md).
     const is_wasm = target.result.os.tag == .emscripten;
+    // Phase 3d: Android target (aarch64-linux-android).
+    const is_android = target.result.os.tag == .linux and target.result.abi == .android;
+    // Phase 3e: iOS target (aarch64-ios.15.0 / aarch64-ios.15.0-simulator).
+    const is_ios = target.result.os.tag == .ios;
 
     // Deps tag — must match the TAG logic in scripts/fetch-deps.sh.
     const tag: []const u8 = if (is_wasm)
         "web-wasm" // emsdk + Skia out/web-wasm + SDL build-web-wasm
+    else if (is_android)
+        "android-arm64" // Skia out/android-arm64 + SDL build-android-arm64 (CMake/NDK)
+    else if (is_ios)
+        if (target.result.abi == .simulator) "ios-sim-arm64" else "ios-arm64"
     else switch (target.result.os.tag) {
         .macos => "macos-arm64", // arm64 only, no x64
         .linux => if (target.result.cpu.arch == .x86_64) "linux-x64" else "linux-arm64",
@@ -25,6 +33,17 @@ pub fn build(b: *std.Build) void {
     // the native steps (run/test/test-golden/gallery/...) are not defined for it.
     if (is_wasm) {
         addWasmWeb(b, target, optimize, tag);
+        return;
+    }
+
+    // Phase 3d/3e: android + ios get their own build graphs (static lib +
+    // external link step); the native steps are not defined for them.
+    if (is_android) {
+        addAndroidLib(b, target, optimize, tag);
+        return;
+    }
+    if (is_ios) {
+        addIosApp(b, target, optimize, tag);
         return;
     }
 
@@ -182,6 +201,12 @@ pub fn build(b: *std.Build) void {
         pkg.step.dependOn(b.getInstallStep());
         const pkg_step = b.step("package-macos", "Build + package gallery into a .app bundle (macOS)");
         pkg_step.dependOn(&pkg.step);
+
+        // --- package-macos-dmg: same + drag-and-drop .dmg (Phase 3b.3) ---
+        const pkg_dmg = b.addSystemCommand(&.{ "scripts/package-macos.sh", "gallery", "./dist", "--dmg" });
+        pkg_dmg.step.dependOn(b.getInstallStep());
+        const pkg_dmg_step = b.step("package-macos-dmg", "Build + package gallery into a .dmg (macOS)");
+        pkg_dmg_step.dependOn(&pkg_dmg.step);
     }
 }
 
@@ -400,4 +425,190 @@ fn addWasmWeb(
     link.step.dependOn(b.getInstallStep());
     const web_step = b.step("web", "Build the wasm web target (hello.html)");
     web_step.dependOn(&link.step);
+}
+
+/// Phase 3d Android target (aarch64-linux-android). Zig cannot link an APK, so
+/// the app is built as a static library and the final link is done by CMake/NDK
+/// (Gradle project). The kx_skia C++ shim is NOT compiled by Zig here — CMake/NDK
+/// handles it (same split as the emcc link on wasm, but with the NDK toolchain).
+///
+///   lib<app>.a  (zig build -Dtarget=aarch64-linux-android android-lib)
+///     + kx_skia shim .o   (CMake/NDK)
+///     + libSDL3.a + libskia*.a  (deps, tag android-arm64)
+///       -- NDK clang++ --> lib<app>.so  (loaded by the Android app)
+///
+/// No run/test/package steps for android — the NDK/CMake toolchain links.
+fn addAndroidLib(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    tag: []const u8,
+) void {
+    _ = tag; // deps tag for the CMake/NDK link (not used by Zig here)
+
+    // -Dandroid-app=gallery|hello (default: gallery)
+    const app_opt = b.option([]const u8, "android-app", "Android app to build: gallery|hello") orelse "gallery";
+    const is_hello = std.mem.eql(u8, app_opt, "hello");
+    const app_name: []const u8 = if (is_hello) "hello" else "gallery";
+    const root_src: []const u8 = if (is_hello) "src/main.zig" else "src/gallery_main.zig";
+
+    // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c, with the
+    // android target (Zig provides bionic libc headers for android targets).
+    const translate_sdl = b.addTranslateC(.{
+        .root_source_file = b.path("src/sdl_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_sdl.addIncludePath(b.path("deps/SDL/include"));
+
+    const translate_kx = b.addTranslateC(.{
+        .root_source_file = b.path("kx_skia/include/kx_skia.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // App as a static library (Zig provides bionic libc for android targets).
+    const app = b.addLibrary(.{
+        .name = app_name,
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(root_src),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true, // Zig provides Android bionic libc
+        }),
+    });
+    app.root_module.addImport("sdl_c", translate_sdl.createModule());
+    app.root_module.addImport("kx_c", translate_kx.createModule());
+    b.installArtifact(app);
+
+    // Step: android-lib → zig-out/lib/lib<app>.a (CMake/NDK links the shim + Skia + SDL).
+    const lib_step = b.step("android-lib", "Build the Android static library (aarch64-linux-android)");
+    lib_step.dependOn(b.getInstallStep());
+}
+
+/// Phase 3e iOS target (aarch64-ios.15.0 / aarch64-ios.15.0-simulator). Zig
+/// cannot link an iOS app bundle, so the app is built as a static library and
+/// the final link is a manual xcrun clang++ step (same split as emcc on wasm).
+/// The kx_skia ObjC++ shim is NOT compiled by Zig — xcrun clang++ handles it.
+///
+///   lib<app>.a  (zig build-lib -target aarch64-ios.15.0 -O ReleaseSmall)
+///     + kx_skia shim .o   (xcrun clang++ -x objective-c++)
+///     + libSDL3.a + libskia*.a  (deps, tag ios-arm64 / ios-sim-arm64)
+///     + SDL_main TU + iOS frameworks
+///       -- xcrun clang++ --> <app>.app
+///
+/// Guard: optimize == .ReleaseSmall is required — Zig 0.17 std.Io.Threaded
+/// has a bug on iOS in Debug/ReleaseSafe.
+/// No run/test steps for iOS device (cannot run on host).
+fn addIosApp(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    tag: []const u8,
+) void {
+    // Guard: ReleaseSmall only (Zig 0.17 std.Io.Threaded iOS bug in Debug/ReleaseSafe).
+    // Note: use .small (not .ReleaseSmall) — deprecated enum aliases only work
+    // in switch statements, not in if comparisons (Zig 0.17 quirk).
+    if (optimize != .small) {
+        @panic("iOS target requires -Doptimize=ReleaseSmall (Zig 0.17 std.Io.Threaded bug on iOS in Debug/ReleaseSafe)");
+    }
+
+    const is_sim = target.result.abi == .simulator;
+    const sdk_name: []const u8 = if (is_sim) "iphonesimulator" else "iphoneos";
+
+    // SDK path via xcrun (runs on macOS host with Xcode installed).
+    const sdk_path_raw = b.run(&.{ "xcrun", "--sdk", sdk_name, "--show-sdk-path" });
+    const sdk_path = std.mem.trimEnd(u8, sdk_path_raw, "\r\n");
+
+    // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c, with the
+    // ios target. No -lc flag — it breaks libc detection for iOS targets.
+    const translate_sdl = b.addTranslateC(.{
+        .root_source_file = b.path("src/sdl_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_sdl.addIncludePath(b.path("deps/SDL/include"));
+    translate_sdl.addIncludePath(b.graph.cwdRelativePath(sdk_path));
+
+    const translate_kx = b.addTranslateC(.{
+        .root_source_file = b.path("kx_skia/include/kx_skia.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_kx.addIncludePath(b.graph.cwdRelativePath(sdk_path));
+
+    // App as a static library. src/main_ios.zig will be the iOS entry point;
+    // for now gallery_main.zig is used as a placeholder so the graph evaluates.
+    const app = b.addLibrary(.{
+        .name = "gallery",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gallery_main.zig"), // placeholder for src/main_ios.zig
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .link_libcpp = true,
+        }),
+    });
+    app.root_module.addImport("sdl_c", translate_sdl.createModule());
+    app.root_module.addImport("kx_c", translate_kx.createModule());
+    b.installArtifact(app);
+
+    // Final link: xcrun clang++ compiles the SDL_main TU + links the static
+    // lib + shim .o + Skia .a + SDL .a + iOS frameworks. The shim and deps
+    // are not yet built for iOS — this step may fail at link time; the graph
+    // just needs to evaluate.
+    const skia_libs = [_][]const u8{
+        "libfreetype2.a", "libharfbuzz.a",    "libicu.a",      "libpng.a",            "libskcms.a",
+        "libskia.a",      "libskparagraph.a", "libskshaper.a", "libskunicode_core.a", "libskunicode_icu.a",
+        "libzlib.a",
+    };
+    var argv: std.ArrayList([]const u8) = .empty;
+    argv.append(b.allocator, "xcrun") catch unreachable;
+    argv.append(b.allocator, "clang++") catch unreachable;
+    argv.append(b.allocator, b.fmt("-isysroot{s}", .{sdk_path})) catch unreachable;
+    argv.append(b.allocator, "-std=c++20") catch unreachable;
+    argv.append(b.allocator, "-arch") catch unreachable;
+    argv.append(b.allocator, "arm64") catch unreachable;
+    argv.append(b.allocator, "-mios-version-min=15.0") catch unreachable;
+    argv.append(b.allocator, "zig-out/lib/libgallery.a") catch unreachable;
+    // kx_skia shim .o (compiled by xcrun clang++ from kx_skia_common.cpp + kx_skia_ios.mm)
+    argv.append(b.allocator, "zig-out/lib/libkx_skia_ios.a") catch unreachable;
+    // SDL3 static
+    argv.append(b.allocator, b.fmt("deps/SDL/build-{s}/libSDL3.a", .{tag})) catch unreachable;
+    // Skia static libs
+    for (skia_libs) |lib| {
+        argv.append(b.allocator, b.fmt("deps/skia/out/{s}/{s}", .{ tag, lib })) catch unreachable;
+    }
+    // iOS frameworks
+    argv.appendSlice(b.allocator, &.{
+        "-framework", "UIKit",
+        "-framework", "Foundation",
+        "-framework", "CoreGraphics",
+        "-framework", "CoreText",
+        "-framework", "QuartzCore",
+        "-framework", "Metal",
+        "-framework", "IOSurface",
+        "-framework", "AudioToolbox",
+        "-framework", "AVFoundation",
+        "-framework", "CoreAudio",
+        "-framework", "CoreHaptics",
+        "-framework", "GameController",
+        "-framework", "UniformTypeIdentifiers",
+        "-framework", "CoreBluetooth",
+    }) catch unreachable;
+    argv.appendSlice(b.allocator, &.{ "-o", "zig-out/ios/gallery" }) catch unreachable;
+
+    const mkdir = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/ios" });
+    const link = b.addSystemCommand(argv.items);
+    link.step.dependOn(&mkdir.step);
+    // Installs libgallery.a into zig-out/lib (path referenced above).
+    link.step.dependOn(b.getInstallStep());
+
+    // Steps: "ios" (hello placeholder) and "ios-gallery" (default).
+    const ios_step = b.step("ios", "Build the iOS app (hello placeholder)");
+    ios_step.dependOn(&link.step);
+    const ios_gallery_step = b.step("ios-gallery", "Build the iOS gallery app");
+    ios_gallery_step.dependOn(&link.step);
 }
