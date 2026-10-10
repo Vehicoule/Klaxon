@@ -46,6 +46,7 @@ const loading_indicator_w = @import("widgets/loading_indicator.zig");
 const date_picker_w = @import("widgets/date_picker.zig");
 const time_picker_w = @import("widgets/time_picker.zig");
 const color_picker_w = @import("widgets/color_picker.zig");
+const avatar_w = @import("widgets/avatar.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -143,6 +144,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "date_picker", .category = "input", .build = buildDatePicker, .schema = schemaDatePicker },
     .{ .name = "time_picker", .category = "input", .build = buildTimePicker, .schema = schemaTimePicker },
     .{ .name = "color_picker", .category = "input", .build = buildColorPicker, .schema = schemaColorPicker },
+    .{ .name = "avatar", .category = "display", .build = buildAvatar, .schema = schemaAvatar },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -947,6 +949,18 @@ fn deinitColorSignal(p: *anyopaque) void {
     s.deinit();
 }
 
+/// M3E avatar (4d P2): a circular display element (initials/icon/image).
+fn buildAvatar(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const aopts = try value_mod.optionsFromValue(avatar_w.AvatarOptions, opts, null, null);
+    const n = try avatar_w.avatar(allocator, null, aopts);
+    return .{ .node = n, .skip_children = true };
+}
+
+fn schemaAvatar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(avatar_w.AvatarOptions, allocator);
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1410,7 +1424,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 40), widgets.len);
+    try std.testing.expectEqual(@as(usize, 41), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
