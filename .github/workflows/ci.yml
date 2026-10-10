@@ -129,7 +129,7 @@ jobs:
         # NOTE: c'est lourd (~1-2 GB, 15-45 min). Le cache deps accélère les runs suivants.
 
       - name: Build wasm web target
-        run: zig build -Dtarget=wasm32-emscripten web
+        run: zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall web
 
       - name: Size gate
         run: |

@@ -401,7 +401,10 @@ with zipfile.ZipFile(zip_path) as z:
 PYEOF
   fi
   log "generate kx_font_wasm.h from $(basename "$ttf") ($(wc -c < "$ttf") bytes)"
-  python3 - "$ttf" "$out" <<'PYEOF'
+  # Atomic write: generate to a temp file then move — an interrupted run
+  # must not leave a partial header that the idempotence check would skip.
+  local tmp_out="$out.tmp"
+  python3 - "$ttf" "$tmp_out" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 with open(src, "rb") as f:
@@ -420,6 +423,7 @@ with open(dst, "w") as f:
     f.write("};\n")
     f.write("static const size_t kKxDefaultFontSize = sizeof(kKxDefaultFontData);\n")
 PYEOF
+  mv "$tmp_out" "$out"
   ls -la "$out"
 }
 
