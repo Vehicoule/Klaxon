@@ -54,7 +54,11 @@
 // LoadingIndicator (1): the M3E shape-morphing loading indicator
 // (indeterminate morph loop / determinate via a progress signal, contained
 // variant) — Phase 2d.4 PR #32.
-// ~71 widgets at v1 (see docs/ROADMAP.md).
+// DatePicker (1): the M3E date picker panel (calendar: header, month nav,
+// weekday row, day grid, Cancel/OK) — Phase 2d.4 PR #33.
+// TimePicker (1): the M3E time picker (dial: time plates + AM/PM, clock face
+// with hour/minute modes) — Phase 2d.4 PR #33.
+// ~73 widgets at v1 (see docs/ROADMAP.md).
 pub const layout = @import("widgets/layout.zig");
 pub const text = @import("widgets/text.zig");
 pub const icon = @import("widgets/icon.zig");
@@ -80,6 +84,8 @@ pub const navigation_rail = @import("widgets/navigation_rail.zig");
 pub const side_sheet = @import("widgets/side_sheet.zig");
 pub const pull_to_refresh = @import("widgets/pull_to_refresh.zig");
 pub const loading_indicator = @import("widgets/loading_indicator.zig");
+pub const date_picker = @import("widgets/date_picker.zig");
+pub const time_picker = @import("widgets/time_picker.zig");
 pub const gestures = @import("widgets/gestures.zig");
 pub const anim = @import("widgets/anim.zig");
 pub const list_view = @import("widgets/list_view.zig");
