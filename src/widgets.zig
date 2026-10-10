@@ -109,3 +109,4 @@ pub const avatar = @import("widgets/avatar.zig");
 pub const expansion_panel = @import("widgets/expansion_panel.zig");
 pub const stepper = @import("widgets/stepper.zig");
 pub const calendar = @import("widgets/calendar.zig");
+pub const table = @import("widgets/table.zig");
