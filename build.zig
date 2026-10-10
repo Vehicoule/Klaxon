@@ -294,6 +294,9 @@ fn addWasmWeb(
         // headers which conflict with the emscripten sysroot. All include paths
         // are provided explicitly below (sysroot + c++/v1 + project headers).
         "-nostdinc", "-nostdinc++",
+        // Emscripten's sysroot has no xlocale.h (BSD header); tell libc++ it's
+        // absent so locale_base_api.h skips the #include <xlocale.h>.
+        "-D_LIBCPP_HAS_NO_XLOCALE",
     };
     kx_skia.root_module.addCSourceFiles(.{
         .files = &.{
