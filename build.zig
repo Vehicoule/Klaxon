@@ -280,7 +280,10 @@ fn addWasmWeb(
             .target = target,
             .optimize = optimize,
             .link_libc = false, // emcc links musl
-            .link_libcpp = true,
+            // No link_libcpp: Zig's bundled libc++ headers are incompatible
+            // with the emscripten sysroot. Emscripten provides its own libc++
+            // in sysroot/include/c++/v1 (added to the include path below).
+            .link_libcpp = false,
         }),
     });
     const shim_flags = &[_][]const u8{
@@ -301,6 +304,9 @@ fn addWasmWeb(
     kx_skia.root_module.addIncludePath(b.path("deps/skia/include"));
     kx_skia.root_module.addIncludePath(b.path("deps/SDL/include"));
     kx_skia.root_module.addIncludePath(b.path(sysroot_include));
+    // Emscripten's libc++ headers (sysroot/include/c++/v1) — replaces Zig's
+    // bundled libc++ (link_libcpp = false above).
+    kx_skia.root_module.addIncludePath(b.path(b.fmt("{s}/c++/v1", .{sysroot_include})));
 
     // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c, with the
     // emscripten target + sysroot include.
@@ -328,7 +334,7 @@ fn addWasmWeb(
             .target = target,
             .optimize = optimize,
             .link_libc = false, // emcc links musl
-            .link_libcpp = true,
+            .link_libcpp = false, // pure Zig app; emcc links libc++ at the final link
         }),
     });
     app.root_module.addImport("sdl_c", translate_sdl.createModule());
