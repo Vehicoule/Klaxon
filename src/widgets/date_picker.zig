@@ -104,17 +104,22 @@ const footer_y_off: f32 = grid_y_off + grid_h; // 512
 const total_h: f32 = footer_y_off + footer_h + footer_pad_bottom; // 564
 
 const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+
+/// The month name (1-based month index).
+pub fn monthName(m: i64) []const u8 {
+    return month_names[@intCast(m - 1)];
+}
 const month_names_short = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 const weekday_names_short = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 const weekday_letters = [_][:0]const u8{ "S", "M", "T", "W", "T", "F", "S" };
 
 // --- civil calendar (UTC epoch days; Howard Hinnant's algorithms) ---
 
-fn isLeap(y: i64) bool {
+pub fn isLeap(y: i64) bool {
     return @mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0);
 }
 
-fn daysInMonth(y: i64, m: i64) i64 {
+pub fn daysInMonth(y: i64, m: i64) i64 {
     const d = [_]i64{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     var n = d[@intCast(m - 1)];
     if (m == 2 and isLeap(y)) n = 29;
@@ -122,7 +127,7 @@ fn daysInMonth(y: i64, m: i64) i64 {
 }
 
 /// Days since 1970-01-01 (UTC) for a civil date (proleptic Gregorian).
-fn daysFromCivil(y: i64, m: i64, d: i64) i64 {
+pub fn daysFromCivil(y: i64, m: i64, d: i64) i64 {
     const yy = y - @intFromBool(m <= 2);
     const era = @divFloor(yy, 400);
     const yoe = yy - era * 400; // [0, 399]
@@ -136,7 +141,7 @@ const Civil = struct { y: i64, m: i64, d: i64 };
 
 /// The civil date (UTC) of an epoch day (clamped to the supported range —
 /// an extreme epoch day maps to the range's edge, never an overflow).
-fn civilFromDays(z0: i64) Civil {
+pub fn civilFromDays(z0: i64) Civil {
     const z = clampDay(z0) + 719468;
     const era = @divFloor(z, 146097);
     const doe = z - era * 146097; // [0, 146096]
@@ -150,7 +155,7 @@ fn civilFromDays(z0: i64) Civil {
 }
 
 /// The weekday of an epoch day (0 = Sunday). 1970-01-01 was a Thursday.
-fn weekdayFromDays(z: i64) usize {
+pub fn weekdayFromDays(z: i64) usize {
     return @intCast(@mod(clampDay(z) + 4, 7));
 }
 
