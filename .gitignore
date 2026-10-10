@@ -17,3 +17,9 @@ zig-cache/
 
 # Packaging output
 dist/
+
+# Android (Phase 3d)
+android/.gradle/
+android/app/build/
+android/local.properties
+zig-out/android/

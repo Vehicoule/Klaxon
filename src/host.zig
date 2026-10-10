@@ -33,7 +33,42 @@ const Node = ui.node.Node;
 /// are compiled out under this flag.
 pub const is_emscripten = builtin.os.tag == .emscripten;
 
+/// Android target (aarch64-linux-android, Phase 3d) and iOS target
+/// (aarch64-ios, Phase 3e). is_mobile gates every mobile branch: the GL
+/// context created before kx_create, the pixel-size/DPR handling, the
+/// lifecycle events, and the SDL_Log-based log() below.
+pub const is_android = builtin.os.tag == .linux and builtin.abi == .android;
+pub const is_ios = builtin.os.tag == .ios;
+pub const is_mobile = is_android or is_ios;
+
 const platform_wasm = if (is_emscripten) @import("platform_wasm.zig") else struct {};
+
+/// Logging (Phase 3d/3e). std.debug.print and @panic route through
+/// std.Options.debug_io → std.Io.Threaded, whose Darwin spawn path reads
+/// NullFile.fd — a field that does not exist on iOS (Zig 0.17 std bug), so
+/// any reachable std.debug.print / @panic fails the iOS compile. On mobile,
+/// log through SDL_Log (stderr / OSLog, no std.Io); on native keep
+/// std.debug.print. The untaken branch is comptime-pruned, so std.debug is
+/// never analyzed for mobile targets.
+fn log(comptime fmt: []const u8, args: anytype) void {
+    if (is_mobile) {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrintSentinel(&buf, fmt, args, 0) catch return;
+        sdl.c.SDL_Log("%s", msg.ptr);
+    } else {
+        std.debug.print(fmt ++ "\n", args);
+    }
+}
+
+/// Mobile: the layout-to-canvas factor (pixels per layout unit), derived
+/// from the real window sizes. SDL_GetWindowDisplayScale is the display
+/// density on Android, not this factor (on iOS the two coincide: the Retina
+/// DPR, because the window carries SDL_WINDOW_HIGH_PIXEL_DENSITY).
+fn displayScaleOf(window: *sdl.c.SDL_Window, layout_w: c_int, pixel_w: c_int) f32 {
+    if (layout_w > 0 and pixel_w > 0)
+        return @as(f32, @floatFromInt(pixel_w)) / @as(f32, @floatFromInt(layout_w));
+    return sdl.c.SDL_GetWindowDisplayScale(window);
+}
 
 /// Frame budget: 8.33 ms → 120 fps target (the metrics gate). The whole loop
 /// iteration is paced to the budget (slow iterations run unthrottled and flag
@@ -93,6 +128,19 @@ pub const Host = struct {
     /// Null on native. SDL_GLContext is already an optional pointer in the
     /// Zig translation.
     gl_ctx: sdl.c.SDL_GLContext = null,
+    /// Mobile (Phase 3d/3e): lifecycle gate — false while the app is
+    /// backgrounded (WILL/DID_ENTER_BACKGROUND); runIteration skips
+    /// rendering while inactive.
+    active: bool = true,
+    /// Mobile: window size in pixels (SDL_GetWindowSizeInPixels). The kx
+    /// canvas is pixel-sized; width/height stay in points (dp) — the
+    /// layout space.
+    pixel_width: c_int = 0,
+    pixel_height: c_int = 0,
+    /// Mobile: pixels per layout unit (Retina DPR on iOS, 1.0 on Android
+    /// where the window size is already in pixels). renderFrame scales the
+    /// point-space paint onto the pixel canvas by this factor.
+    display_scale: f32 = 1.0,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -102,16 +150,16 @@ pub const Host = struct {
         ppm_path: ?[:0]const u8,
     ) !Host {
         if (!sdl.c.SDL_Init(sdl.c.SDL_INIT_VIDEO)) {
-            std.debug.print("SDL_Init failed: {s}\n", .{sdl.c.SDL_GetError()});
+            log("SDL_Init failed: {s}", .{sdl.c.SDL_GetError()});
             return error.SdlInit;
         }
         errdefer sdl.c.SDL_Quit();
 
-        // Emscripten (wasm): request a WebGL2 (ES 3.0) context before window
-        // creation — the GPU shim (kx_skia_wasm.cpp) needs a current GL
-        // context when kx.create runs. Double-buffered, no depth buffer,
-        // 8-bit stencil.
-        if (is_emscripten) {
+        // Emscripten (wasm) + mobile (Android/iOS): request a GLES (ES 3.0)
+        // context before window creation — the GPU shims (kx_skia_wasm.cpp,
+        // kx_skia_android.cpp) need a current GL context when kx.create
+        // runs. Double-buffered, no depth buffer, 8-bit stencil.
+        if (is_emscripten or is_mobile) {
             _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_MAJOR_VERSION), 3);
             _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_MINOR_VERSION), 0);
             _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_CONTEXT_PROFILE_MASK), sdl.c.SDL_GL_CONTEXT_PROFILE_ES);
@@ -119,42 +167,69 @@ pub const Host = struct {
             _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_DEPTH_SIZE), 0);
             _ = sdl.c.SDL_GL_SetAttribute(@intCast(sdl.c.SDL_GL_STENCIL_SIZE), 8);
         }
-        const window_flags: u64 = if (is_emscripten) sdl.c.SDL_WINDOW_OPENGL else 0;
+        const window_flags: u64 = if (is_emscripten)
+            sdl.c.SDL_WINDOW_OPENGL
+        else if (is_android)
+            sdl.c.SDL_WINDOW_FULLSCREEN | sdl.c.SDL_WINDOW_OPENGL
+        else if (is_ios)
+            // HIGH_PIXEL_DENSITY: without it SDL_GetWindowSizeInPixels
+            // reports points on iOS — the DPR model needs real pixels.
+            sdl.c.SDL_WINDOW_OPENGL | sdl.c.SDL_WINDOW_HIGH_PIXEL_DENSITY
+        else
+            0;
         const window = sdl.c.SDL_CreateWindow("klaxon hello", width, height, window_flags) orelse {
-            std.debug.print("SDL_CreateWindow failed: {s}\n", .{sdl.c.SDL_GetError()});
+            log("SDL_CreateWindow failed: {s}", .{sdl.c.SDL_GetError()});
             return error.SdlWindow;
         };
         errdefer sdl.c.SDL_DestroyWindow(window);
 
-        // Emscripten (wasm): create the WebGL2 context and make it current
-        // BEFORE kx.create — gpu_init checks SDL_GL_GetCurrentContext.
+        // Emscripten (wasm) + mobile: create the GL context and make it
+        // current BEFORE kx.create — gpu_init checks SDL_GL_GetCurrentContext.
         var gl_ctx: sdl.c.SDL_GLContext = null;
-        if (is_emscripten) {
+        if (is_emscripten or is_mobile) {
             gl_ctx = sdl.c.SDL_GL_CreateContext(window);
             if (gl_ctx == null) {
-                std.debug.print("SDL_GL_CreateContext failed: {s}\n", .{sdl.c.SDL_GetError()});
+                log("SDL_GL_CreateContext failed: {s}", .{sdl.c.SDL_GetError()});
                 return error.SdlGlContext;
             }
             _ = sdl.c.SDL_GL_MakeCurrent(window, gl_ctx);
-            _ = sdl.c.SDL_GL_SetSwapInterval(0); // rAF paces the frame loop
+            _ = sdl.c.SDL_GL_SetSwapInterval(0); // the platform paces the loop (rAF / CADisplayLink / vsync)
         }
         errdefer {
             if (gl_ctx) |ctx| _ = sdl.c.SDL_GL_DestroyContext(ctx);
         }
 
         // Text input events flow from window creation (TextField focus is
-        // managed by the input router; refine per-platform later).
-        _ = sdl.c.SDL_StartTextInput(window);
+        // managed by the input router; refine per-platform later). Mobile:
+        // the soft keyboard is driven by the platform text-input path —
+        // SDL_StartTextInput is a no-op there.
+        if (!is_mobile) _ = sdl.c.SDL_StartTextInput(window);
 
-        const ctx = kx.create(@ptrCast(window), width, height, backend) orelse {
-            std.debug.print("kx_create failed (backend {s})\n", .{kx.c.kx_backend_name(backend)});
+        // Mobile: the real window size comes from SDL after creation (the
+        // caller may pass 0x0 — iOS ignores the requested size and goes
+        // fullscreen): points → width/height (the layout space), pixels →
+        // pixel_width/pixel_height (the kx canvas is pixel-sized).
+        var win_w = width;
+        var win_h = height;
+        var pixel_w: c_int = width;
+        var pixel_h: c_int = height;
+        var display_scale: f32 = 1.0;
+        if (is_mobile) {
+            _ = sdl.c.SDL_GetWindowSize(window, &win_w, &win_h);
+            _ = sdl.c.SDL_GetWindowSizeInPixels(window, &pixel_w, &pixel_h);
+            display_scale = displayScaleOf(window, win_w, pixel_w);
+        }
+
+        const ctx = kx.create(@ptrCast(window), pixel_w, pixel_h, backend) orelse {
+            log("kx_create failed (backend {s})", .{kx.c.kx_backend_name(backend)});
             return error.KxCreate;
         };
         errdefer kx.c.kx_destroy(ctx);
 
         // Raster presents through an SDL streaming texture; GPU backends present
-        // inside the shim (onscreen surface attached to the window).
-        const renderer = if (backend == kx.c.KX_BACKEND_RASTER)
+        // inside the shim (onscreen surface attached to the window). Mobile:
+        // no SDL renderer/texture — the GPU shim presents (Metal / EGL swap).
+        const renderer = if (!is_mobile and backend == kx.c.KX_BACKEND_RASTER)
             sdl.c.SDL_CreateRenderer(window, null) orelse return error.SdlRenderer
         else
             null;
@@ -162,7 +237,9 @@ pub const Host = struct {
             if (renderer) |r| sdl.c.SDL_DestroyRenderer(r);
         }
 
-        const texture = if (renderer) |r|
+        const texture = if (is_mobile)
+            null
+        else if (renderer) |r|
             sdl.c.SDL_CreateTexture(r, sdl.c.SDL_PIXELFORMAT_ABGR8888, sdl.c.SDL_TEXTUREACCESS_STREAMING, width, height) orelse return error.SdlTexture
         else
             null;
@@ -170,7 +247,11 @@ pub const Host = struct {
             if (texture) |t| sdl.c.SDL_DestroyTexture(t);
         }
 
-        const pixels = try allocator.alloc(u8, @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * 4);
+        // Mobile: no CPU pixel buffer (the GPU shim owns presentation).
+        const pixels: []u8 = if (is_mobile)
+            &[_]u8{}
+        else
+            try allocator.alloc(u8, @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * 4);
         errdefer allocator.free(pixels);
 
         const backend_name: [*:0]const u8 = kx.c.kx_backend_name(backend) orelse "unknown";
@@ -186,8 +267,11 @@ pub const Host = struct {
             .renderer = renderer,
             .texture = texture,
             .pixels = pixels,
-            .width = width,
-            .height = height,
+            .width = win_w,
+            .height = win_h,
+            .pixel_width = pixel_w,
+            .pixel_height = pixel_h,
+            .display_scale = display_scale,
             .ppm_path = ppm_path,
             .stats = .{ .backend = backend_name },
             .inspector = inspector,
@@ -305,6 +389,18 @@ pub const Host = struct {
             while (sdl.c.SDL_PollEvent(&event)) {
                 if (host.handleEvent(root, &event)) quit = true;
             }
+        } else if (is_ios) {
+            // iOS: no drain here — SDL_AppEvent (platform_ios.zig) dispatches
+            // every event as SDL pumps them (SDL_main_callbacks also routes
+            // the watch-only lifecycle events to the app callback).
+            _ = &event; // no event drain on iOS — keep the slot referenced
+        } else if (is_android) {
+            // Android: non-blocking drain — SDL_main runs this loop on SDL's
+            // main thread; the platform paces the iteration (no blocking
+            // waits on mobile).
+            while (sdl.c.SDL_PollEvent(&event)) {
+                if (host.handleEvent(root, &event)) quit = true;
+            }
         } else if (root.dirty) {
             // Active: drain events without blocking.
             while (sdl.c.SDL_PollEvent(&event)) {
@@ -348,8 +444,9 @@ pub const Host = struct {
         // value quantized to the same integer) must not stall the loop
         // (frames < max_frames with frames frozen = infinite loop).
         if (on_frame) |f| f(on_frame_ctx, host.stats.frames);
-        // Render when the tree is dirty (or the app ticks: continuous).
-        if (!quit and (root.dirty or on_frame != null)) host.renderFrame(root);
+        // Render when the tree is dirty (or the app ticks: continuous) and
+        // the app is active (mobile: skip while backgrounded).
+        if (!quit and host.active and (root.dirty or on_frame != null)) host.renderFrame(root);
         // Pointer cursor follows the hovered node (desktop, Phase 2d-0.5).
         host.updateCursor();
         // Pace the whole iteration to the frame budget (~120 fps active).
@@ -370,6 +467,14 @@ pub const Host = struct {
         }
         host.frame_start_ns = sdl.c.SDL_GetTicksNS();
         kx.c.kx_begin_frame(host.ctx);
+        // Mobile (Phase 3d/3e): the canvas is pixel-sized (kx_create got
+        // pixel_width/pixel_height) while the tree lays out in points —
+        // scale the point-space paint onto the pixel canvas (crisp on
+        // Retina; a no-op at display_scale == 1.0, e.g. Android).
+        if (is_mobile) {
+            kx.c.kx_save(host.ctx);
+            kx.c.kx_scale(host.ctx, host.display_scale, host.display_scale);
+        }
         // Dirty-rect is raster-only: the raster surface is retained between
         // frames; GPU backends acquire a fresh drawable each frame (no
         // retained pixels) → full repaint until retained composition lands.
@@ -418,6 +523,7 @@ pub const Host = struct {
             host.devtools.recordFrame(host.stats.frame_time_ms);
             host.devtools.paint(host.ctx, host.width, host.height, &host.stats);
         }
+        if (is_mobile) kx.c.kx_restore(host.ctx);
         kx.c.kx_end_frame(host.ctx);
         const t_paint = sdl.c.SDL_GetTicksNS();
         root.clearDamage();
@@ -444,9 +550,11 @@ pub const Host = struct {
     /// Pace one loop iteration to the frame budget: delay only the remainder
     /// of the 8.3 ms budget (slow iterations run unthrottled). Compiled out
     /// on emscripten — the rAF main loop paces the iteration; SDL_Delay
-    /// would busy-poll and freeze the tab.
+    /// would busy-poll and freeze the tab. Also compiled out on mobile —
+    /// the platform paces the iteration (CADisplayLink on iOS,
+    /// eglSwapBuffers/vsync on Android).
     fn paceIteration(host: *Host, iter_start_ns: u64) void {
-        if (is_emscripten) return;
+        if (is_emscripten or is_mobile) return;
         _ = host;
         const elapsed = sdl.c.SDL_GetTicksNS() - iter_start_ns;
         if (elapsed < FRAME_BUDGET_NS) {
@@ -455,9 +563,38 @@ pub const Host = struct {
         }
     }
 
-    /// Returns true if the event requests quit.
-    fn handleEvent(host: *Host, root: *Node, event: *sdl.c.SDL_Event) bool {
+    /// Returns true if the event requests quit. Pub: platform_ios.zig calls
+    /// it from SDL_AppEvent (iOS dispatches events through the SDL main
+    /// callbacks, not through this loop's drain).
+    pub fn handleEvent(host: *Host, root: *Node, event: *sdl.c.SDL_Event) bool {
         if (event.type == sdl.c.SDL_EVENT_QUIT) return true;
+        // Mobile lifecycle (Phase 3d/3e): background/foreground gating plus
+        // the low-memory / terminating notifications. On iOS these arrive
+        // through SDL_AppEvent (SDL_main_callbacks dispatches the watch-only
+        // app events immediately); on Android they are never queued, so the
+        // branch is a no-op there.
+        if (is_mobile) {
+            switch (event.type) {
+                sdl.c.SDL_EVENT_WILL_ENTER_BACKGROUND, sdl.c.SDL_EVENT_DID_ENTER_BACKGROUND => {
+                    host.active = false;
+                    return false;
+                },
+                sdl.c.SDL_EVENT_WILL_ENTER_FOREGROUND, sdl.c.SDL_EVENT_DID_ENTER_FOREGROUND => {
+                    // The surface may have been lost while backgrounded:
+                    // full repaint on resume (no dirty-rect).
+                    host.active = true;
+                    root.dirty = true;
+                    root.clearDamage();
+                    return false;
+                },
+                sdl.c.SDL_EVENT_LOW_MEMORY => {
+                    log("klaxon: low memory warning", .{});
+                    return false;
+                },
+                sdl.c.SDL_EVENT_TERMINATING => return true,
+                else => {},
+            }
+        }
         // DevTools (Phase 4a): F12 toggles the overlay — checked before any
         // other key handling so it works regardless of the focused node.
         // Key-repeat events are ignored (holding F12 would toggle per repeat).
@@ -509,10 +646,14 @@ pub const Host = struct {
                     host.input.clearHover();
                     return false; // skip routing
                 }
+                // Mobile: mouse coordinates arrive in pixels — convert to
+                // the point (dp) layout space via the display scale.
+                const sx = if (is_mobile) event.motion.x / host.display_scale else event.motion.x;
+                const sy = if (is_mobile) event.motion.y / host.display_scale else event.motion.y;
                 host.input.dispatchPointer(root, .{
                     .phase = .move,
-                    .x = event.motion.x,
-                    .y = event.motion.y,
+                    .x = sx,
+                    .y = sy,
                     .pointer = 0,
                     .time_ms = time_ms,
                 });
@@ -531,10 +672,13 @@ pub const Host = struct {
                     host.inspector.pickAt(root, event.button.x, event.button.y); // passive selection
                 }
                 if (event.button.button == sdl.c.SDL_BUTTON_LEFT) {
+                    // Mobile: pixels → points (layout space), like motion.
+                    const sx = if (is_mobile) event.button.x / host.display_scale else event.button.x;
+                    const sy = if (is_mobile) event.button.y / host.display_scale else event.button.y;
                     host.input.dispatchPointer(root, .{
                         .phase = .down,
-                        .x = event.button.x,
-                        .y = event.button.y,
+                        .x = sx,
+                        .y = sy,
                         .pointer = 0,
                         .time_ms = time_ms,
                     });
@@ -542,10 +686,12 @@ pub const Host = struct {
             },
             sdl.c.SDL_EVENT_MOUSE_BUTTON_UP => {
                 if (event.button.button == sdl.c.SDL_BUTTON_LEFT) {
+                    const sx = if (is_mobile) event.button.x / host.display_scale else event.button.x;
+                    const sy = if (is_mobile) event.button.y / host.display_scale else event.button.y;
                     host.input.dispatchPointer(root, .{
                         .phase = .up,
-                        .x = event.button.x,
-                        .y = event.button.y,
+                        .x = sx,
+                        .y = sy,
                         .pointer = 0,
                         .time_ms = time_ms,
                     });
@@ -586,9 +732,12 @@ pub const Host = struct {
                     root.dirty = true;
                     return false; // consume
                 }
+                // Mobile: pixels → points (layout space), like motion.
+                const sx = if (is_mobile) event.wheel.mouse_x / host.display_scale else event.wheel.mouse_x;
+                const sy = if (is_mobile) event.wheel.mouse_y / host.display_scale else event.wheel.mouse_y;
                 host.input.dispatchScroll(root, .{
-                    .x = event.wheel.mouse_x,
-                    .y = event.wheel.mouse_y,
+                    .x = sx,
+                    .y = sy,
                     .delta_x = event.wheel.x,
                     .delta_y = event.wheel.y,
                     .pointer = 0,
@@ -656,13 +805,41 @@ pub const Host = struct {
     fn resize(host: *Host, w: c_int, h: c_int) void {
         host.width = w;
         host.height = h;
+        if (is_mobile) {
+            // Mobile: the canvas is pixel-sized — re-query the pixel size
+            // and DPR (WINDOW_RESIZED carries points). No SDL
+            // renderer/texture/pixel buffer on mobile.
+            host.refreshPixelSize();
+            kx.c.kx_resize(host.ctx, host.pixel_width, host.pixel_height);
+            return;
+        }
         kx.c.kx_resize(host.ctx, w, h);
         host.allocator.free(host.pixels);
-        host.pixels = host.allocator.alloc(u8, @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * 4) catch @panic("klaxon: out of memory");
+        // Fail-soft on OOM (an @panic here would pull std.debug into the
+        // mobile compile — see log()): the next present skips the readback
+        // (kx_readback_rgba rejects a short buffer).
+        host.pixels = host.allocator.alloc(u8, @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * 4) catch blk: {
+            log("klaxon: out of memory", .{});
+            break :blk &[_]u8{};
+        };
         if (host.texture) |t| {
             sdl.c.SDL_DestroyTexture(t);
             host.texture = sdl.c.SDL_CreateTexture(host.renderer.?, sdl.c.SDL_PIXELFORMAT_ABGR8888, sdl.c.SDL_TEXTUREACCESS_STREAMING, w, h);
         }
+    }
+
+    /// Mobile: refresh the pixel size + display scale from the window (call
+    /// on resize — the WINDOW_RESIZED event carries points, the canvas
+    /// needs pixels).
+    fn refreshPixelSize(host: *Host) void {
+        var pw: c_int = 0;
+        var ph: c_int = 0;
+        _ = sdl.c.SDL_GetWindowSizeInPixels(host.window, &pw, &ph);
+        if (pw > 0 and ph > 0) {
+            host.pixel_width = pw;
+            host.pixel_height = ph;
+        }
+        host.display_scale = displayScaleOf(host.window, host.width, host.pixel_width);
     }
 
     fn present(host: *Host) void {
