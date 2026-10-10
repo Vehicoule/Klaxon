@@ -363,10 +363,13 @@ test "golden: the avatar paints PrimaryContainer circle + OnPrimaryContainer ini
     r.paint(n, 0xFFFFFFFF);
     var f = try r.readback(std.testing.allocator);
     defer f.deinit();
-    // Center area (inside the circle, clear of the text ink): the fill.
+    // Inside the circle, clear of the centered text ink: the fill.
+    // The text "AB" at size 22.4 is ~30px wide centered at (40,40), so
+    // x=18 (22px left of center) is inside the circle (r=28) but outside
+    // the text box.
     const cx = 12 + 28;
     const cy = 12 + 28;
-    try std.testing.expectEqual(t.colors.primary_container, f.pixelAt(cx - 15, cy));
+    try std.testing.expectEqual(t.colors.primary_container, f.pixelAt(cx - 22, cy));
     // The corner (outside the circle): background.
     try std.testing.expectEqual(@as(Color, 0xFFFFFFFF), f.pixelAt(12, 12));
     // The initials ink (OnPrimaryContainer) somewhere in the center row.
