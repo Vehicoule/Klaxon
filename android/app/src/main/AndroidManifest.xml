@@ -5,7 +5,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- OpenGL ES 3.2 (Skia Ganesh/Graphite GL backend). -->
-    <uses-feature android:glEsVersion="0x00030002" android:required="true" />
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
     <!-- Vulkan 1.1 (0x00401000) — optional, probed at runtime. -->
     <uses-feature

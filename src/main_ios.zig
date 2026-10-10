@@ -48,7 +48,7 @@ pub const AppKind = enum { hello, gallery };
 // ce fichier (le root du graphe ios est encore gallery_main.zig, placeholder).
 const ios_app: AppKind = .gallery;
 
-const max_frames: u64 = 600; // borne le run (smoke test simulateur)
+const max_frames: u64 = 0; // 0 = run forever (mobile: OS terminates the app)
 
 /// Construit le Host + l'arbre et retourne l'AppState des callbacks SDL.
 /// Appelé une fois par SDL_AppInit (platform_ios.zig). Tout est alloué en
@@ -90,8 +90,9 @@ pub fn start() !*platform_ios.AppState {
             break :blk g.root;
         },
     };
-    // TODO: taille réelle depuis SDL_GetWindowSize (placeholder 0x0).
-    root.layout(.{ .x = 0, .y = 0, .w = 0, .h = 0 });
+    // Layout at the real window size (queried from SDL in Host.init on
+    // mobile — the 0x0 passed to init is just a placeholder).
+    root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(host_ptr.width), .h = @floatFromInt(host_ptr.height) });
 
     const state = try stable.create(platform_ios.AppState);
     state.* = .{

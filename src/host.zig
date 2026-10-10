@@ -348,7 +348,9 @@ pub const Host = struct {
             defer kx.a11yShutdown();
         }
         var quit = false;
-        while (!quit and host.stats.frames < max_frames) {
+        // max_frames = 0 means run forever (mobile: the app lives until the
+        // OS terminates it; native demos use a finite budget for testing).
+        while (!quit and (max_frames == 0 or host.stats.frames < max_frames)) {
             quit = try host.runIteration(root, on_frame, on_frame_ctx);
         }
     }
@@ -469,9 +471,11 @@ pub const Host = struct {
         kx.c.kx_begin_frame(host.ctx);
         // Mobile (Phase 3d/3e): the canvas is pixel-sized (kx_create got
         // pixel_width/pixel_height) while the tree lays out in points —
-        // scale the point-space paint onto the pixel canvas (crisp on
-        // Retina; a no-op at display_scale == 1.0, e.g. Android).
-        if (is_mobile) {
+        // Scale the point-space paint onto the pixel canvas (crisp on
+        // Retina). Android only — the iOS shim (kx_skia_ios.mm) already
+        // applies canvas->scale(DPR) in gpu_begin_frame; scaling here too
+        // would double the Retina factor.
+        if (is_android and host.display_scale != 1.0) {
             kx.c.kx_save(host.ctx);
             kx.c.kx_scale(host.ctx, host.display_scale, host.display_scale);
         }
@@ -523,7 +527,7 @@ pub const Host = struct {
             host.devtools.recordFrame(host.stats.frame_time_ms);
             host.devtools.paint(host.ctx, host.width, host.height, &host.stats);
         }
-        if (is_mobile) kx.c.kx_restore(host.ctx);
+        if (is_android and host.display_scale != 1.0) kx.c.kx_restore(host.ctx);
         kx.c.kx_end_frame(host.ctx);
         const t_paint = sdl.c.SDL_GetTicksNS();
         root.clearDamage();
