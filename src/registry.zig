@@ -51,6 +51,7 @@ const expansion_panel_w = @import("widgets/expansion_panel.zig");
 const stepper_w = @import("widgets/stepper.zig");
 const calendar_w = @import("widgets/calendar.zig");
 const table_w = @import("widgets/table.zig");
+const tree_w = @import("widgets/tree.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -153,6 +154,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "stepper", .category = "navigation", .build = buildStepper, .schema = schemaStepper },
     .{ .name = "calendar", .category = "input", .build = buildCalendar, .schema = schemaCalendar },
     .{ .name = "table", .category = "display", .build = buildTable, .schema = schemaTable },
+    .{ .name = "tree", .category = "navigation", .build = buildTree, .schema = schemaTree },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -1076,6 +1078,18 @@ fn schemaTable(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.schemaOf(table_w.TableOptions, allocator);
 }
 
+fn buildTree(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx; _ = opts;
+    // Simplified: a single root node (full nested parsing is a follow-up).
+    const root = tree_w.TreeNode{ .label = "Root", .children = &.{ .{ .label = "Child" } } };
+    const n = try tree_w.tree(allocator, &root, null, .{});
+    return .{ .node = n, .skip_children = true };
+}
+
+fn schemaTree(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(tree_w.TreeOptions, allocator);
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1539,7 +1553,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 45), widgets.len);
+    try std.testing.expectEqual(@as(usize, 46), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {

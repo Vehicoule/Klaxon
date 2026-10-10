@@ -54,6 +54,7 @@ const expansion_panel_w = widgets.expansion_panel;
 const stepper_w = widgets.stepper;
 const calendar_w = widgets.calendar;
 const table_w = widgets.table;
+const tree_w = widgets.tree;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -552,6 +553,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Stepper (M3E)", try buildStepperSection(g, theme)));
     content.add(try section(a, theme, "Calendar (M3E)", try buildCalendarSection(g, theme)));
     content.add(try section(a, theme, "Table (M3E)", try buildTableSection(g, theme)));
+    content.add(try section(a, theme, "Tree (M3E)", try buildTreeSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1191,6 +1193,20 @@ fn buildTableSection(g: *Gallery, theme: Theme) !*Node {
     const row2 = [_][]const u8{ "Carol", "PM", "Core" };
     const rows = [_][]const []const u8{ &row0, &row1, &row2 };
     return table_w.table(a, &cols, &rows, null, .{ .theme = theme });
+}
+
+/// Tree (M3E P2): a small expandable tree.
+fn buildTreeSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const root = tree_w.TreeNode{
+        .label = "Documents",
+        .children = &[_]tree_w.TreeNode{
+            .{ .label = "Projects", .children = &[_]tree_w.TreeNode{ .{ .label = "Klaxon" }, .{ .label = "Vehicoule" } } },
+            .{ .label = "Music", .children = &[_]tree_w.TreeNode{ .{ .label = "Rock" }, .{ .label = "Jazz" } } },
+            .{ .label = "Notes" },
+        },
+    };
+    return tree_w.tree(a, &root, null, .{ .theme = theme });
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.
