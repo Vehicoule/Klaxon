@@ -107,3 +107,4 @@ pub const dialog = @import("widgets/dialog.zig");
 pub const snackbar = @import("widgets/snackbar.zig");
 pub const avatar = @import("widgets/avatar.zig");
 pub const expansion_panel = @import("widgets/expansion_panel.zig");
+pub const stepper = @import("widgets/stepper.zig");

@@ -48,6 +48,7 @@ const time_picker_w = @import("widgets/time_picker.zig");
 const color_picker_w = @import("widgets/color_picker.zig");
 const avatar_w = @import("widgets/avatar.zig");
 const expansion_panel_w = @import("widgets/expansion_panel.zig");
+const stepper_w = @import("widgets/stepper.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -147,6 +148,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "color_picker", .category = "input", .build = buildColorPicker, .schema = schemaColorPicker },
     .{ .name = "avatar", .category = "display", .build = buildAvatar, .schema = schemaAvatar },
     .{ .name = "expansion_panel", .category = "layout", .build = buildExpansionPanel, .schema = schemaExpansionPanel },
+    .{ .name = "stepper", .category = "navigation", .build = buildStepper, .schema = schemaStepper },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -984,6 +986,33 @@ fn schemaExpansionPanel(allocator: std.mem.Allocator) anyerror![]value_mod.PropS
     return value_mod.appendSchemaProp(base, allocator, "expanded", .toggle, &.{}, .{ .bool = false });
 }
 
+fn buildStepper(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const raw: usize = if (opts.get("current")) |x| switch (x) {
+        .int => |i| if (i < 0) 0 else @as(usize, @intCast(i)),
+        .float => |f| floatToInt(usize, f) orelse return error.ValueOutOfRange,
+        else => 0,
+    } else 0;
+    const sig = try state.Signal(usize).init(allocator, raw);
+    try ctx.track(sig, deinitUsizeSignal);
+    var steps: std.array_list.Managed(stepper_w.StepperStep) = .init(allocator);
+    defer steps.deinit();
+    if (opts.get("steps")) |sv| switch (sv) {
+        .array => |arr| for (arr) |iv| {
+            if (iv.get("label")) |lv| switch (lv) {
+                .string => |s| try steps.append(.{ .label = s }),
+                else => {},
+            } else try steps.append(.{ .label = "" });
+        },
+        else => {},
+    };
+    const n = try stepper_w.stepper(allocator, sig, steps.items, .{});
+    return .{ .node = n, .live = .{ .signal = sig, .field = "current", .read = readUsizeSignal }, .skip_children = true };
+}
+
+fn schemaStepper(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(stepper_w.StepperOptions, allocator);
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1447,7 +1476,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 42), widgets.len);
+    try std.testing.expectEqual(@as(usize, 43), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {

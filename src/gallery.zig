@@ -51,6 +51,7 @@ const time_picker_w = widgets.time_picker;
 const color_picker_w = widgets.color_picker;
 const avatar_w = widgets.avatar;
 const expansion_panel_w = widgets.expansion_panel;
+const stepper_w = widgets.stepper;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -546,6 +547,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Color picker (M3E)", try buildColorPickerSection(g, theme)));
     content.add(try section(a, theme, "Avatars (M3E)", try buildAvatarSection(g, theme)));
     content.add(try section(a, theme, "Expansion panel (M3E)", try buildExpansionPanelSection(g, theme)));
+    content.add(try section(a, theme, "Stepper (M3E)", try buildStepperSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1157,6 +1159,15 @@ fn buildExpansionPanelSection(g: *Gallery, theme: Theme) !*Node {
     const child = try text_w.text(a, "This content is revealed when the panel is expanded. Tap the header to toggle.", .{ .size = 14, .color = theme.colors.on_surface });
     const panel = try expansion_panel_w.expansionPanel(a, g.ep_expanded, child, .{ .title = "Tap to expand/collapse", .theme = theme });
     return panel;
+}
+
+/// Stepper (M3E P2): 4 steps, step 2 active.
+fn buildStepperSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const sig = try state.Signal(usize).init(a, 1);
+    defer sig.deinit();
+    const steps = [_]stepper_w.StepperStep{ .{ .label = "Account" }, .{ .label = "Profile" }, .{ .label = "Review" }, .{ .label = "Done" } };
+    return stepper_w.stepper(a, sig, &steps, .{ .theme = theme });
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.
