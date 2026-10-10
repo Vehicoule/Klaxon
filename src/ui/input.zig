@@ -330,6 +330,11 @@ pub const InputRouter = struct {
         return self.hovered;
     }
 
+    /// Clear the hover (the pointer is over a devtools panel, not the tree).
+    pub fn clearHover(self: *InputRouter) void {
+        self.hovered = null;
+    }
+
     /// Release every reference to a node being destroyed. No GC: widgets with
     /// input handlers call this from their deinit (dangling pointers are fatal).
     pub fn releaseNode(self: *InputRouter, node: *Node) void {
