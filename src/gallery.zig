@@ -49,6 +49,7 @@ const loading_indicator_w = widgets.loading_indicator;
 const date_picker_w = widgets.date_picker;
 const time_picker_w = widgets.time_picker;
 const color_picker_w = widgets.color_picker;
+const avatar_w = widgets.avatar;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -538,6 +539,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Date picker (M3E)", try buildDatePickerSection(g, theme)));
     content.add(try section(a, theme, "Time picker (M3E)", try buildTimePickerSection(g, theme)));
     content.add(try section(a, theme, "Color picker (M3E)", try buildColorPickerSection(g, theme)));
+    content.add(try section(a, theme, "Avatars (M3E)", try buildAvatarSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1117,6 +1119,29 @@ fn buildColorPickerSection(g: *Gallery, theme: Theme) !*Node {
     row.add(try text_w.BoundText(u32).text(a, g.cp_color, fmtColorHex, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     row.add(try text_w.BoundText(u32).text(a, g.cp_changed, fmtPress, .{ .size = 13, .color = theme.colors.on_surface_variant }));
     col.add(row);
+    return col;
+}
+
+/// Avatars (M3E P2): the five sizes with initials.
+fn buildAvatarSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const col = try layout.column(a, .{ .gap = 12 });
+    // All 5 sizes with initials.
+    inline for (.{ .xs, .s, .m, .l, .xl }) |sz| {
+        const row = try layout.row(a, .{ .gap = 8, .cross_align = .center });
+        const av = try avatar_w.avatar(a, null, .{ .size = sz, .initials = "AB", .theme = theme });
+        row.add(av);
+        const label = try text_w.text(a, switch (sz) {
+            .xs => "XS 24",
+            .s => "S 32",
+            .m => "M 40",
+            .l => "L 56",
+            .xl => "XL 96",
+            else => "?",
+        }, .{ .size = 13, .color = theme.colors.on_surface_variant });
+        row.add(label);
+        col.add(row);
+    }
     return col;
 }
 
