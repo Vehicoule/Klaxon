@@ -24,6 +24,7 @@ const input_mod = @import("ui/input.zig");
 const semantics_mod = @import("ui/semantics.zig");
 const anim = @import("ui/anim.zig");
 const devtools_mod = @import("devtools.zig");
+const inspector_mod = @import("inspector.zig");
 
 const Node = ui.node.Node;
 
@@ -75,6 +76,9 @@ pub const Host = struct {
     /// DevTools overlay (Phase 4a): disabled by default — F12 (handleEvent)
     /// or --devtools (main) enables it. Zero cost when off.
     devtools: devtools_mod.DevTools = .{},
+    /// Inspector panel (Phase 4a.2): disabled by default — F11 (handleEvent)
+    /// or --inspector (main) enables it. Zero cost when off.
+    inspector: inspector_mod.Inspector,
     input: input_mod.InputRouter,
     timeline: anim.Timeline,
     frame_start_ns: u64 = 0,
@@ -171,6 +175,9 @@ pub const Host = struct {
 
         const backend_name: [*:0]const u8 = kx.c.kx_backend_name(backend) orelse "unknown";
 
+        const inspector = try inspector_mod.Inspector.init(allocator);
+        errdefer inspector.deinit();
+
         return .{
             .allocator = allocator,
             .window = window,
@@ -183,6 +190,7 @@ pub const Host = struct {
             .height = height,
             .ppm_path = ppm_path,
             .stats = .{ .backend = backend_name },
+            .inspector = inspector,
             .input = .{},
             .timeline = anim.Timeline.init(allocator),
         };
@@ -222,6 +230,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(host: *Host) void {
+        host.inspector.deinit();
         host.timeline.deinit();
         for (host.cursor_cache) |c| {
             if (c) |cur| sdl.c.SDL_DestroyCursor(cur);
@@ -369,8 +378,9 @@ pub const Host = struct {
         // The DevTools overlay paints translucent pixels over the whole panel
         // area; a dirty-rect partial repaint would blend the new overlay over
         // retained old overlay pixels (ghosting). Force a full repaint when
-        // the overlay is enabled so the panel area is cleared first.
-        if (raster and root.damage_valid and !host.devtools.enabled) {
+        // the overlay (or the inspector panel) is enabled so the panel area
+        // is cleared first.
+        if (raster and root.damage_valid and !host.devtools.enabled and !host.inspector.enabled) {
             // Repaint the tree clipped to the damaged region — and clear the
             // clip first (SkCanvas::clear is clip-aware): vacated pixels
             // (moving widgets) are erased, not trailed. The focus ring paints
@@ -387,6 +397,18 @@ pub const Host = struct {
             root.paint(host.ctx);
             host.paintPopupOverlay();
             if (focus) |fm| fm.paintRing(host.ctx); // full repaint: ring included
+        }
+        // Inspector (Phase 4a.2): the bounds highlight paints after the focus
+        // ring (over the tree, under the panel), the panel paints after that —
+        // above everything, always unclipped (like the DevTools overlay).
+        if (host.inspector.enabled) {
+            // Rebuild FIRST: a selected node destroyed since the last frame
+            // (e.g. a virtualized list scrolled) must be dropped before the
+            // highlight paint dereferences it (use-after-free). paint()
+            // rebuilds again — idempotent, same tree.
+            host.inspector.rebuildRows(root);
+            host.inspector.paintHighlight(host.ctx);
+            host.inspector.paint(host.ctx, root, host.width, host.height);
         }
         // DevTools overlay (Phase 4a): painted after the tree and the focus
         // ring, outside the damage clip — above everything, always unclipped.
@@ -444,6 +466,16 @@ pub const Host = struct {
             root.dirty = true; // force a repaint to show/hide the overlay
             return false;
         }
+        // Inspector (Phase 4a.2): F11 toggles the panel — independent of F12.
+        if (event.type == sdl.c.SDL_EVENT_KEY_DOWN and event.key.key == sdl.c.SDLK_F11 and !event.key.repeat) {
+            host.inspector.toggle();
+            root.dirty = true; // force a repaint to show/hide the panel
+            // Invalidate the damage too: closing the panel re-enables the
+            // dirty-rect path, and a widget-sized clip would leave the old
+            // panel/highlight pixels outside it on the retained surface.
+            root.clearDamage();
+            return false;
+        }
         if (event.type == sdl.c.SDL_EVENT_WINDOW_RESIZED) {
             const w: c_int = @intCast(event.window.data1);
             const h: c_int = @intCast(event.window.data2);
@@ -465,14 +497,39 @@ pub const Host = struct {
         switch (event.type) {
             // The mouse is the primary pointer: normalized to ID 0 (hover
             // tracks pointer 0 only). Touches keep their own IDs (multi-touch).
-            sdl.c.SDL_EVENT_MOUSE_MOTION => host.input.dispatchPointer(root, .{
-                .phase = .move,
-                .x = event.motion.x,
-                .y = event.motion.y,
-                .pointer = 0,
-                .time_ms = time_ms,
-            }),
+            sdl.c.SDL_EVENT_MOUSE_MOTION => {
+                // Inspector (Phase 4a.2): motion over the panel clears hover
+                // and skips widget routing (the pointer is over the panel) —
+                // unless a widget holds the pointer capture (an active drag):
+                // the captured node keeps receiving moves even outside its
+                // bounds, and dropping them would leave a stale drag whose
+                // release lands later as an accidental click.
+                const has_capture = host.input.capturedNode(0) != null;
+                if (host.inspector.enabled and !has_capture and host.inspector.hitZone(event.motion.x, event.motion.y, host.width, host.height) != .none) {
+                    host.input.clearHover();
+                    return false; // skip routing
+                }
+                host.input.dispatchPointer(root, .{
+                    .phase = .move,
+                    .x = event.motion.x,
+                    .y = event.motion.y,
+                    .pointer = 0,
+                    .time_ms = time_ms,
+                });
+            },
             sdl.c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                // Inspector (Phase 4a.2): a click in the panel is consumed
+                // (tree: select/expand, props: no-op); a click on the canvas
+                // passively selects the hit node (routing continues normally).
+                if (host.inspector.enabled) {
+                    const z = host.inspector.hitZone(event.button.x, event.button.y, host.width, host.height);
+                    if (z != .none) {
+                        host.inspector.clickAt(root, event.button.x, event.button.y, host.width, host.height);
+                        root.dirty = true;
+                        return false; // consume the panel click
+                    }
+                    host.inspector.pickAt(root, event.button.x, event.button.y); // passive selection
+                }
                 if (event.button.button == sdl.c.SDL_BUTTON_LEFT) {
                     host.input.dispatchPointer(root, .{
                         .phase = .down,
@@ -519,6 +576,16 @@ pub const Host = struct {
             // Wheel → scroll event (Phase 1f): routed like pointer input.
             // The content may scroll under a stationary pointer: refresh hover.
             sdl.c.SDL_EVENT_MOUSE_WHEEL => {
+                // Inspector (Phase 4a.2): wheel over the panel scrolls the
+                // tree view (consumed — no widget scroll).
+                if (host.inspector.enabled and host.inspector.hitZone(event.wheel.mouse_x, event.wheel.mouse_y, host.width, host.height) != .none) {
+                    // SDL3: wheel.y > 0 = scroll up (toward the start),
+                    // wheel.y < 0 = scroll down. scrollBy's positive dy grows
+                    // scroll_y (content moves down) → negate the event value.
+                    host.inspector.scrollBy(-event.wheel.y, host.width, host.height);
+                    root.dirty = true;
+                    return false; // consume
+                }
                 host.input.dispatchScroll(root, .{
                     .x = event.wheel.mouse_x,
                     .y = event.wheel.mouse_y,
@@ -536,6 +603,15 @@ pub const Host = struct {
                 });
             },
             sdl.c.SDL_EVENT_KEY_DOWN => {
+                // Inspector (Phase 4a.2): when the tree panel has keyboard
+                // focus, arrows/Enter/Escape navigate it — consumed before
+                // any widget routing.
+                if (host.inspector.enabled and host.inspector.tree_focus and !event.key.repeat) {
+                    if (host.inspector.handleKey(event.key.key)) {
+                        root.dirty = true;
+                        return false; // consumed, no widget routing
+                    }
+                }
                 // Back (Android hardware button / desktop Escape): the
                 // focused chain gets the key first, then the navigator pops
                 // (Phase 2a back handler).

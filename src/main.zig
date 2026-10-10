@@ -23,6 +23,7 @@ const Options = struct {
     backend: kx.c.kx_backend,
     ppm: ?[:0]const u8,
     devtools: bool,
+    inspector: bool,
 };
 
 fn optsFromArgs(args: std.process.Args) Options {
@@ -37,6 +38,7 @@ fn optsFromArgs(args: std.process.Args) Options {
         kx.c.KX_BACKEND_RASTER;
     var ppm: ?[:0]const u8 = null;
     var devtools = false;
+    var inspector = false;
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "metal")) {
             backend = kx.c.KX_BACKEND_GRAPHITE_METAL;
@@ -44,9 +46,11 @@ fn optsFromArgs(args: std.process.Args) Options {
             ppm = arg["--ppm=".len..];
         } else if (std.mem.eql(u8, arg, "--devtools")) {
             devtools = true;
+        } else if (std.mem.eql(u8, arg, "--inspector")) {
+            inspector = true;
         }
     }
-    return .{ .backend = backend, .ppm = ppm, .devtools = devtools };
+    return .{ .backend = backend, .ppm = ppm, .devtools = devtools, .inspector = inspector };
 }
 
 /// App tick: set the background signal → subscribers fire → root.markDirty →
@@ -103,6 +107,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var host = try host_mod.Host.init(allocator, width, height, opts.backend, opts.ppm);
     defer host.deinit();
     if (opts.devtools) host.devtools.enabled = true; // Phase 4a: --devtools starts the overlay on (F12 still toggles)
+    if (opts.inspector) host.inspector.enabled = true; // Phase 4a.2: --inspector starts the panel on (F11 still toggles)
     input_mod.setCurrent(&host.input); // the router is process-global (single-window P0)
     ui.anim.setCurrent(&host.timeline); // the animation timeline, same pattern
     host.cursors = true; // pointer cursors (Phase 2d-0.5): hand over the button
@@ -154,6 +159,7 @@ test "widgets" {
     std.testing.refAllDecls(ui.value);
     std.testing.refAllDecls(@import("registry.zig"));
     std.testing.refAllDecls(@import("devtools.zig"));
+    std.testing.refAllDecls(@import("inspector.zig"));
 }
 
 test "gallery" {
