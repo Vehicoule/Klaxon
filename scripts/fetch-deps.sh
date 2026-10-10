@@ -118,7 +118,7 @@ skia_enable_ganesh = true
 skia_enable_graphite = true
 EOF
       ;;
-    linux-x64|linux-arm64)
+    linux-x64|linux-arm64|windows-x64|windows-arm64)
       # Phase 0: raster-only Skia on Linux — the Linux shim is raster-only
       # (gpu_init returns false). Phase 3a enables graphite-vulkan + ganesh-gl
       # (fetch the vma + vulkan-headers externals from DEPS, apt libgl-dev on CI).

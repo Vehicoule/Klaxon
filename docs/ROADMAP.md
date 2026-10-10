@@ -306,26 +306,26 @@ Rendering shim done in Phase 0. Remaining:
 | 3b.3 | Packaging: .app bundle, .dmg |
 | 3b.4 | CI: build + test on macOS runner (green since Phase 0) |
 
-### 3c. Windows (x64)
+### 3c. Windows (x64 + arm64)
 
 | # | Task |
 |---|---|
-| 3c.1 | `kx_skia_win.cpp` — Dawn D3D12 primary, Vulkan fallback, GL last |
+| 3c.1 | `kx_skia_win.cpp` — Dawn D3D12 primary, Vulkan fallback, GL last (x64 + arm64) |
 | 3c.2 | `kx_a11y_win.cpp` — UIA bridge |
 | 3c.3 | `host.zig` — Windows window (SDL + Dawn) |
 | 3c.4 | Packaging: .exe portable, .msi (WiX) |
 | 3c.5 | CI: build + test on Windows runner |
 | 3c.6 | Device test: remote Windows machine via `gates/device.sh ssh-windows` |
 
-### 3d. Android (arm64 + x64, split ABI)
+### 3d. Android (arm64 only)
 
 | # | Task |
 |---|---|
-| 3d.1 | `kx_skia_android.cpp` — GLES + Vulkan (API ≥ 33) |
+| 3d.1 | `kx_skia_android.cpp` — GLES + Vulkan (API ≥ 33, arm64 only) |
 | 3d.2 | `kx_a11y_android.cpp` — TalkBack bridge (JNI) |
 | 3d.3 | `host.zig` — Android lifecycle (pause/resume/low-memory) |
 | 3d.4 | CMake + Gradle integration |
-| 3d.5 | Packaging: .apk (arm64), .apk (x64), .aab |
+| 3d.5 | Packaging: .apk (arm64), .aab (arm64) |
 | 3d.6 | CI: build APK on Linux runner (NDK cross-compile) |
 | 3d.7 | Device test: local emulator + retail phone via `gates/device.sh android-emu` / `android-device` |
 
@@ -436,8 +436,8 @@ The advanced widgets (Table, Tree, Calendar, DatePicker, ColorPicker, Avatar, Ca
 | Windows | .msi | x64 | WiX |
 | macOS | .app | arm64 | hdiutil |
 | macOS | .dmg | arm64 | hdiutil |
-| Android | .apk | arm64, x64 (split) | gradle + apksigner |
-| Android | .aab | arm64, x64 | gradle bundle |
+| Android | .apk | arm64 | gradle + apksigner |
+| Android | .aab | arm64 | gradle bundle |
 | iOS | .ipa | arm64 | xcodebuild |
 | Web | .wasm + .html | wasm32 | emscripten |
 
@@ -470,7 +470,7 @@ API reference: generated from Zig doc comments (English).
 
 ## v1 = everything (checklist)
 
-- [ ] 6 platforms: Linux x64/arm64, Windows x64, macOS arm64, Android arm64/x64, iOS arm64, Web WASM
+- [ ] 6 platforms: Linux x64/arm64, Windows x64/arm64, macOS arm64, Android arm64, iOS arm64, Web WASM
 - [ ] Full M3E widget catalog (~65 widgets) — batches 2d.1-2d.4; registry self-registration — 2d-0.6 DONE (PR #15)
 - [x] State management (Signal, Memo, Effect, Store) — Phase 1a
 - [x] Gestures (tap, double-tap, long-press, pan, swipe, pinch, rotate) — Phase 1d

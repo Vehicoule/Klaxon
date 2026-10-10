@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
     const tag: []const u8 = switch (target.result.os.tag) {
         .macos => "macos-arm64", // arm64 only, no x64
         .linux => if (target.result.cpu.arch == .x86_64) "linux-x64" else "linux-arm64",
+        .windows => if (target.result.cpu.arch == .x86_64) "windows-x64" else "windows-arm64",
         else => @panic("unsupported target OS (see scripts/fetch-deps.sh)"),
     };
     const is_macos = target.result.os.tag == .macos;

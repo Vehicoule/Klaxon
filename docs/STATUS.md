@@ -184,7 +184,7 @@ Reference material only: pins, build recipes, platform quirks, measurements. No 
 | WASM size hello | < 5 Mo |
 | allocs_per_frame | 0 |
 | Widget count | 50 |
-| Platforms | Linux x64/arm64, Windows x64, macOS arm64, Android arm64/x64, iOS arm64, Web WASM |
+| Platforms | Linux x64/arm64, Windows x64/arm64, macOS arm64, Android arm64, iOS arm64, Web WASM |
 
 ## Next steps
 
