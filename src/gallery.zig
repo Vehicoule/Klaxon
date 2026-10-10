@@ -1799,7 +1799,8 @@ fn tpOkCb(userdata: ?*anyopaque) void {
 
 fn fmtTime(v: i32, buf: []u8) []const u8 {
     var b: [24]u8 = undefined;
-    const s = time_picker_w.formatTime12(v, &b);
+    // 12h + AM/PM — the same format the picker displays (and its a11y value)
+    const s = time_picker_w.formatTime(v, false, &b);
     return std.fmt.bufPrint(buf, "{s}", .{s}) catch "?";
 }
 fn fmtStatus(v: StatusBuf, buf: []u8) []const u8 {

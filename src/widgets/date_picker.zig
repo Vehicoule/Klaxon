@@ -87,6 +87,16 @@ const chevron_icon: f32 = 24;
 const min_year: i64 = 1900; // DatePickerDefaults.YearRange
 const max_year: i64 = 2100;
 
+/// The supported civil-date range (the year range), as UTC epoch days.
+pub const min_epoch_day: i64 = daysFromCivil(min_year, 1, 1); // 1900-01-01
+pub const max_epoch_day: i64 = daysFromCivil(max_year, 12, 31); // 2100-12-31
+
+/// Clamp an epoch day to the supported civil-date range (1900..2100) — the
+/// calendar helpers stay total (no i64 overflow) for any input.
+pub fn clampDay(day: i64) i64 {
+    return std.math.clamp(day, min_epoch_day, max_epoch_day);
+}
+
 /// Derived layout metrics.
 const grid_h: f32 = grid_rows * row_h; // 288
 const grid_y_off: f32 = header_h + nav_h + weekday_row_h; // 224
@@ -124,9 +134,10 @@ fn daysFromCivil(y: i64, m: i64, d: i64) i64 {
 
 const Civil = struct { y: i64, m: i64, d: i64 };
 
-/// The civil date (UTC) of an epoch day.
+/// The civil date (UTC) of an epoch day (clamped to the supported range —
+/// an extreme epoch day maps to the range's edge, never an overflow).
 fn civilFromDays(z0: i64) Civil {
-    const z = z0 + 719468;
+    const z = clampDay(z0) + 719468;
     const era = @divFloor(z, 146097);
     const doe = z - era * 146097; // [0, 146096]
     const yoe = @divTrunc(doe - @divTrunc(doe, 1460) + @divTrunc(doe, 36524) - @divTrunc(doe, 146096), 365); // [0, 399]
@@ -140,7 +151,7 @@ fn civilFromDays(z0: i64) Civil {
 
 /// The weekday of an epoch day (0 = Sunday). 1970-01-01 was a Thursday.
 fn weekdayFromDays(z: i64) usize {
-    return @intCast(@mod(z + 4, 7));
+    return @intCast(@mod(clampDay(z) + 4, 7));
 }
 
 fn firstOfMonth(y: i64, m: i64) i64 {
@@ -210,9 +221,10 @@ const DpState = struct {
     pressed: Zone = .none,
     down_x: f32 = 0,
     down_y: f32 = 0,
-    /// The a11y value (the headline) — Phase 2c.
+    /// The a11y value (the headline, or the owned title when nothing is
+    /// selected) — Phase 2c. Points into value_buf or at title_z.
     value_buf: [32]u8 = std.mem.zeroes([32]u8),
-    value_len: usize = 0,
+    a11y_value: []const u8 = "",
 };
 
 fn stateOf(n: *Node) *DpState {
@@ -559,12 +571,16 @@ fn dpDispSyncCb(userdata: ?*anyopaque) void {
 
 fn updateA11yValue(n: *Node) void {
     const s = stateOf(n);
-    const str: [:0]const u8 = if (s.sel.peek()) |d|
-        formatDay(d, &s.value_buf)
-    else
-        std.fmt.bufPrintSentinel(&s.value_buf, "{s}", .{s.opts.title}, 0) catch s.title_z;
-    s.value_len = str.len;
-    if (n.semantics) |sem| sem.value = s.value_buf[0..s.value_len];
+    if (s.sel.peek()) |d| {
+        const str = formatDay(d, &s.value_buf);
+        s.a11y_value = s.value_buf[0..str.len];
+    } else {
+        // The unselected value is the owned title — point at it directly (a
+        // long title would not fit the fixed buffer, and the options string
+        // is borrowed: never read it here).
+        s.a11y_value = s.title_z;
+    }
+    if (n.semantics) |sem| sem.value = s.a11y_value;
 }
 
 fn dpDeinit(n: *Node) void {
@@ -611,11 +627,11 @@ pub fn datePicker(allocator: std.mem.Allocator, selected: *ui.state.Signal(?i64)
         .disp = displayed,
         .on_select = on_select,
         .on_cancel = on_cancel,
-        .today = opts.today orelse todayFromClock(),
+        .today = clampDay(opts.today orelse todayFromClock()),
     };
     node.state = s;
     updateA11yValue(node);
-    ui.semantics.attach(node, .{ .role = .group, .label = "Date picker", .value = s.value_buf[0..s.value_len] }); // Phase 2c
+    ui.semantics.attach(node, .{ .role = .group, .label = "Date picker", .value = s.a11y_value }); // Phase 2c
     selected.subscribe(.{ .callback = .{ .fn_ptr = dpSelSyncCb, .userdata = node } });
     displayed.subscribe(.{ .callback = .{ .fn_ptr = dpDispSyncCb, .userdata = node } });
     return node;
@@ -656,6 +672,41 @@ test "date_picker: the civil calendar round-trips (epoch days, weekdays, leap ye
     try std.testing.expectEqual(@as(i64, 1969), cn.y);
     try std.testing.expectEqual(@as(i64, 12), cn.m);
     try std.testing.expectEqual(@as(i64, 31), cn.d);
+}
+
+test "date_picker: extreme epoch days never overflow (clamped to 1900..2100)" {
+    try std.testing.expectEqual(@as(i64, -25567), min_epoch_day); // 1900-01-01
+    try std.testing.expectEqual(@as(i64, 47846), max_epoch_day); // 2100-12-31
+    try std.testing.expectEqual(@as(i64, 47846), clampDay(std.math.maxInt(i64)));
+    try std.testing.expectEqual(@as(i64, -25567), clampDay(std.math.minInt(i64)));
+    // the helpers stay total at the i64 endpoints
+    const c = civilFromDays(std.math.maxInt(i64));
+    try std.testing.expectEqual(@as(i64, 2100), c.y);
+    try std.testing.expectEqual(@as(i64, 12), c.m);
+    try std.testing.expectEqual(@as(i64, 31), c.d);
+    try std.testing.expectEqual(@as(usize, 5), weekdayFromDays(std.math.maxInt(i64))); // 2100-12-31 = Friday
+    var buf: [32]u8 = undefined;
+    _ = formatDay(std.math.maxInt(i64), &buf); // no trap
+    try std.testing.expectEqual(@as(i64, -25567), firstOfMonthOf(std.math.minInt(i64)));
+}
+
+test "date_picker: a long title is the unselected a11y value (no buffer overflow, no dangling read)" {
+    const a = std.testing.allocator;
+    const sel = try ui.state.Signal(?i64).init(a, null);
+    defer sel.deinit();
+    const disp = try ui.state.Signal(i64).init(a, daysFromCivil(2026, 10, 1));
+    defer disp.deinit();
+    const long_title = "A very long date picker title that overflows the value buffer";
+    const n = try datePicker(a, sel, disp, null, null, .{ .title = long_title, .today = daysFromCivil(2026, 10, 8) });
+    defer n.deinit();
+    // constructs with a null selection: the a11y value is the owned title
+    try std.testing.expectEqualStrings(long_title, n.semantics.?.value);
+    // selecting a day switches the value to the headline; clearing it restores
+    // the owned title (never the borrowed options string)
+    sel.set(daysFromCivil(2026, 10, 20));
+    try std.testing.expectEqualStrings("Tue, Oct 20", n.semantics.?.value);
+    sel.set(null);
+    try std.testing.expectEqualStrings(long_title, n.semantics.?.value);
 }
 
 test "date_picker: measures the 360x564 M3E panel" {

@@ -20,22 +20,24 @@
 //     - labels on a 101dp ring (OuterCircleToSizeRatio = 101/256), 48dp
 //       cells, BodyLarge; hour screen: 12, 1..11 (12 at the top); minute
 //       screen: 00, 05..55 (every 5th minute)
+//     - the 24h hour screen is a dual-ring dial: 00..11 on the outer ring
+//       (101dp) + 12..23 on the inner circle (69dp, InnerCircleToSizeRatio);
+//       the tap's radius picks the ring (MaxDistance = 74dp: >= 74 → the
+//       outer 0..11, closer → the inner 12..23)
 //     - the selector: a 48dp Primary circle (CornerFull) at the selected
-//       position + the selected label OnPrimary; the track: a 2dp Primary
-//       line from the center to the knob's near edge; the center: an 8dp
-//       Primary circle
+//       position (on the selected hour's ring) + the selected label OnPrimary
+//       (drawn on top of the knob); the track: a 2dp Primary line from the
+//       center to the knob's near edge; the center: an 8dp Primary circle
 //   - footer: Cancel / OK text buttons (same as the date picker)
 //
 // State: `time` is a two-way Signal(i32) of minutes since midnight (clamped
 // to 0..1439). Tapping the hour/minute plate switches the dial's mode; tapping
 // the dial (or dragging) selects by angle (hours snap to the nearest hour,
-// minutes to the nearest minute); tapping AM/PM flips the period (12h).
-// OK fires on_select, Cancel on_cancel.
+// minutes to the nearest minute; in 24h the tap's radius picks the ring);
+// tapping AM/PM flips the period (12h). OK fires on_select, Cancel on_cancel.
 //
 // v1 deviations (documented, fixed later):
-//   - No text-input variant, no auto-switch hour→minute after a selection,
-//     no 24-hour dial's inner circle (the is_24h option shows 00..23 in the
-//     plate and selects 0..23 on the dial's outer ring only).
+//   - No text-input variant, no auto-switch hour→minute after a selection.
 //   - en strings only ("AM"/"PM", Cancel/OK).
 //   - No per-label hover on the dial; no keyboard navigation yet.
 const std = @import("std");
@@ -75,6 +77,8 @@ const period_h: f32 = 80; // PeriodSelectorVerticalContainerHeight
 const period_gap: f32 = 4; // PeriodTogglePaddingSmall
 const dial_size: f32 = 256; // ClockDialContainerSize
 const label_ring: f32 = 101; // OuterCircleToSizeRatio × 256
+const inner_label_ring: f32 = 69; // InnerCircleToSizeRatio × 256 (the 24h dial's inner circle)
+const max_tap_dist: f32 = 74; // MaxDistance (the 24h ring threshold)
 const label_cell: f32 = 48; // MinimumInteractiveSize
 const knob_d: f32 = 48; // ClockDialSelectorHandleContainerSize
 const track_w: f32 = 2; // ClockDialSelectorTrackContainerWidth
@@ -121,30 +125,48 @@ fn isPm(t: i32) bool {
     return hour24Of(t) >= 12;
 }
 
-/// The dial's value for the current mode (hour12 in hour mode, minute in
-/// minute mode).
-fn dialValue(t: i32, mode: DialMode) i32 {
-    return if (mode == .hour) hour12Of(t) else minuteOf(t);
+/// The dial's value for the current mode (hour12 in 12h hour mode, 0..23 in
+/// 24h hour mode, minute in minute mode).
+fn dialValue(t: i32, mode: DialMode, is_24h: bool) i32 {
+    if (mode == .hour) return if (is_24h) hour24Of(t) else hour12Of(t);
+    return minuteOf(t);
 }
 
-/// The angle (degrees, 0 at the top, clockwise) of a dial value.
-fn valueAngle(value: i32, mode: DialMode) f32 {
+/// The angle (degrees, standard math: -90 at the top, clockwise) of a dial
+/// value. 12h hours are 1..12; 24h hours are 0..23 (the position's 12h base).
+fn valueAngle(value: i32, mode: DialMode, is_24h: bool) f32 {
     if (mode == .hour) {
+        const base12: i32 = if (is_24h) @mod(value, 12) else value;
+        const v12: i32 = if (base12 == 0) 12 else base12;
         var i: usize = 0;
         while (i < 12) : (i += 1) {
-            if (hour_values[i] == value) break;
+            if (hour_values[i] == v12) break;
         }
         return @as(f32, @floatFromInt(i)) * 30 - 90;
     }
     return @as(f32, @floatFromInt(value)) * 6 - 90;
 }
 
-/// The dial value at a pointer position (the nearest hour / minute).
-fn valueAtAngle(cx: f32, cy: f32, x: f32, y: f32, mode: DialMode) i32 {
+/// The ring radius of a dial value's selector knob (the 24h dial's 12..23
+/// hours sit on the inner circle).
+fn selectorRing(value: i32, mode: DialMode, is_24h: bool) f32 {
+    if (mode == .hour and is_24h and value >= 12) return inner_label_ring;
+    return label_ring;
+}
+
+/// The dial value at a pointer position (the nearest hour / minute). In 24h
+/// hour mode the tap's radius picks the ring: >= MaxDistance → the outer
+/// circle (0..11), closer → the inner circle (12..23).
+fn valueAtAngle(cx: f32, cy: f32, x: f32, y: f32, mode: DialMode, is_24h: bool) i32 {
     var deg = std.math.atan2(y - cy, x - cx) * 180 / std.math.pi + 90;
     deg = @mod(deg, 360);
     if (mode == .hour) {
         const i = @as(usize, @intFromFloat(@round(deg / 30))) % 12;
+        if (is_24h) {
+            const base = @mod(hour_values[i], 12); // 0..11
+            const dist = std.math.hypot(x - cx, y - cy);
+            return if (dist >= max_tap_dist) base else base + 12;
+        }
         return hour_values[i];
     }
     return @mod(@as(i32, @intFromFloat(@round(deg / 6))), 60);
@@ -154,9 +176,13 @@ fn valueAtAngle(cx: f32, cy: f32, x: f32, y: f32, mode: DialMode) i32 {
 fn applyDialValue(s: *TpState, value: i32) void {
     const t = clampedTime(s.time.peek());
     if (s.mode == .hour) {
-        const hour12 = std.math.clamp(value, 1, 12);
-        const h24: i32 = if (isPm(t)) @mod(hour12, 12) + 12 else @mod(hour12, 12);
-        s.time.set(h24 * 60 + minuteOf(t));
+        if (s.opts.is_24h) {
+            s.time.set(std.math.clamp(value, 0, 23) * 60 + minuteOf(t));
+        } else {
+            const hour12 = std.math.clamp(value, 1, 12);
+            const h24: i32 = if (isPm(t)) @mod(hour12, 12) + 12 else @mod(hour12, 12);
+            s.time.set(h24 * 60 + minuteOf(t));
+        }
     } else {
         s.time.set(hour24Of(t) * 60 + std.math.clamp(value, 0, 59));
     }
@@ -393,32 +419,64 @@ fn tpPaint(n: *Node, ctx: *kx.Ctx) void {
     ui.paint.fillRRect(ctx, d.x, d.y, d.w, d.h, dial_size / 2, cs.surface_container_highest);
     const bl = t.type_scale.body_large;
     const bl_bold = bl.weight >= 500;
-    // the labels on the ring
-    for (0..12) |i| {
-        const a = (@as(f32, @floatFromInt(i)) * 30 - 90) * std.math.pi / 180;
-        const lx = cx + @cos(a) * label_ring;
-        const ly = cy + @sin(a) * label_ring;
-        const value: i32 = if (s.mode == .hour) hour_values[i] else @intCast(i * 5);
-        var vbuf: [4]u8 = undefined;
-        const vstr = if (s.mode == .hour)
-            std.fmt.bufPrintSentinel(&vbuf, "{d}", .{value}, 0) catch "?"
-        else
-            std.fmt.bufPrintSentinel(&vbuf, "{d:0>2}", .{@as(u32, @intCast(value))}, 0) catch "?";
-        const selected = value == dialValue(tm, s.mode);
-        const fg: Color = if (selected) cs.on_primary else cs.on_surface;
-        const m = ui.paint.measureText(vstr, bl.size, bl_bold);
-        ui.paint.text(ctx, vstr, lx - m.width / 2, ly - m.height / 2 + m.ascent, bl.size, bl_bold, fg);
+    const is_24h = s.opts.is_24h and s.mode == .hour;
+    const sel_val = dialValue(tm, s.mode, s.opts.is_24h);
+    // the labels on the ring(s): the 24h hour dial has two rings — 00..11 on
+    // the outer circle (101dp), 12..23 on the inner one (69dp). The selected
+    // label is stashed and drawn AFTER the selector (on top of the knob).
+    var sel_buf: [4]u8 = undefined;
+    var sel_str: ?[:0]const u8 = null;
+    var sel_x: f32 = 0;
+    var sel_y: f32 = 0;
+    var ring_index: usize = 0;
+    while (ring_index < @as(usize, if (is_24h) 2 else 1)) : (ring_index += 1) {
+        const ring: f32 = if (ring_index == 1) inner_label_ring else label_ring;
+        for (0..12) |i| {
+            const a = (@as(f32, @floatFromInt(i)) * 30 - 90) * std.math.pi / 180;
+            const lx = cx + @cos(a) * ring;
+            const ly = cy + @sin(a) * ring;
+            const value: i32 = if (s.mode == .hour) blk: {
+                if (is_24h) {
+                    const base = @mod(hour_values[i], 12); // 0..11
+                    break :blk if (ring_index == 1) base + 12 else base;
+                }
+                break :blk hour_values[i];
+            } else @intCast(i * 5);
+            var vbuf: [4]u8 = undefined;
+            const vstr = if (s.mode == .hour and is_24h)
+                std.fmt.bufPrintSentinel(&vbuf, "{d:0>2}", .{@as(u32, @intCast(value))}, 0) catch "?"
+            else if (s.mode == .hour)
+                std.fmt.bufPrintSentinel(&vbuf, "{d}", .{value}, 0) catch "?"
+            else
+                std.fmt.bufPrintSentinel(&vbuf, "{d:0>2}", .{@as(u32, @intCast(value))}, 0) catch "?";
+            if (value == sel_val) {
+                @memcpy(sel_buf[0..vstr.len], vstr[0..vstr.len]);
+                sel_buf[vstr.len] = 0;
+                sel_str = sel_buf[0..vstr.len :0];
+                sel_x = lx;
+                sel_y = ly;
+                continue;
+            }
+            const m = ui.paint.measureText(vstr, bl.size, bl_bold);
+            ui.paint.text(ctx, vstr, lx - m.width / 2, ly - m.height / 2 + m.ascent, bl.size, bl_bold, cs.on_surface);
+        }
     }
-    // the selector: the knob + the track + the center dot
-    const sel_angle = valueAngle(dialValue(tm, s.mode), s.mode) * std.math.pi / 180;
-    const kx_ = cx + @cos(sel_angle) * label_ring;
-    const ky = cy + @sin(sel_angle) * label_ring;
-    ui.paint.fillRRect(ctx, kx_ - knob_d / 2, ky - knob_d / 2, knob_d, knob_d, knob_d / 2, cs.primary);
-    const hand_end_r = label_ring - knob_d / 2;
+    // the selector: the track + the knob + the center dot
+    const sel_angle = valueAngle(sel_val, s.mode, s.opts.is_24h) * std.math.pi / 180;
+    const sel_ring = selectorRing(sel_val, s.mode, s.opts.is_24h);
+    const kx_ = cx + @cos(sel_angle) * sel_ring;
+    const ky = cy + @sin(sel_angle) * sel_ring;
+    const hand_end_r = sel_ring - knob_d / 2;
     var xs = [2]f32{ cx, cx + @cos(sel_angle) * hand_end_r };
     var ys = [2]f32{ cy, cy + @sin(sel_angle) * hand_end_r };
     ui.paint.strokePolyline(ctx, &xs, &ys, track_w, false, cs.primary);
+    ui.paint.fillRRect(ctx, kx_ - knob_d / 2, ky - knob_d / 2, knob_d, knob_d, knob_d / 2, cs.primary);
     ui.paint.fillRRect(ctx, cx - center_d / 2, cy - center_d / 2, center_d, center_d, center_d / 2, cs.primary);
+    // the selected label on top of the knob (OnPrimary)
+    if (sel_str) |vstr| {
+        const m = ui.paint.measureText(vstr, bl.size, bl_bold);
+        ui.paint.text(ctx, vstr, sel_x - m.width / 2, sel_y - m.height / 2 + m.ascent, bl.size, bl_bold, cs.on_primary);
+    }
     // the footer
     const fr = footerRects(n);
     paintTextButton(n, ctx, fr.cancel, "Cancel", .cancel);
@@ -439,7 +497,7 @@ fn tpOnPointer(n: *Node, ev: input.PointerEvent) bool {
                 // the dial owns the drag: select by angle immediately
                 s.dragging = true;
                 const c = dialCenter(n);
-                applyDialValue(s, valueAtAngle(c[0], c[1], ev.x, ev.y, s.mode));
+                applyDialValue(s, valueAtAngle(c[0], c[1], ev.x, ev.y, s.mode, s.opts.is_24h));
                 n.markDirty();
                 return true;
             }
@@ -450,7 +508,7 @@ fn tpOnPointer(n: *Node, ev: input.PointerEvent) bool {
         .move => {
             if (s.dragging) {
                 const c = dialCenter(n);
-                applyDialValue(s, valueAtAngle(c[0], c[1], ev.x, ev.y, s.mode));
+                applyDialValue(s, valueAtAngle(c[0], c[1], ev.x, ev.y, s.mode, s.opts.is_24h));
                 n.markDirty();
                 return true; // the dial claims the move
             }
@@ -536,17 +594,9 @@ fn tpSyncCb(userdata: ?*anyopaque) void {
     ui.semantics.notifyControlChanged(n); // a11y: the value changed
 }
 
-/// "10:30" (12h, no period) — the gallery's time label (pub for the gallery).
-pub fn formatTime12(t: i32, buf: []u8) [:0]const u8 {
-    // The clock fields are euclidean (always >= 0) — cast to unsigned: Zig
-    // 0.17 pads signed ints with an explicit sign.
-    const h: u32 = @intCast(hour24Of(t));
-    const m: u32 = @intCast(minuteOf(t));
-    return std.fmt.bufPrintSentinel(buf, "{d:0>2}:{d:0>2}", .{ h, m }, 0) catch "?";
-}
-
-/// "10:30 AM" (12h) / "22:30" (24h) — the a11y value.
-fn formatTime(t: i32, is_24h: bool, buf: []u8) [:0]const u8 {
+/// "10:30 AM" (12h) / "22:30" (24h) — the a11y value + the gallery's time
+/// label (pub for the gallery: it matches what the picker displays).
+pub fn formatTime(t: i32, is_24h: bool, buf: []u8) [:0]const u8 {
     const h24: u32 = @intCast(hour24Of(t));
     const min: u32 = @intCast(minuteOf(t));
     if (is_24h) {
@@ -622,16 +672,29 @@ test "time_picker: the time math (12h display, period, clamping)" {
     try std.testing.expectEqual(@as(i32, 1439), clampedTime(5000));
     try std.testing.expectEqual(@as(i32, 0), clampedTime(-5));
     // the dial angles: 12 at the top (-90°), 6 at the bottom (90°)
-    try std.testing.expectApproxEqAbs(@as(f32, -90), valueAngle(12, .hour), 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 90), valueAngle(6, .hour), 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, -90), valueAngle(0, .minute), 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 90), valueAngle(30, .minute), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, -90), valueAngle(12, .hour, false), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 90), valueAngle(6, .hour, false), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, -90), valueAngle(0, .minute, false), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 90), valueAngle(30, .minute, false), 0.01);
     // the angle → value round-trips
-    try std.testing.expectEqual(@as(i32, 12), valueAtAngle(0, 0, 0, -101, .hour)); // the top = 12
-    try std.testing.expectEqual(@as(i32, 6), valueAtAngle(0, 0, 0, 101, .hour)); // down = 6
-    try std.testing.expectEqual(@as(i32, 30), valueAtAngle(0, 0, 0, 101, .minute)); // down = 30
-    try std.testing.expectEqual(@as(i32, 0), valueAtAngle(0, 0, 0, -101, .minute)); // up = 00
-    try std.testing.expectEqual(@as(i32, 15), valueAtAngle(0, 0, 101, 0, .minute)); // right = 15
+    try std.testing.expectEqual(@as(i32, 12), valueAtAngle(0, 0, 0, -101, .hour, false)); // the top = 12
+    try std.testing.expectEqual(@as(i32, 6), valueAtAngle(0, 0, 0, 101, .hour, false)); // down = 6
+    try std.testing.expectEqual(@as(i32, 30), valueAtAngle(0, 0, 0, 101, .minute, false)); // down = 30
+    try std.testing.expectEqual(@as(i32, 0), valueAtAngle(0, 0, 0, -101, .minute, false)); // up = 00
+    try std.testing.expectEqual(@as(i32, 15), valueAtAngle(0, 0, 101, 0, .minute, false)); // right = 15
+    // the 24h dial: 00 and 12 share the top position, 18 sits at the bottom
+    try std.testing.expectApproxEqAbs(@as(f32, -90), valueAngle(0, .hour, true), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, -90), valueAngle(12, .hour, true), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 90), valueAngle(18, .hour, true), 0.01);
+    try std.testing.expectEqual(@as(i32, 15), dialValue(15 * 60 + 30, .hour, true));
+    try std.testing.expectEqual(@as(i32, 10), dialValue(22 * 60 + 30, .hour, false)); // 12h keeps 10
+    // the 24h ring selection: the outer ring (>= 74dp) → 0..11, the inner → 12..23
+    try std.testing.expectEqual(@as(i32, 3), valueAtAngle(0, 0, 101, 0, .hour, true)); // outer 3 o'clock
+    try std.testing.expectEqual(@as(i32, 15), valueAtAngle(0, 0, 69, 0, .hour, true)); // inner 3 o'clock
+    try std.testing.expectEqual(@as(i32, 0), valueAtAngle(0, 0, 0, -74, .hour, true)); // the top, at MaxDistance → outer
+    try std.testing.expectEqual(label_ring, selectorRing(3, .hour, true));
+    try std.testing.expectEqual(inner_label_ring, selectorRing(15, .hour, true));
+    try std.testing.expectEqual(label_ring, selectorRing(10, .hour, false)); // 12h: a single ring
 }
 
 test "time_picker: measures the 360x464 M3E panel" {
@@ -736,6 +799,36 @@ test "time_picker: tapping + dragging the dial selects by angle (hour + minute m
     try std.testing.expectEqual(@as(i32, 3 * 60 + 15), f[1].peek());
 }
 
+test "time_picker: the 24h dial is a dual ring (outer 0..11, inner 12..23)" {
+    var router = input.InputRouter{};
+    input.setCurrent(&router);
+    defer input.setCurrent(null);
+    const a = std.testing.allocator;
+    const sig = try ui.state.Signal(i32).init(a, 630); // 10:30
+    defer sig.deinit();
+    const n = try timePicker(a, sig, null, null, .{ .is_24h = true });
+    defer n.deinit();
+    n.layout(.{ .x = 0, .y = 0, .w = 360, .h = total_h });
+    const c = dialCenter(n);
+    const tap = struct {
+        fn go(r: *input.InputRouter, node: *Node, x: f32, y: f32) void {
+            r.dispatchPointer(node, .{ .phase = .down, .x = x, .y = y, .raw_x = x, .raw_y = y });
+            r.dispatchPointer(node, .{ .phase = .up, .x = x, .y = y, .raw_x = x, .raw_y = y });
+        }
+    }.go;
+    // the OUTER ring at 3 o'clock (radius 101 >= MaxDistance 74) → 03:30
+    tap(&router, n, c[0] + 101, c[1]);
+    try std.testing.expectEqual(@as(i32, 3 * 60 + 30), sig.peek());
+    // the INNER ring at 3 o'clock (radius 69 < 74) → 15:30
+    tap(&router, n, c[0] + 69, c[1]);
+    try std.testing.expectEqual(@as(i32, 15 * 60 + 30), sig.peek());
+    // the boundary distance (74) picks the outer ring: the top → 00:30
+    tap(&router, n, c[0], c[1] - 74);
+    try std.testing.expectEqual(@as(i32, 30), sig.peek());
+    // the a11y value follows (24h format)
+    try std.testing.expectEqualStrings("00:30", n.semantics.?.value);
+}
+
 test "time_picker: the app drives the time (two-way signal, clamped)" {
     const a = std.testing.allocator;
     const f = try tpFixture(a);
@@ -789,4 +882,40 @@ test "golden: the M3E time picker panel (plates, period toggle, dial knob + hand
     // the footer: the OK label (Primary ink)
     const fr = footerRects(n);
     try std.testing.expect(f2.countColorApproxIn(fr.ok, t.colors.primary) > 0);
+}
+
+test "golden: the M3E time picker panel in 24h mode (dual-ring dial, inner knob)" {
+    const t = theme_mod.light;
+    const a = std.testing.allocator;
+    // 15:30, 24h → the knob sits on the INNER ring (69dp) at 3 o'clock
+    const sig = try ui.state.Signal(i32).init(a, 15 * 60 + 30);
+    defer sig.deinit();
+    const n = try timePicker(a, sig, null, null, .{ .is_24h = true });
+    defer n.deinit();
+    n.layout(.{ .x = 0, .y = 0, .w = 360, .h = total_h });
+    var r = try golden.Renderer.init(a, 360, 464);
+    defer r.deinit();
+    r.paint(n, 0xFFFFFFFF);
+    var f2 = try r.readback(a);
+    defer f2.deinit();
+    // the container (SurfaceContainerHigh)
+    try std.testing.expectEqual(t.colors.surface_container_high, f2.pixelAt(180, 5));
+    // the hour plate (active): "15" (OnPrimaryContainer ink on PrimaryContainer)
+    const hp = plateRect(n.bounds, .hour, true);
+    try std.testing.expectEqual(t.colors.primary_container, f2.pixelAt(@intFromFloat(hp.x + 12), @intFromFloat(hp.y + 12)));
+    try std.testing.expect(f2.countColorApproxIn(hp, t.colors.on_primary_container) > 0);
+    // no period toggle in 24h: the dial's left edge is clear at the header's
+    // right side (the row is narrower — nothing painted past the minute plate)
+    const mp = plateRect(n.bounds, .minute, true);
+    try std.testing.expectEqual(t.colors.surface_container_high, f2.pixelAt(@intFromFloat(mp.x + mp.w + 10), @intFromFloat(mp.y + mp.h / 2)));
+    // the inner knob (Primary) at 3 o'clock on the inner ring, away from the
+    // "15" label ink (below it, still inside the 48dp knob)
+    const d = dialRect(n.bounds);
+    const cx = @as(i32, @intFromFloat(d.x + d.w / 2));
+    const cy = @as(i32, @intFromFloat(d.y + d.h / 2));
+    try std.testing.expectEqual(t.colors.primary, f2.pixelAt(cx + 69, cy + 15));
+    // the outer ring's "03" label (OnSurface ink) at 3 o'clock on the outer ring
+    try std.testing.expect(f2.countColorApproxIn(.{ .x = @floatFromInt(cx + 101 - 20), .y = @floatFromInt(cy - 12), .w = 40, .h = 24 }, t.colors.on_surface) > 0);
+    // the inner ring's "15" label is on the knob (OnPrimary ink)
+    try std.testing.expect(f2.countColorApproxIn(.{ .x = @floatFromInt(cx + 69 - 20), .y = @floatFromInt(cy - 12), .w = 40, .h = 24 }, t.colors.on_primary) > 0);
 }

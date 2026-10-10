@@ -821,22 +821,35 @@ fn buildLoadingIndicator(allocator: std.mem.Allocator, opts: Value, ctx: *BuildC
     return .{ .node = n, .skip_children = true };
 }
 
+/// A checked float→int conversion for option values: truncates toward zero
+/// and rejects non-finite values and values outside the target type's range
+/// (a finite float beyond i128 would trap @intFromFloat, so the bounds are
+/// checked in f64 first — every i32 is exact in f64, and i64's max + 1 rounds
+/// to the exact 2^63 boundary).
+fn floatToInt(comptime T: type, f: f64) ?T {
+    if (!std.math.isFinite(f)) return null;
+    const t = @trunc(f);
+    if (t < @as(f64, @floatFromInt(std.math.minInt(T)))) return null;
+    if (t >= @as(f64, @floatFromInt(std.math.maxInt(T))) + 1) return null;
+    return @intFromFloat(t);
+}
+
 /// M3E date picker (2d.4 PR #33): a LEAF panel (skip_children).
 /// "selected" is ALWAYS live (a Signal(?i64) of UTC epoch days; null = no
 /// selection — round-trips). "displayed" is the INITIAL displayed month (not
 /// live — transient UI state): the option, else the month of
 /// (selected ?? today). "today" is injected (else the system clock, UTC).
+/// All three days are clamped to the supported civil-date range (1900..2100)
+/// and "displayed" is normalized to the month's 1st.
 fn buildDatePicker(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const dopts = try value_mod.optionsFromValue(date_picker_w.DatePickerOptions, opts, null, null);
     const sel = try buildOptI64Signal(allocator, opts, ctx, "selected");
-    const today = date_picker_w.todayDay(dopts.today);
+    if (sel.peek()) |d| sel.set(date_picker_w.clampDay(d));
+    const today = date_picker_w.clampDay(date_picker_w.todayDay(dopts.today));
     const def_disp = date_picker_w.firstOfMonthOf(sel.peek() orelse today);
     const disp_val: i64 = if (opts.get("displayed")) |x| switch (x) {
-        .int => |i| i,
-        .float => |f| blk: {
-            if (!std.math.isFinite(f)) return error.ValueOutOfRange;
-            break :blk std.math.cast(i64, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
-        },
+        .int => |i| date_picker_w.firstOfMonthOf(date_picker_w.clampDay(i)),
+        .float => |f| date_picker_w.firstOfMonthOf(date_picker_w.clampDay(floatToInt(i64, f) orelse return error.ValueOutOfRange)),
         else => def_disp,
     } else def_disp;
     const disp = try state.Signal(i64).init(allocator, disp_val);
@@ -851,10 +864,7 @@ fn buildOptI64Signal(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx, 
     const v: ?i64 = if (opts.get(field)) |x| switch (x) {
         .null => null,
         .int => |i| i,
-        .float => |f| blk: {
-            if (!std.math.isFinite(f)) return error.ValueOutOfRange;
-            break :blk std.math.cast(i64, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
-        },
+        .float => |f| floatToInt(i64, f) orelse return error.ValueOutOfRange,
         else => null,
     } else null;
     const sig = try state.Signal(?i64).init(allocator, v);
@@ -883,14 +893,12 @@ fn deinitI64Signal(p: *anyopaque) void {
 /// round-trips).
 fn buildTimePicker(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
     const topts = try value_mod.optionsFromValue(time_picker_w.TimePickerOptions, opts, null, null);
-    const val: i32 = if (opts.get("time")) |x| switch (x) {
+    const raw: i32 = if (opts.get("time")) |x| switch (x) {
         .int => |i| std.math.cast(i32, i) orelse return error.ValueOutOfRange,
-        .float => |f| blk: {
-            if (!std.math.isFinite(f)) return error.ValueOutOfRange;
-            break :blk std.math.cast(i32, @as(i128, @intFromFloat(@trunc(f)))) orelse return error.ValueOutOfRange;
-        },
+        .float => |f| floatToInt(i32, f) orelse return error.ValueOutOfRange,
         else => 630, // 10:30
     } else 630;
+    const val = std.math.clamp(raw, 0, 1439); // the picker displays 0..1439
     const sig = try state.Signal(i32).init(allocator, val);
     try ctx.track(sig, deinitI32Signal);
     const n = try time_picker_w.timePicker(allocator, sig, null, null, topts);
@@ -899,7 +907,8 @@ fn buildTimePicker(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) an
 
 fn readI32Signal(_: std.mem.Allocator, p: *anyopaque) anyerror!Value {
     const s: *state.Signal(i32) = @ptrCast(@alignCast(p));
-    return .{ .int = @as(i64, s.peek()) };
+    // Save what the picker displays: the time is clamped to 0..1439.
+    return .{ .int = @as(i64, std.math.clamp(s.peek(), 0, 1439)) };
 }
 
 fn deinitI32Signal(p: *anyopaque) void {
@@ -2041,7 +2050,27 @@ test "registry: date_picker (M3E) round-trips (live selected; displayed is the i
     defer disp.deinit();
     const disp_out = try treeToJson(&ctx, disp, std.testing.allocator);
     defer std.testing.allocator.free(disp_out);
-    try std.testing.expectEqualStrings(disp_doc, disp_out); // 19510 = 2023-06-01
+    try std.testing.expectEqualStrings(disp_doc, disp_out); // 19510 = 2023-06-02
+    // a mid-month displayed value is normalized to the month's 1st (the grid's
+    // weekday column comes from the month's 1st); the snapshot echoes the input
+    const mid_doc = "{\"name\":\"date_picker\",\"options\":{\"today\":20734,\"selected\":20735,\"displayed\":19523}}"; // 19523 = 2023-06-15
+    const mid = try treeFromJson(&ctx, std.testing.allocator, mid_doc);
+    defer mid.deinit();
+    try std.testing.expectEqual(@as(i64, 19509), date_picker_w.displayedMonth(mid)); // 2023-06-01
+    const mid_out = try treeToJson(&ctx, mid, std.testing.allocator);
+    defer std.testing.allocator.free(mid_out);
+    try std.testing.expectEqualStrings(mid_doc, mid_out);
+    // an extreme selected day is clamped to the supported range (no overflow):
+    // 2100-12-31 = 47846
+    const extreme_doc = "{\"name\":\"date_picker\",\"options\":{\"selected\":9223372036854775807}}";
+    const extreme = try treeFromJson(&ctx, std.testing.allocator, extreme_doc);
+    defer extreme.deinit();
+    const extreme_out = try treeToJson(&ctx, extreme, std.testing.allocator);
+    defer std.testing.allocator.free(extreme_out);
+    try std.testing.expectEqualStrings("{\"name\":\"date_picker\",\"options\":{\"selected\":47846}}", extreme_out);
+    // a finite float beyond i128 is rejected, not a trap
+    const huge_doc = "{\"name\":\"date_picker\",\"options\":{\"selected\":1e100}}";
+    try std.testing.expectError(error.ValueOutOfRange, treeFromJson(&ctx, std.testing.allocator, huge_doc));
 }
 
 test "registry: date_picker (M3E) schema exposes the right editor kinds + rejects children" {
@@ -2081,6 +2110,16 @@ test "registry: time_picker (M3E) round-trips (live time) + schema + rejects chi
     const plain_out = try treeToJson(&ctx, plain, std.testing.allocator);
     defer std.testing.allocator.free(plain_out);
     try std.testing.expectEqualStrings("{\"name\":\"time_picker\",\"options\":{\"time\":630}}", plain_out);
+    // an out-of-range time is clamped to what the picker displays (0..1439)
+    const clamped_doc = "{\"name\":\"time_picker\",\"options\":{\"time\":2000}}";
+    const clamped = try treeFromJson(&ctx, std.testing.allocator, clamped_doc);
+    defer clamped.deinit();
+    const clamped_out = try treeToJson(&ctx, clamped, std.testing.allocator);
+    defer std.testing.allocator.free(clamped_out);
+    try std.testing.expectEqualStrings("{\"name\":\"time_picker\",\"options\":{\"time\":1439}}", clamped_out);
+    // a finite float beyond i128 is rejected, not a trap
+    const huge_doc = "{\"name\":\"time_picker\",\"options\":{\"time\":1e100}}";
+    try std.testing.expectError(error.ValueOutOfRange, treeFromJson(&ctx, std.testing.allocator, huge_doc));
     // the schema
     const tp_schema = try byName("time_picker").?.schema(std.testing.allocator);
     defer {
