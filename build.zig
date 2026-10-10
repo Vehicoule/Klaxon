@@ -307,10 +307,14 @@ fn addWasmWeb(
     kx_skia.root_module.addIncludePath(b.path("deps/skia"));
     kx_skia.root_module.addIncludePath(b.path("deps/skia/include"));
     kx_skia.root_module.addIncludePath(b.path("deps/SDL/include"));
-    kx_skia.root_module.addIncludePath(b.path(sysroot_include));
-    // Emscripten's libc++ headers (sysroot/include/c++/v1) — replaces Zig's
-    // bundled libc++ (link_libcpp = false above).
+    // Include path ORDER matters: emscripten's libc++ (c++/v1) must come
+    // BEFORE the sysroot C headers. libc++ wrappers (e.g. cstring) do
+    // #include <string.h> expecting to find c++/v1/string.h first (which
+    // then #include_next's the musl string.h). If sysroot/include comes
+    // first, the musl string.h is found directly and libc++ errors out
+    // ("didn't find libc++'s <string.h> header").
     kx_skia.root_module.addIncludePath(b.path(b.fmt("{s}/c++/v1", .{sysroot_include})));
+    kx_skia.root_module.addIncludePath(b.path(sysroot_include));
 
     // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c, with the
     // emscripten target + sysroot include.
