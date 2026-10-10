@@ -1,13 +1,19 @@
 // Klaxon — hello world (Phase 0.5/0.6).
 // Builds a widget tree (demo.zig), lays it out, runs it through the Host
 // (window + dirty-flag event loop). Backend: raster by default, `metal` for
-// Graphite-Metal. `--ppm=<path>` dumps frame 30 (seed of golden-test tooling).
+// Graphite-Metal (wasm: ganesh-webgl2 by default — Phase 3f).
+// `--ppm=<path>` dumps frame 30 (seed of golden-test tooling).
 const std = @import("std");
+const builtin = @import("builtin");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
 const input_mod = @import("ui/input.zig");
 const demo_mod = @import("demo.zig");
 const host_mod = @import("host.zig");
+
+// Phase 3f: on emscripten the browser owns the main thread — main() installs
+// the rAF loop (platform_wasm.runWasm) instead of the blocking host.run().
+const platform_wasm = if (builtin.os.tag == .emscripten) @import("platform_wasm.zig") else struct {};
 
 const width: c_int = 640;
 const height: c_int = 480;
@@ -21,7 +27,13 @@ const Options = struct {
 fn optsFromArgs(args: std.process.Args) Options {
     var it = std.process.Args.Iterator.init(args);
     _ = it.next(); // exe name
-    var backend: kx.c.kx_backend = kx.c.KX_BACKEND_RASTER;
+    // Default backend: raster (native) / Ganesh WebGL2 (wasm, Phase 3f) —
+    // the browser has no Metal/Vulkan; WebGL2 is the GPU path, raster stays
+    // the always-available fallback.
+    var backend: kx.c.kx_backend = if (builtin.os.tag == .emscripten)
+        kx.c.KX_BACKEND_GANESH_WEBGL2
+    else
+        kx.c.KX_BACKEND_RASTER;
     var ppm: ?[:0]const u8 = null;
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "metal")) {
@@ -66,6 +78,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) });
 
     std.debug.print("klaxon hello (Skia {s}) — widget tree: {d} nodes, reactive bg\n", .{ host.stats.backend, countNodes(root) });
+    if (builtin.os.tag == .emscripten) {
+        // Wasm (Phase 3f): install the rAF main loop — one runIteration per
+        // animation frame, never blocking. simulate_infinite_loop = 1 unwinds
+        // main()'s stack (the defers above do not run: the host lives as
+        // long as the page); the loop stops on quit or max_frames.
+        platform_wasm.runWasm(&host, root, max_frames, animate, demo.bg);
+        return; // unreachable with simulate_infinite_loop = 1
+    }
     try host.run(root, max_frames, animate, demo.bg);
     std.debug.print("rendered {d} frames, last frame {d:.2} ms, done\n", .{ host.stats.frames, host.stats.frame_time_ms });
 }

@@ -7,14 +7,26 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Phase 3f: wasm32-emscripten web target (docs/specs/phase-3f-wasm-plan.md).
+    const is_wasm = target.result.os.tag == .emscripten;
+
     // Deps tag — must match the TAG logic in scripts/fetch-deps.sh.
-    const tag: []const u8 = switch (target.result.os.tag) {
+    const tag: []const u8 = if (is_wasm)
+        "web-wasm" // emsdk + Skia out/web-wasm + SDL build-web-wasm
+    else switch (target.result.os.tag) {
         .macos => "macos-arm64", // arm64 only, no x64
         .linux => if (target.result.cpu.arch == .x86_64) "linux-x64" else "linux-arm64",
         .windows => if (target.result.cpu.arch == .x86_64) "windows-x64" else "windows-arm64",
         else => @panic("unsupported target OS (see scripts/fetch-deps.sh)"),
     };
     const is_macos = target.result.os.tag == .macos;
+
+    // The wasm target gets its own build graph (static lib + emcc link step);
+    // the native steps (run/test/test-golden/gallery/...) are not defined for it.
+    if (is_wasm) {
+        addWasmWeb(b, target, optimize, tag);
+        return;
+    }
 
     // --- kx_skia shim (C++ / ObjC++ static lib) ---
     const kx_skia = b.addLibrary(.{
@@ -239,4 +251,136 @@ fn linkRuntime(
             module.linkFramework(fw, .{});
         }
     }
+}
+
+/// Phase 3f web target (wasm32-emscripten). Zig cannot link an executable for
+/// emscripten, so the app is built as a static library and the final link is a
+/// manual emcc step (sokol-zig pattern — docs/specs/phase-3f-wasm-plan.md §2):
+///
+///   libhello.a + libkx_skia.a + libSDL3.a + libskia*.wasm.a
+///     -- emcc --> zig-out/web/hello.html (+ .js + .wasm)
+///
+/// No LTO anywhere on this path (LTO miscompiles wasm — plan §2), no pthreads,
+/// no Asyncify: the browser owns the main thread (rAF loop).
+fn addWasmWeb(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    tag: []const u8,
+) void {
+    const emsdk = "deps/emsdk";
+    // Emscripten sysroot: <emscripten.h>, <GLES3/gl32.h>, musl headers.
+    const sysroot_include = b.fmt("{s}/upstream/emscripten/cache/sysroot/include", .{emsdk});
+
+    // --- kx_skia shim (C++): common + wasm impl (Ganesh WebGL2) ---
+    const kx_skia = b.addLibrary(.{
+        .name = "kx_skia",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = false, // emcc links musl
+            .link_libcpp = true,
+        }),
+    });
+    const shim_flags = &[_][]const u8{
+        "-std=c++20",  "-fno-exceptions", "-fno-rtti",
+        "-DSK_GANESH", "-DSK_GL",         "-DSK_FORCE_8_BYTE_ALIGNMENT",
+        "-DNDEBUG",
+    };
+    kx_skia.root_module.addCSourceFiles(.{
+        .files = &.{
+            "kx_skia/src/kx_skia_common.cpp",
+            "kx_skia/src/kx_skia_wasm.cpp",
+        },
+        .flags = shim_flags,
+        .language = .cpp,
+    });
+    kx_skia.root_module.addIncludePath(b.path("kx_skia/include"));
+    kx_skia.root_module.addIncludePath(b.path("deps/skia"));
+    kx_skia.root_module.addIncludePath(b.path("deps/skia/include"));
+    kx_skia.root_module.addIncludePath(b.path("deps/SDL/include"));
+    kx_skia.root_module.addIncludePath(b.path(sysroot_include));
+
+    // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c, with the
+    // emscripten target + sysroot include.
+    const translate_sdl = b.addTranslateC(.{
+        .root_source_file = b.path("src/sdl_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_sdl.addIncludePath(b.path("deps/SDL/include"));
+    translate_sdl.addIncludePath(b.path(sysroot_include));
+
+    const translate_kx = b.addTranslateC(.{
+        .root_source_file = b.path("kx_skia/include/kx_skia.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_kx.addIncludePath(b.path(sysroot_include));
+
+    // --- hello app as a static library (Zig cannot link an exe for emscripten) ---
+    const app = b.addLibrary(.{
+        .name = "hello",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = false, // emcc links musl
+            .link_libcpp = true,
+        }),
+    });
+    app.root_module.addImport("sdl_c", translate_sdl.createModule());
+    app.root_module.addImport("kx_c", translate_kx.createModule());
+    b.installArtifact(app);
+    b.installArtifact(kx_skia);
+
+    // --- emcc link step ---
+    const opt_flag: []const u8 = switch (optimize) {
+        .Debug => "-O0",
+        .ReleaseSafe => "-O2",
+        .ReleaseFast => "-O3",
+        .ReleaseSmall => "-Oz",
+    };
+    // Non-CanvasKit wasm builds emit lib<name>.wasm.a (gn/toolchain/BUILD.gn).
+    // Same lib list as the native linkRuntime — update both together.
+    const skia_libs = [_][]const u8{
+        "libfreetype2.wasm.a",     "libharfbuzz.wasm.a", "libicu.wasm.a",
+        "libpng.wasm.a",           "libskcms.wasm.a",    "libskia.wasm.a",
+        "libskparagraph.wasm.a",   "libskshaper.wasm.a", "libskunicode_core.wasm.a",
+        "libskunicode_icu.wasm.a", "libzlib.wasm.a",
+    };
+    var argv: std.ArrayList([]const u8) = .empty;
+    argv.append(b.allocator, b.fmt("{s}/upstream/emscripten/emcc", .{emsdk})) catch unreachable;
+    argv.append(b.allocator, "zig-out/lib/libhello.a") catch unreachable;
+    argv.append(b.allocator, "zig-out/lib/libkx_skia.a") catch unreachable;
+    argv.append(b.allocator, b.fmt("deps/SDL/build-{s}/libSDL3.a", .{tag})) catch unreachable;
+    for (skia_libs) |lib| {
+        argv.append(b.allocator, b.fmt("deps/skia/out/{s}/{s}", .{ tag, lib })) catch unreachable;
+    }
+    argv.appendSlice(b.allocator, &.{
+        "-o",
+        "zig-out/web/hello.html",
+        "--shell-file",
+        "web/shell.html",
+        "--js-library",
+        "web/kx_a11y.js",
+        "-sUSE_WEBGL2=1",
+        "-sALLOW_MEMORY_GROWTH=1",
+        "-sMAXIMUM_MEMORY=2GB",
+        "-sENVIRONMENT=web",
+        "-sSTACK_SIZE=1MB",
+        "-sEXPORTED_FUNCTIONS=_main,_kx_a11y_dump_tree,_kx_a11y_free_string,_kx_a11y_key,_kx_a11y_root_node",
+        "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS",
+        opt_flag,
+    }) catch unreachable;
+
+    const mkdir = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/web" });
+    const link = b.addSystemCommand(argv.items);
+    link.step.dependOn(&mkdir.step);
+    // Installs libhello.a + libkx_skia.a into zig-out/lib (paths referenced above).
+    link.step.dependOn(b.getInstallStep());
+    const web_step = b.step("web", "Build the wasm web target (hello.html)");
+    web_step.dependOn(&link.step);
 }

@@ -4,12 +4,14 @@
 #   Skia  @ 8643b1d64cff21b5e6f8d65ca98204c6eecb0098   (Graphite + Ganesh + raster)
 #   SDL3  @ release-3.2.16
 #   WAMR  @ WAMR-2.4.4   (fast-interp; plugin runtime for klaxon-plugin-sdk — the framework does not link it)
+#   emsdk @ 4.0.7        (web-wasm only — pinned by Skia's bin/activate-emsdk)
 #
 # Hosts: macOS arm64 (dev host), Linux x64/arm64 (CI). Idempotent: up-to-date steps are skipped.
 #
 # Usage:
 #   scripts/fetch-deps.sh              # all components
 #   scripts/fetch-deps.sh skia sdl3    # selected components
+#   scripts/fetch-deps.sh web-wasm     # Phase 3f web target (emsdk + Skia wasm + SDL3 wasm; heavy, ~1-2 GB)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,10 +21,12 @@ JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)"
 SKIA_PIN="8643b1d64cff21b5e6f8d65ca98204c6eecb0098"
 SDL3_PIN="release-3.2.16"
 WAMR_PIN="WAMR-2.4.4"
+EMSDK_PIN="4.0.7" # pinned by Skia's bin/activate-emsdk (see MODULE.bazel)
 
 SKIA_URL="https://skia.googlesource.com/skia.git"
 SDL3_URL="https://github.com/libsdl-org/SDL.git"
 WAMR_URL="https://github.com/bytecodealliance/wasm-micro-runtime.git"
+EMSDK_URL="https://github.com/emscripten-core/emsdk.git"
 
 CHROMIUM="https://chromium.googlesource.com"
 SKIA_GOOG="https://skia.googlesource.com"
@@ -144,6 +148,13 @@ skia_enable_graphite = false
 EOF
       ;;
   esac
+  write_skia_args_common "$out"
+}
+
+# Shared tail (icu/harfbuzz/freetype/png/zlib + module toggles) — identical
+# for the native and wasm builds.
+write_skia_args_common() {
+  local out="$1"
   cat >> "$out" <<'EOF'
 
 skia_use_icu = true
@@ -180,9 +191,40 @@ skia_enable_tools = false
 
 extra_cflags = [ "-Wno-error" ]
 # Linux: compile Skia against libc++ to match zig's bundled libc++ at link time
-# (CI installs libc++-dev). macOS: libc++ is the default anyway.
+# (CI installs libc++-dev). macOS + wasm: libc++ is the default anyway.
 extra_cflags_cc = [ "-Wno-error", "-stdlib=libc++" ]
 EOF
+}
+
+# Phase 3f wasm args (target_cpu = "wasm" implies target_os = "wasm",
+# gn/BUILDCONFIG.gn). Ganesh WebGL2 only — no Graphite/Dawn (Phase 3g). The
+# wasm toolchain compiles with emcc/em++ from skia_emsdk_dir and emits
+# lib<name>.wasm.a (gn/toolchain/BUILD.gn).
+write_skia_args_wasm() {
+  local out="$1"
+  cat > "$out" <<EOF
+is_debug = false
+is_official_build = true
+is_component_build = false
+target_cpu = "wasm"
+
+skia_emsdk_dir = "$DEPS/emsdk"
+
+skia_use_webgl = true
+skia_use_webgpu = false
+skia_use_vulkan = false
+skia_use_metal = false
+skia_use_dawn = false
+skia_use_direct3d = false
+skia_use_x11 = false
+skia_use_egl = false
+skia_use_vma = false
+skia_enable_ganesh = true
+skia_enable_graphite = false
+skia_enable_fontmgr_custom_embedded = true
+skia_enable_fontmgr_custom_directory = true
+EOF
+  write_skia_args_common "$out"
 }
 
 build_skia() {
@@ -245,6 +287,87 @@ build_wamr() {
   find "$build" -maxdepth 1 -name 'lib*.a' -exec ls -la {} +
 }
 
+# --- web-wasm (Phase 3f) ----------------------------------------------------
+# Heavy (~1-2 GB): NOT a default component. One emsdk, pinned to Skia's
+# bin/activate-emsdk version — Skia's wasm objects and the app's emcc link
+# (build.zig, `web` step) must use the same toolchain (plan §2).
+
+build_emsdk() {
+  local dir="$DEPS/emsdk"
+  if [ -f "$dir/.emsdk-pin" ] && [ "$(cat "$dir/.emsdk-pin")" = "$EMSDK_PIN" ] \
+    && [ -x "$dir/upstream/emscripten/emcc" ]; then
+    log "emsdk already installed ($EMSDK_PIN)"
+    return 0
+  fi
+  git_clone_at "$dir" "$EMSDK_URL" "$EMSDK_PIN"
+  log "emsdk install + activate $EMSDK_PIN (large download)"
+  (cd "$dir" && ./emsdk install "$EMSDK_PIN" && ./emsdk activate "$EMSDK_PIN")
+  printf '%s\n' "$EMSDK_PIN" > "$dir/.emsdk-pin"
+}
+
+build_skia_wasm() {
+  local out="$SKIA/out/web-wasm"
+  if [ -f "$out/libskia.wasm.a" ]; then
+    log "skia wasm already built (out/web-wasm)"
+    return 0
+  fi
+  build_emsdk
+  fetch_skia
+  # bin/activate-emsdk drives third_party/externals/emsdk — symlink it at the
+  # single repo-level emsdk (one toolchain for Skia objects + the app link).
+  local emsdk_ext="$SKIA/third_party/externals/emsdk"
+  if [ -d "$emsdk_ext" ] && [ ! -L "$emsdk_ext" ]; then
+    die "$emsdk_ext exists — remove it so the build uses the single emsdk at $DEPS/emsdk"
+  fi
+  mkdir -p "$SKIA/third_party/externals"
+  ln -sfn "$DEPS/emsdk" "$emsdk_ext"
+  mkdir -p "$out"
+  write_skia_args_wasm "$out/args.gn"
+  if [ ! -x "$SKIA/bin/gn" ]; then
+    log "fetch gn binary (bin/fetch-gn)"
+    (cd "$SKIA" && python3 bin/fetch-gn)
+  fi
+  log "activate emsdk for skia (bin/activate-emsdk)"
+  (cd "$SKIA" && python3 bin/activate-emsdk)
+  log "gn gen out/web-wasm"
+  (cd "$SKIA" && ./bin/gn gen out/web-wasm)
+  log "ninja ($JOBS jobs) — the long step, ~15-45 min on first run"
+  ninja -C "$out" skia modules/skparagraph:skparagraph modules/skshaper:skshaper
+  ls -la "$out"/*.wasm.a
+}
+
+build_sdl3_wasm() {
+  local src="$DEPS/SDL"
+  local build="$src/build-web-wasm"
+  if [ -f "$build/libSDL3.a" ]; then
+    log "SDL3 wasm already built (build-web-wasm)"
+    return 0
+  fi
+  build_emsdk
+  git_clone_at "$src" "$SDL3_URL" "$SDL3_PIN"
+  log "emcmake SDL3 (web-wasm, static, trimmed, no pthreads)"
+  # emcmake/emmake come from the activated emsdk.
+  (
+    export EMSDK="$DEPS/emsdk"
+    export PATH="$DEPS/emsdk/upstream/emscripten:$DEPS/emsdk:$PATH"
+    # Trimmed like the native build + SDL_PTHREADS=OFF (single-threaded wasm).
+    emcmake cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
+      -DSDL_SHARED=OFF -DSDL_STATIC=ON \
+      -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+      -DSDL_CAMERA=OFF -DSDL_SENSOR=OFF \
+      -DSDL_GPU=OFF -DSDL_RENDER_GPU=OFF -DSDL_RENDER_VULKAN=OFF \
+      -DSDL_PTHREADS=OFF
+    emmake cmake --build "$build" --parallel "$JOBS"
+  )
+  ls -la "$build"/libSDL3.a
+}
+
+build_web_wasm() {
+  build_emsdk
+  build_skia_wasm
+  build_sdl3_wasm
+}
+
 # --- main -------------------------------------------------------------------
 
 COMPONENTS=("$@")
@@ -259,7 +382,8 @@ for component in "${COMPONENTS[@]}"; do
     skia) build_skia ;;
     sdl3) build_sdl3 ;;
     wamr) build_wamr ;;
-    *) die "unknown component '$component' (expected: skia | sdl3 | wamr)" ;;
+    web-wasm) build_web_wasm ;;
+    *) die "unknown component '$component' (expected: skia | sdl3 | wamr | web-wasm)" ;;
   esac
 done
 
