@@ -89,3 +89,59 @@ jobs:
           if [ "$size" -ge 7127245 ]; then
             echo "SIZE GATE FAILED: $size >= 6,8 Mo"; exit 1
           fi
+
+  # Phase 3f — wasm web target (docs/specs/phase-3f-wasm-plan.md §7).
+  # Separate job, runs in parallel with build-test. Builds ONLY the wasm
+  # target: no native exes, no native tests.
+  build-wasm:
+    name: build-wasm (Linux)
+    runs-on: ubuntu-latest
+    # Non-blocking while the wasm toolchain is being debugged (shim compile
+    # for wasm32-emscripten via zig cc has header path issues). The native
+    # build-test job is the merge gate; build-wasm will become required once
+    # the emscripten sysroot include paths are fully resolved.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.17.0 (pinned, ADR-0001)
+        run: |
+          curl -fsSL -o zig.tar.xz "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz"
+          tar -xf zig.tar.xz
+          zig_dir="$(pwd)/zig-x86_64-linux-0.17.0"
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          export PATH="$zig_dir:$PATH" # GITHUB_PATH only applies to later steps
+          zig version
+
+      - name: Install build deps (python3, ninja, cmake, clang)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 ninja-build cmake clang libc++-dev libc++abi-dev
+
+      - name: Cache deps (native + wasm)
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-wasm-${{ hashFiles('scripts/fetch-deps.sh') }}
+
+      - name: Fetch + build wasm deps (emsdk + Skia wasm + SDL3 wasm)
+        run: scripts/fetch-deps.sh web-wasm
+        # NOTE: c'est lourd (~1-2 GB, 15-45 min). Le cache deps accélère les runs suivants.
+
+      - name: Build wasm web target
+        run: zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall web
+
+      - name: Size gate
+        run: |
+          SIZE=$(stat -c%s zig-out/web/hello.wasm 2>/dev/null || stat -f%z zig-out/web/hello.wasm)
+          echo "hello.wasm size: $SIZE bytes ($((SIZE / 1024 / 1024)) MB)"
+          # Budget: < 15 MB (plan §6). Fail si depasse.
+          if [ "$SIZE" -gt 15728640 ]; then echo "WASM TOO LARGE: $SIZE > 15 MB"; exit 1; fi
+
+      - name: Smoke test (check wasm artifacts exist)
+        run: |
+          ls -la zig-out/web/
+          test -f zig-out/web/hello.html
+          test -f zig-out/web/hello.js
+          test -f zig-out/web/hello.wasm
+          echo "All wasm artifacts present."

@@ -280,13 +280,23 @@ fn addWasmWeb(
             .target = target,
             .optimize = optimize,
             .link_libc = false, // emcc links musl
-            .link_libcpp = true,
+            // No link_libcpp: Zig's bundled libc++ headers are incompatible
+            // with the emscripten sysroot. Emscripten provides its own libc++
+            // in sysroot/include/c++/v1 (added to the include path below).
+            .link_libcpp = false,
         }),
     });
     const shim_flags = &[_][]const u8{
         "-std=c++20",  "-fno-exceptions", "-fno-rtti",
         "-DSK_GANESH", "-DSK_GL",         "-DSK_FORCE_8_BYTE_ALIGNMENT",
         "-DNDEBUG",
+        // Disable all default include paths: zig cc adds its own musl/libc++
+        // headers which conflict with the emscripten sysroot. All include paths
+        // are provided explicitly below (sysroot + c++/v1 + project headers).
+        "-nostdinc", "-nostdinc++",
+        // Emscripten's sysroot has no xlocale.h (BSD header); tell libc++ it's
+        // absent so locale_base_api.h skips the #include <xlocale.h>.
+        "-D_LIBCPP_HAS_NO_XLOCALE",
     };
     kx_skia.root_module.addCSourceFiles(.{
         .files = &.{
@@ -300,6 +310,13 @@ fn addWasmWeb(
     kx_skia.root_module.addIncludePath(b.path("deps/skia"));
     kx_skia.root_module.addIncludePath(b.path("deps/skia/include"));
     kx_skia.root_module.addIncludePath(b.path("deps/SDL/include"));
+    // Include path ORDER matters: emscripten's libc++ (c++/v1) must come
+    // BEFORE the sysroot C headers. libc++ wrappers (e.g. cstring) do
+    // #include <string.h> expecting to find c++/v1/string.h first (which
+    // then #include_next's the musl string.h). If sysroot/include comes
+    // first, the musl string.h is found directly and libc++ errors out
+    // ("didn't find libc++'s <string.h> header").
+    kx_skia.root_module.addIncludePath(b.path(b.fmt("{s}/c++/v1", .{sysroot_include})));
     kx_skia.root_module.addIncludePath(b.path(sysroot_include));
 
     // C bindings: SDL3 (sdl_c) + kx_skia (kx_c) via zig translate-c, with the
@@ -328,7 +345,7 @@ fn addWasmWeb(
             .target = target,
             .optimize = optimize,
             .link_libc = false, // emcc links musl
-            .link_libcpp = true,
+            .link_libcpp = false, // pure Zig app; emcc links libc++ at the final link
         }),
     });
     app.root_module.addImport("sdl_c", translate_sdl.createModule());
@@ -371,8 +388,8 @@ fn addWasmWeb(
         "-sMAXIMUM_MEMORY=2GB",
         "-sENVIRONMENT=web",
         "-sSTACK_SIZE=1MB",
-        "-sEXPORTED_FUNCTIONS=_main,_kx_a11y_dump_tree,_kx_a11y_free_string,_kx_a11y_key,_kx_a11y_root_node",
-        "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS",
+        "-sEXPORTED_FUNCTIONS=_main,_kx_a11y_dump_tree,_kx_a11y_free_string,_kx_a11y_key,_kx_a11y_root_node,_kx_a11y_text",
+        "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,malloc,free",
         opt_flag,
     }) catch unreachable;
 
