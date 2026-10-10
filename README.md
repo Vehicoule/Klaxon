@@ -24,7 +24,7 @@ Everything lives in [`docs/`](docs/):
 
 ## Targets (v1)
 
-Linux x64/arm64 · Windows x64 · macOS arm64 · Android arm64/x64 · iOS arm64 · Web WASM. 50 widgets, full testing (unit/widget/golden/integration), DevTools, CLI, packaging matrix, published benchmarks + conformance suite.
+Linux x64/arm64 · Windows x64/arm64 · macOS arm64 · Android arm64 · iOS arm64 · Web WASM. 50 widgets, full testing (unit/widget/golden/integration), DevTools, CLI, packaging matrix, published benchmarks + conformance suite.
 
 ## Repos
 
