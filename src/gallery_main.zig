@@ -19,11 +19,12 @@ comptime {
 }
 
 /// Android entry point (called by SDLActivity through libSDL3.so). No argv
-/// parsing on device — the raster backend is the only one wired up for now.
+/// parsing on device — Ganesh GLES is the floor backend (raster unavailable
+/// on Android). Runs indefinitely (mobile apps don't exit after N frames).
 fn SDL_main(argc: c_int, argv: [*:null]?[*:0]u8) callconv(.c) c_int {
     _ = argc;
     _ = argv;
-    galleryMain(.{ .backend = kx.c.KX_BACKEND_RASTER }) catch return 1;
+    galleryMain(.{ .backend = kx.c.KX_BACKEND_GANESH_GLES, .max_frames = 0 }) catch return 1;
     return 0;
 }
 
@@ -33,6 +34,7 @@ const max_frames: u64 = 600;
 
 const Options = struct {
     backend: kx.c.kx_backend,
+    max_frames: u64 = max_frames,
 };
 
 fn optsFromArgs(args: std.process.Args) Options {
@@ -107,7 +109,7 @@ fn galleryMain(opts: Options) !void {
     g.root.layout(.{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) });
 
     std.debug.print("klaxon gallery (Skia {s}) — widget tree: {d} nodes, {d}x{d}\n", .{ host.stats.backend, countNodes(g.root), width, height });
-    try host.run(g.root, max_frames, onFrame, g);
+    try host.run(g.root, opts.max_frames, onFrame, g);
     std.debug.print("rendered {d} frames, last frame {d:.2} ms, done\n", .{ host.stats.frames, host.stats.frame_time_ms });
 }
 
