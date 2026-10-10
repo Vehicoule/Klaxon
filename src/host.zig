@@ -5,6 +5,12 @@
 // the surface is retained between frames), and paces rendering to the
 // 8.3 ms frame budget (~120 fps).
 const std = @import("std");
+const builtin = @import("builtin");
+
+// Force-link the a11y bridge C exports (consumed by kx_a11y_macos.mm).
+comptime {
+    _ = @import("a11y_bridge.zig");
+}
 const sdl = @import("sdl.zig");
 const kx = @import("kx.zig");
 const ui = @import("ui.zig");
@@ -183,6 +189,11 @@ pub const Host = struct {
     /// renders below (time-based values — the tick rate is the loop rate,
     /// ~120 Hz while animating).
     pub fn run(host: *Host, root: *Node, max_frames: u64, on_frame: ?OnFrame, on_frame_ctx: ?*anyopaque) !void {
+    // macOS: initialize the NSAccessibility bridge.
+    if (builtin.os.tag == .macos) {
+        kx.a11yInit(@ptrCast(root));
+        defer kx.a11yShutdown();
+    }
         var quit = false;
         while (!quit and host.stats.frames < max_frames) {
             const iter_start_ns = sdl.c.SDL_GetTicksNS();

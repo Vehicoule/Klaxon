@@ -36,11 +36,18 @@ pub fn build(b: *std.Build) void {
         .language = .cpp,
     });
     switch (target.result.os.tag) {
-        .macos => kx_skia.root_module.addCSourceFiles(.{
-            .files = &.{"kx_skia/src/kx_skia_macos.mm"},
-            .flags = shim_flags,
-            .language = .objective_cpp,
-        }),
+        .macos => {
+            kx_skia.root_module.addCSourceFiles(.{
+                .files = &.{"kx_skia/src/kx_skia_macos.mm"},
+                .flags = shim_flags,
+                .language = .objective_cpp,
+            });
+            kx_skia.root_module.addCSourceFiles(.{
+                .files = &.{"kx_skia/src/kx_a11y_macos.mm"},
+                .flags = shim_flags,
+                .language = .objective_cpp,
+            });
+        },
         .linux => kx_skia.root_module.addCSourceFiles(.{
             .files = &.{"kx_skia/src/kx_skia_linux.cpp"},
             .flags = shim_flags,
