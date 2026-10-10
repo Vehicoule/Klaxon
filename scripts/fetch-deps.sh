@@ -12,6 +12,8 @@
 #   scripts/fetch-deps.sh              # all components
 #   scripts/fetch-deps.sh skia sdl3    # selected components
 #   scripts/fetch-deps.sh web-wasm     # Phase 3f web target (emsdk + Skia wasm + SDL3 wasm; heavy, ~1-2 GB)
+#   scripts/fetch-deps.sh android-arm64  # Phase 3d Android target (Android NDK required; heavy)
+#   scripts/fetch-deps.sh ios            # Phase 3e iOS target (macOS arm64 + Xcode only; heavy)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -434,6 +436,269 @@ build_web_wasm() {
   generate_font_header
 }
 
+# --- android-arm64 (Phase 3d) ------------------------------------------------
+# Heavy: NOT a default component. Requires the Android NDK — detected via
+# $ANDROID_NDK_HOME or the newest $ANDROID_HOME/ndk/<version>. Any supported
+# host works (macOS arm64 dev host, Linux CI).
+
+detect_ndk() {
+  if [ -n "${ANDROID_NDK_HOME:-}" ] && [ -d "$ANDROID_NDK_HOME" ]; then echo "$ANDROID_NDK_HOME"; return; fi
+  if [ -n "${ANDROID_HOME:-}" ]; then
+    local ndk_dir="$ANDROID_HOME/ndk"
+    if [ -d "$ndk_dir" ]; then
+      ls -1 "$ndk_dir" | sort -V | tail -1 | while read v; do echo "$ndk_dir/$v"; done | tail -1
+      return
+    fi
+  fi
+  die "Android NDK not found — set ANDROID_NDK_HOME or ANDROID_HOME"
+}
+
+write_skia_args_android() {
+  local out="$1" ndk="$2"
+  cat > "$out" <<EOF
+is_debug = false
+is_official_build = true
+is_component_build = false
+target_cpu = "arm64"
+target_os = "android"
+ndk = "$ndk"
+ndk_api = 29
+
+skia_use_gl = true
+skia_use_vulkan = true
+skia_use_metal = false
+skia_use_dawn = false
+skia_use_direct3d = false
+skia_use_x11 = false
+skia_use_egl = false
+skia_use_vma = true
+skia_enable_ganesh = true
+skia_enable_graphite = true
+skia_enable_fontmgr_android = false
+EOF
+  write_skia_args_common "$out"
+}
+
+build_skia_android() {
+  local out="$SKIA/out/android-arm64"
+  if [ -f "$out/libskia.a" ]; then
+    log "skia already built for android-arm64"
+    return 0
+  fi
+  local ndk
+  ndk="$(detect_ndk)"
+  fetch_skia
+  # skia_use_vma=true compiles VulkanMemoryAllocatorWrapper.cpp against
+  # vk_mem_alloc.h from this external (pin from Skia's DEPS at $SKIA_PIN).
+  # Vulkan headers come from Skia's bundled include/third_party/vulkan.
+  git_clone_at "$SKIA/third_party/externals/vulkanmemoryallocator" \
+    "$CHROMIUM/external/github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git" \
+    eb744ea7a2b17040121b4bbb4d6f9e8a77e3cae7
+  mkdir -p "$out"
+  write_skia_args_android "$out/args.gn" "$ndk"
+  if [ ! -x "$SKIA/bin/gn" ]; then
+    log "fetch gn binary (bin/fetch-gn)"
+    (cd "$SKIA" && python3 bin/fetch-gn)
+  fi
+  log "gn gen out/android-arm64"
+  (cd "$SKIA" && ./bin/gn gen "out/android-arm64")
+  log "ninja ($JOBS jobs) — the long step, ~15-45 min on first run"
+  ninja -C "$out" skia modules/skparagraph:skparagraph modules/skshaper:skshaper
+  ls -la "$out"/*.a
+}
+
+build_sdl3_android() {
+  local src="$DEPS/SDL"
+  local build="$src/build-android-arm64"
+  if [ -f "$build/libSDL3.so" ]; then
+    log "SDL3 android-arm64 already built (build-android-arm64)"
+    return 0
+  fi
+  local ndk
+  ndk="$(detect_ndk)"
+  git_clone_at "$src" "$SDL3_URL" "$SDL3_PIN"
+  log "cmake SDL3 (android-arm64, shared, trimmed)"
+  # Same trims as the native build, but a shared lib: the app loads
+  # libSDL3.so from the APK. android.toolchain.cmake drives the NDK clang.
+  cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+    -DSDL_SHARED=ON -DSDL_STATIC=OFF \
+    -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+    -DSDL_CAMERA=OFF -DSDL_SENSOR=OFF \
+    -DSDL_GPU=OFF -DSDL_RENDER_GPU=OFF -DSDL_RENDER_VULKAN=OFF
+  cmake --build "$build" --parallel "$JOBS"
+  ls -la "$build"/libSDL3.so
+}
+
+build_android_arm64() {
+  detect_ndk >/dev/null # fail fast when the NDK is missing
+  build_skia_android
+  build_sdl3_android
+}
+
+# --- ios (Phase 3e) ----------------------------------------------------------
+# Heavy: NOT a default component. macOS arm64 + Xcode only. Four artifacts:
+# Skia device + simulator, SDL3 device + simulator (static libs linked by the
+# Xcode project into the app / the simulator binary).
+
+write_skia_args_ios() {
+  local out="$1" sysroot="$2" sim="$3"
+  if [ "$sim" = "1" ]; then
+    # Simulator: explicit sysroot (xcrun --sdk iphonesimulator). ios_min_target
+    # stays empty — Skia would otherwise add -miphoneos-version-min; the
+    # deployment target goes through the extra_* flags appended below.
+    # ios_use_simulator is not Skia's default for target_cpu = "arm64".
+    cat > "$out" <<EOF
+is_debug = false
+is_official_build = true
+is_component_build = false
+target_cpu = "arm64"
+target_os = "ios"
+ios_use_simulator = true
+xcode_sysroot = "$sysroot"
+ios_min_target = ""
+
+skia_use_metal = true
+skia_use_gl = false
+skia_use_vulkan = false
+skia_use_dawn = false
+skia_use_direct3d = false
+skia_use_x11 = false
+skia_use_egl = false
+skia_use_vma = false
+skia_enable_ganesh = true
+skia_enable_graphite = true
+EOF
+  else
+    # Device: xcode_sysroot left unset — Skia resolves it via
+    # gn/find_xcode_sysroot.py with the iphoneos SDK (gn/skia/BUILD.gn).
+    cat > "$out" <<EOF
+is_debug = false
+is_official_build = true
+is_component_build = false
+target_cpu = "arm64"
+target_os = "ios"
+ios_min_target = "15.0"
+
+skia_use_metal = true
+skia_use_gl = false
+skia_use_vulkan = false
+skia_use_dawn = false
+skia_use_direct3d = false
+skia_use_x11 = false
+skia_use_egl = false
+skia_use_vma = false
+skia_enable_ganesh = true
+skia_enable_graphite = true
+EOF
+  fi
+  write_skia_args_common "$out"
+  if [ "$sim" = "1" ]; then
+    # gn rejects reassigning a declared arg in args.gn — clear, then set.
+    cat >> "$out" <<'EOF'
+
+extra_cflags = []
+extra_cflags = ["-mios-simulator-version-min=15.0", "-Wno-error"]
+extra_cflags_cc = []
+extra_cflags_cc = ["-mios-simulator-version-min=15.0", "-Wno-error", "-stdlib=libc++"]
+extra_ldflags = ["-mios-simulator-version-min=15.0"]
+EOF
+  fi
+}
+
+build_skia_ios() {
+  local out="$SKIA/out/ios-arm64"
+  if [ -f "$out/libskia.a" ]; then
+    log "skia already built for ios-arm64"
+    return 0
+  fi
+  fetch_skia
+  mkdir -p "$out"
+  write_skia_args_ios "$out/args.gn" "" 0
+  if [ ! -x "$SKIA/bin/gn" ]; then
+    log "fetch gn binary (bin/fetch-gn)"
+    (cd "$SKIA" && python3 bin/fetch-gn)
+  fi
+  log "gn gen out/ios-arm64"
+  (cd "$SKIA" && ./bin/gn gen "out/ios-arm64")
+  log "ninja ($JOBS jobs) — the long step, ~15-45 min on first run"
+  ninja -C "$out" skia modules/skparagraph:skparagraph modules/skshaper:skshaper
+  ls -la "$out"/*.a
+}
+
+build_skia_ios_sim() {
+  local out="$SKIA/out/ios-sim-arm64"
+  if [ -f "$out/libskia.a" ]; then
+    log "skia already built for ios-sim-arm64"
+    return 0
+  fi
+  local sysroot
+  sysroot="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+  fetch_skia
+  mkdir -p "$out"
+  write_skia_args_ios "$out/args.gn" "$sysroot" 1
+  if [ ! -x "$SKIA/bin/gn" ]; then
+    log "fetch gn binary (bin/fetch-gn)"
+    (cd "$SKIA" && python3 bin/fetch-gn)
+  fi
+  log "gn gen out/ios-sim-arm64"
+  (cd "$SKIA" && ./bin/gn gen "out/ios-sim-arm64")
+  log "ninja ($JOBS jobs) — the long step, ~15-45 min on first run"
+  ninja -C "$out" skia modules/skparagraph:skparagraph modules/skshaper:skshaper
+  ls -la "$out"/*.a
+}
+
+build_sdl3_ios() {
+  local src="$DEPS/SDL"
+  local build="$src/build-ios-arm64"
+  if [ -f "$build/libSDL3.a" ]; then
+    log "SDL3 ios-arm64 already built (build-ios-arm64)"
+    return 0
+  fi
+  git_clone_at "$src" "$SDL3_URL" "$SDL3_PIN"
+  log "cmake SDL3 (ios-arm64 device, static, trimmed)"
+  cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+    -DSDL_SHARED=OFF -DSDL_STATIC=ON \
+    -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+    -DSDL_CAMERA=OFF -DSDL_SENSOR=OFF \
+    -DSDL_GPU=OFF -DSDL_RENDER_GPU=OFF -DSDL_RENDER_VULKAN=OFF
+  cmake --build "$build" --parallel "$JOBS"
+  ls -la "$build"/libSDL3.a
+}
+
+build_sdl3_ios_sim() {
+  local src="$DEPS/SDL"
+  local build="$src/build-ios-sim-arm64"
+  if [ -f "$build/libSDL3.a" ]; then
+    log "SDL3 ios-sim-arm64 already built (build-ios-sim-arm64)"
+    return 0
+  fi
+  git_clone_at "$src" "$SDL3_URL" "$SDL3_PIN"
+  log "cmake SDL3 (ios-sim-arm64, static, trimmed)"
+  cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+    -DSDL_SHARED=OFF -DSDL_STATIC=ON \
+    -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+    -DSDL_CAMERA=OFF -DSDL_SENSOR=OFF \
+    -DSDL_GPU=OFF -DSDL_RENDER_GPU=OFF -DSDL_RENDER_VULKAN=OFF
+  cmake --build "$build" --parallel "$JOBS"
+  ls -la "$build"/libSDL3.a
+}
+
+build_ios() {
+  if [ "$OS:$ARCH" != "Darwin:arm64" ]; then
+    die "ios component requires a macOS arm64 host with Xcode (got $OS/$ARCH)"
+  fi
+  build_skia_ios
+  build_skia_ios_sim
+  build_sdl3_ios
+  build_sdl3_ios_sim
+}
+
 # --- main -------------------------------------------------------------------
 
 # Guard: sourcing this script (e.g. to call generate_font_header in a test)
@@ -452,7 +717,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       sdl3) build_sdl3 ;;
       wamr) build_wamr ;;
       web-wasm) build_web_wasm ;;
-      *) die "unknown component '$component' (expected: skia | sdl3 | wamr | web-wasm)" ;;
+      android-arm64) build_android_arm64 ;;
+      ios) build_ios ;;
+      *) die "unknown component '$component' (expected: skia | sdl3 | wamr | web-wasm | android-arm64 | ios)" ;;
     esac
   done
 
