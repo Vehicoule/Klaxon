@@ -22,6 +22,7 @@ const max_frames: u64 = 600;
 const Options = struct {
     backend: kx.c.kx_backend,
     ppm: ?[:0]const u8,
+    devtools: bool,
 };
 
 fn optsFromArgs(args: std.process.Args) Options {
@@ -35,14 +36,17 @@ fn optsFromArgs(args: std.process.Args) Options {
     else
         kx.c.KX_BACKEND_RASTER;
     var ppm: ?[:0]const u8 = null;
+    var devtools = false;
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "metal")) {
             backend = kx.c.KX_BACKEND_GRAPHITE_METAL;
         } else if (std.mem.startsWith(u8, arg, "--ppm=")) {
             ppm = arg["--ppm=".len..];
+        } else if (std.mem.eql(u8, arg, "--devtools")) {
+            devtools = true;
         }
     }
-    return .{ .backend = backend, .ppm = ppm };
+    return .{ .backend = backend, .ppm = ppm, .devtools = devtools };
 }
 
 /// App tick: set the background signal → subscribers fire → root.markDirty →
@@ -98,6 +102,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var host = try host_mod.Host.init(allocator, width, height, opts.backend, opts.ppm);
     defer host.deinit();
+    if (opts.devtools) host.devtools.enabled = true; // Phase 4a: --devtools starts the overlay on (F12 still toggles)
     input_mod.setCurrent(&host.input); // the router is process-global (single-window P0)
     ui.anim.setCurrent(&host.timeline); // the animation timeline, same pattern
     host.cursors = true; // pointer cursors (Phase 2d-0.5): hand over the button
@@ -148,6 +153,7 @@ test "widgets" {
     std.testing.refAllDecls(ui.gestures);
     std.testing.refAllDecls(ui.value);
     std.testing.refAllDecls(@import("registry.zig"));
+    std.testing.refAllDecls(@import("devtools.zig"));
 }
 
 test "gallery" {
