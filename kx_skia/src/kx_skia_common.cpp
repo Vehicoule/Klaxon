@@ -19,6 +19,7 @@
 #include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
 #include "include/core/SkTypeface.h"
+#include "include/effects/SkGradient.h"
 
 #include <cstring>
 #include <unordered_map>
@@ -249,6 +250,35 @@ void kx_fill_polygon(kx_ctx* ctx, const float* xs, const float* ys, int count, u
     ctx->canvas->drawPath(builder.snapshot(), paint);
 }
 
+// kx color: 0xRRGGBBAA → SkColor4f (unpremul floats 0..1)
+static SkColor4f kx_to_skcolor4f(uint32_t rgba) {
+    return {
+        ((rgba >> 24) & 0xFF) / 255.0f,
+        ((rgba >> 16) & 0xFF) / 255.0f,
+        ((rgba >> 8) & 0xFF) / 255.0f,
+        (rgba & 0xFF) / 255.0f,
+    };
+}
+
+void kx_fill_rrect_gradient(kx_ctx* ctx, float x, float y, float w, float h, float radius,
+                            float x0, float y0, float x1, float y1,
+                            const uint32_t* colors, int count) {
+    if (!ctx || !ctx->canvas || !colors || count < 2 || count > 8) return;
+    SkColor4f stops[8];
+    for (int i = 0; i < count; i++) stops[i] = kx_to_skcolor4f(colors[i]);
+    // Premul interpolation: alpha fades (white→transparent over the hue) stay
+    // correct instead of darkening through transparent black.
+    SkGradient::Interpolation interp;
+    interp.fInPremul = SkGradient::Interpolation::InPremul::kYes;
+    const SkGradient grad(SkGradient::Colors(SkSpan<const SkColor4f>(stops, count), SkTileMode::kClamp), interp);
+    const SkPoint pts[2] = {{x0, y0}, {x1, y1}};
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setShader(SkShaders::LinearGradient(pts, grad));
+    if (!paint.getShader()) return;
+    ctx->canvas->drawRoundRect(SkRect::MakeXYWH(x, y, w, h), radius, radius, paint);
+}
+
 void kx_save(kx_ctx* ctx) {
     if (ctx && ctx->canvas) ctx->canvas->save();
 }
@@ -300,7 +330,7 @@ kx_backend kx_backend_of(const kx_ctx* ctx) {
 }
 
 const char* kx_abi_version(void) {
-    return "0.9.0";
+    return "0.10.0";
 }
 
 const char* kx_backend_name(kx_backend backend) {
