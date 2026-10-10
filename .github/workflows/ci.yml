@@ -103,7 +103,9 @@ jobs:
         run: |
           curl -fsSL -o zig.tar.xz "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz"
           tar -xf zig.tar.xz
-          echo "$(pwd)/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
+          zig_dir="$(pwd)/zig-x86_64-linux-0.17.0"
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          export PATH="$zig_dir:$PATH" # GITHUB_PATH only applies to later steps
           zig version
 
       - name: Install build deps (python3, ninja, cmake, clang)
