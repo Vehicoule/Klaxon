@@ -50,6 +50,7 @@ const date_picker_w = widgets.date_picker;
 const time_picker_w = widgets.time_picker;
 const color_picker_w = widgets.color_picker;
 const avatar_w = widgets.avatar;
+const expansion_panel_w = widgets.expansion_panel;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -182,6 +183,7 @@ pub const Gallery = struct {
     tp_ok: *state.Signal(u32), // the time picker's OK counter
     cp_color: *state.Signal(u32), // the color picker's color (0xRRGGBBAA)
     cp_changed: *state.Signal(u32), // the color picker's change counter
+    ep_expanded: *state.Signal(bool), // the expansion panel's expanded state
     /// App hook fired after a theme/platform rebuild (the app re-reads the
     /// platform tokens — e.g. host.cursors).
     on_platform_changed: ?state.Callback = null,
@@ -337,6 +339,8 @@ pub const Gallery = struct {
         errdefer g.cp_color.deinit();
         g.cp_changed = try state.Signal(u32).init(allocator, 0);
         errdefer g.cp_changed.deinit();
+        g.ep_expanded = try state.Signal(bool).init(allocator, true);
+        errdefer g.ep_expanded.deinit();
         g.desktop_mode = try state.Signal(bool).init(allocator, false);
         errdefer g.desktop_mode.deinit();
         g.bg_sig = try state.Signal(Color).init(allocator, theme_mod.dark.colors.surface);
@@ -486,6 +490,7 @@ pub const Gallery = struct {
         g.tp_ok.deinit();
         g.cp_color.deinit();
         g.cp_changed.deinit();
+        g.ep_expanded.deinit();
         g.desktop_mode.deinit();
         g.bg_sig.deinit();
         g.press_count.deinit();
@@ -540,6 +545,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Time picker (M3E)", try buildTimePickerSection(g, theme)));
     content.add(try section(a, theme, "Color picker (M3E)", try buildColorPickerSection(g, theme)));
     content.add(try section(a, theme, "Avatars (M3E)", try buildAvatarSection(g, theme)));
+    content.add(try section(a, theme, "Expansion panel (M3E)", try buildExpansionPanelSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1143,6 +1149,14 @@ fn buildAvatarSection(g: *Gallery, theme: Theme) !*Node {
         col.add(row);
     }
     return col;
+}
+
+/// Expansion panel (M3E P2): a collapsible panel with a text child.
+fn buildExpansionPanelSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const child = try text_w.text(a, "This content is revealed when the panel is expanded. Tap the header to toggle.", .{ .size = 14, .color = theme.colors.on_surface });
+    const panel = try expansion_panel_w.expansionPanel(a, g.ep_expanded, child, .{ .title = "Tap to expand/collapse", .theme = theme });
+    return panel;
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.

@@ -106,3 +106,4 @@ pub const bottom_sheet = @import("widgets/bottom_sheet.zig");
 pub const dialog = @import("widgets/dialog.zig");
 pub const snackbar = @import("widgets/snackbar.zig");
 pub const avatar = @import("widgets/avatar.zig");
+pub const expansion_panel = @import("widgets/expansion_panel.zig");
