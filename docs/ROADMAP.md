@@ -235,24 +235,31 @@ content's top edge; release past 80dp fires on_refresh + the live refreshing
 signal; the gesture steals the pointer capture at the first move past the
 top — a clickable child cannot strand the indicator).
 
-### 2d.4. Widgets — Pickers + M3E extras (batch 4) — IN PROGRESS (PR #32 DONE — PR #32, 71 widgets today; PR #33: date/time pickers next)
+### 2d.4. Widgets — Pickers + M3E extras (batch 4) — IN PROGRESS (PR #33 DONE — PR #33, 73 widgets today; PR #34: color picker next)
 
 The M3E shape-morphing loading indicator (reference: m3e-canvas ports it from
 material-components-android) — DONE (PR #32: the 48dp container, the 38dp
 active shape, the 7-polygon indeterminate morph loop (650ms morphs + 4666ms
 global rotation) / determinate via a progress signal, the contained variant,
 filled polygons via the new kx_fill_polygon ABI 0.9.0). Date/time pickers —
-next (PR #33: the M3E modal date picker calendar panel — SurfaceContainerHigh
-CornerExtraLarge 360dp container, headline_large header + "Select date"
-label, the ‹ Month Year › navigation row, the weekday row, the 6x7 day grid
+DONE (PR #33: the M3E modal date picker calendar panel — SurfaceContainerHigh
+CornerExtraLarge 360x564 container, headline_large header + "Select date"
+label, the ‹ Month Year › navigation row, the weekday row, the 6x48dp day grid
 (40dp CornerFull cells, selected = Primary + OnPrimary, today = a Primary
-outline), Cancel/OK text buttons — and the M3E time picker dial — Surface-
-ContainerHigh panel, the time headline + AM/PM selector, the 256dp clock face
-with the 12 hour labels + hand, hour/minute modes). Color picker — after
-(PR #34): NOTE (checked 2026-10-09) — there is NO official M3/M3E color picker
-(no m3.material.io component page, no compose-material3 / MDA / m3e-canvas
-port); v1 will be an M3E-styled framework-original picker (SV square + hue
-slider + hex field), documented as such.
+outline), Cancel/OK text buttons, a two-way selected Signal(?i64) of UTC epoch
+days — and the M3E time picker dial — SurfaceContainerHigh 360x464 panel, the
+time headline plates + AM/PM selector, the 256dp clock face with the 12 hour
+labels + hand, hour/minute modes, the 24h DUAL-RING dial (outer 00..11 at
+101dp + inner 12..23 at 69dp, the tap's radius picks the ring), a two-way
+time Signal(i32) of minutes since midnight). Devin review round: 9 findings
+fixed (a11y title buffer overflow + dangling title read, extreme-date i64
+overflow, huge-float @intFromFloat traps, the 24h period gap → the dual ring,
+the displayed-month weekday shift, the knob hiding the selected label, the
+saved-vs-displayed time mismatch, the gallery label format). Color picker —
+next (PR #34): NOTE (checked 2026-10-09) — there is NO official M3/M3E color
+picker (no m3.material.io component page, no compose-material3 / MDA /
+m3e-canvas port); v1 will be an M3E-styled framework-original picker (SV
+square + hue slider + hex field), documented as such.
 
 ### 2e. Designer — no-code UI builder — PLANNED (v1 after 2d.2)
 
@@ -273,7 +280,7 @@ and shadow rasterization differ cross-platform; goldens assert structure + spec 
 | Catalog + a11y + choreography | github.com/matraic/m3e (M3E Web Components, MIT) + Jetpack Compose Material3 (canonical) |
 | M3E motion (springs, loading indicator) + visual oracle | github.com/lnkiai/m3e-canvas (drawing code + live-demo screenshots; loading indicator ported from material-components-android) + Flutter |
 
-**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 71 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26), 2d.3 DONE (cards x3, list items x3 — PR #27; dropdown menu — PR #28; segmented button + split button — PR #29; search bar + navigation rail — PR #30; side sheet + pull-to-refresh — PR #31), 2d.4 PR #32 DONE (loading indicator — PR #32); the catalog continues: 2d.4 (pickers, color picker)). No-code designer v1 (2e).
+**Exit criteria Phase 2**: Navigation works — DONE (2a). i18n works — DONE (2b). A11y core (semantic tree, keyboard focus, live regions) — DONE (2c); the AT-SPI bridge lands with Linux (Phase 3a). M3E design tokens — DONE (2d-0, PR #14). Platform adaptation tokens (2d-0.5). Widget registry + serialization (2d-0.6, PR #15). Full M3E catalog ~65 widgets (batches 2d.1-2d.4; 73 today — the v1 bar reached: 2d.1 DONE (PR #16 + #17), 2d.2 DONE (buttons, icon buttons, selection controls, chips, text fields — PR #22/#23/#24/#25/#26), 2d.3 DONE (cards x3, list items x3 — PR #27; dropdown menu — PR #28; segmented button + split button — PR #29; search bar + navigation rail — PR #30; side sheet + pull-to-refresh — PR #31), 2d.4 PR #32 DONE (loading indicator — PR #32), PR #33 DONE (date/time pickers — PR #33); the catalog continues: 2d.4 (color picker)). No-code designer v1 (2e).
 
 ---
 
