@@ -16,6 +16,9 @@
 //   kx_a11y_free_string(ptr)
 //   kx_a11y_key(down, key, mod)             SDL_Keycode + SDL_Keymod; pushes
 //                                           SDL_EVENT_KEY_DOWN / KEY_UP
+//   kx_a11y_text(text_ptr, text_len)        UTF-8 text; pushes
+//                                           SDL_EVENT_TEXT_INPUT (mobile
+//                                           keyboard / IME)
 
 mergeInto(LibraryManager.library, {
 
@@ -170,6 +173,15 @@ mergeInto(LibraryManager.library, {
         if (!isNaN(n)) el.setAttribute('aria-valuenow', String(n));
       } else if (role === 'text_field') {
         el.textContent = value;
+        // Editable so the mobile virtual keyboard / IME engages on focus.
+        // The beforeinput/textInput handlers forward the composed text to
+        // SDL and cancel the DOM mutation — the mirror's content stays
+        // driven by tree dumps (single source of truth: the app's value).
+        el.setAttribute('contenteditable', 'true');
+        el.setAttribute('spellcheck', 'false');
+        el.addEventListener('beforeinput', KX_A11Y.onTextInput);
+        el.addEventListener('textInput', KX_A11Y.onTextInput); // legacy WebKit
+        el.addEventListener('input', KX_A11Y.onTextInput); // fallback, no ev.data
       }
       // checked: 0 = null, 1 = false, 2 = true (only tri-state roles use it).
       if (role === 'toggle' || role === 'checkbox' || role === 'radio') {
@@ -266,6 +278,26 @@ mergeInto(LibraryManager.library, {
         return c;
       }
       return 0;
+    },
+
+    onTextInput: function (ev) {
+      // Attached to the mirror's text_field elements (contenteditable).
+      // ev.data carries the composed text on beforeinput (modern) and on the
+      // legacy textInput event; plain 'input' events have no data and are
+      // skipped. The DOM mutation is cancelled — the app's TextField owns the
+      // text and the next tree dump mirrors its value back here.
+      var text = ev.data || ev.input || '';
+      if (!text) return;
+      ev.preventDefault();
+      // UTF-8 bytes into a scratch buffer; Zig copies them into its static
+      // buffer (SDL borrows the event's char* until the next frame), so the
+      // scratch buffer can be freed immediately after the call.
+      var bytes = new TextEncoder().encode(text);
+      var buf = _malloc(bytes.length + 1);
+      HEAPU8.set(bytes, buf);
+      HEAPU8[buf + bytes.length] = 0; // null-terminate
+      ccall('kx_a11y_text', null, ['number', 'number'], [buf, bytes.length]);
+      _free(buf);
     },
   },
 

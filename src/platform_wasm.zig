@@ -18,11 +18,12 @@ const sem = @import("ui/semantics.zig");
 const Host = host_mod.Host;
 const Node = ui.node.Node;
 
-// Force-reference the JS-callable exports (kx_a11y_root_node, kx_a11y_key) so
-// the linker keeps them — Zig only emits referenced symbols.
+// Force-reference the JS-callable exports (kx_a11y_root_node, kx_a11y_key,
+// kx_a11y_text) so the linker keeps them — Zig only emits referenced symbols.
 comptime {
     _ = kx_a11y_root_node;
     _ = kx_a11y_key;
+    _ = kx_a11y_text;
 }
 
 // --- Emscripten C library (<emscripten.h>, resolved by emcc at link) ---
@@ -143,5 +144,36 @@ export fn kx_a11y_key(down: c_int, key: u32, mod: u16) callconv(.c) void {
     event.key.mod = mod;
     event.key.down = down != 0;
     event.key.windowID = 0; // 0 = virtual keyboard, no specific window
+    _ = sdl.c.SDL_PushEvent(&event);
+}
+
+/// Static backing store for kx_a11y_text: SDL_TextInputEvent.text is a
+/// borrowed `const char *` — SDL keeps the pointer until the event is polled
+/// (the next rAF frame), so the text must outlive the JS caller, which frees
+/// its buffer right after the call. A fixed buffer is enough: wasm is
+/// single-threaded and the event queue is drained every frame, so text events
+/// are pushed one at a time.
+var text_input_buf: [1024]u8 = undefined;
+
+/// Export for JS (web/kx_a11y.js): push a text input event into SDL's queue —
+/// called from the hidden-DOM mirror's beforeinput/textInput handlers (mobile
+/// virtual keyboard, IME). The text is copied into a static buffer (SDL
+/// borrows the pointer until the event is polled), truncated at a UTF-8
+/// codepoint boundary if it exceeds the buffer.
+///   text_ptr: pointer to UTF-8 text bytes (need not be null-terminated)
+///   text_len: length in bytes
+export fn kx_a11y_text(text_ptr: [*]const u8, text_len: usize) callconv(.c) void {
+    const sdl = @import("sdl.zig");
+    // Copy into the static buffer, keeping room for the null terminator.
+    var len: usize = @min(text_len, text_input_buf.len - 1);
+    // If truncation split a multi-byte UTF-8 codepoint, back off to its lead byte.
+    while (len > 0 and len < text_len and (text_ptr[len] & 0xC0) == 0x80) len -= 1;
+    @memcpy(text_input_buf[0..len], text_ptr[0..len]);
+    text_input_buf[len] = 0;
+    var event: sdl.c.SDL_Event = std.mem.zeroes(sdl.c.SDL_Event);
+    event.type = @intCast(sdl.c.SDL_EVENT_TEXT_INPUT);
+    event.common.timestamp = sdl.c.SDL_GetTicksNS();
+    event.text.text = text_input_buf[0..len].ptr;
+    event.text.windowID = 0; // 0 = virtual keyboard, no specific window
     _ = sdl.c.SDL_PushEvent(&event);
 }

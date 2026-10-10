@@ -371,8 +371,8 @@ fn addWasmWeb(
         "-sMAXIMUM_MEMORY=2GB",
         "-sENVIRONMENT=web",
         "-sSTACK_SIZE=1MB",
-        "-sEXPORTED_FUNCTIONS=_main,_kx_a11y_dump_tree,_kx_a11y_free_string,_kx_a11y_key,_kx_a11y_root_node",
-        "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS",
+        "-sEXPORTED_FUNCTIONS=_main,_kx_a11y_dump_tree,_kx_a11y_free_string,_kx_a11y_key,_kx_a11y_root_node,_kx_a11y_text",
+        "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,malloc,free",
         opt_flag,
     }) catch unreachable;
 
