@@ -52,6 +52,7 @@ const color_picker_w = widgets.color_picker;
 const avatar_w = widgets.avatar;
 const expansion_panel_w = widgets.expansion_panel;
 const stepper_w = widgets.stepper;
+const calendar_w = widgets.calendar;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -548,6 +549,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Avatars (M3E)", try buildAvatarSection(g, theme)));
     content.add(try section(a, theme, "Expansion panel (M3E)", try buildExpansionPanelSection(g, theme)));
     content.add(try section(a, theme, "Stepper (M3E)", try buildStepperSection(g, theme)));
+    content.add(try section(a, theme, "Calendar (M3E)", try buildCalendarSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1168,6 +1170,14 @@ fn buildStepperSection(g: *Gallery, theme: Theme) !*Node {
     defer sig.deinit();
     const steps = [_]stepper_w.StepperStep{ .{ .label = "Account" }, .{ .label = "Profile" }, .{ .label = "Review" }, .{ .label = "Done" } };
     return stepper_w.stepper(a, sig, &steps, .{ .theme = theme });
+}
+
+/// Calendar (M3E P2): an inline month view.
+fn buildCalendarSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const sel = try state.Signal(?i64).init(a, null);
+    defer sel.deinit();
+    return calendar_w.calendar(a, sel, null, .{ .theme = theme });
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.

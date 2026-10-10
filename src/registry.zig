@@ -49,6 +49,7 @@ const color_picker_w = @import("widgets/color_picker.zig");
 const avatar_w = @import("widgets/avatar.zig");
 const expansion_panel_w = @import("widgets/expansion_panel.zig");
 const stepper_w = @import("widgets/stepper.zig");
+const calendar_w = @import("widgets/calendar.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -149,6 +150,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "avatar", .category = "display", .build = buildAvatar, .schema = schemaAvatar },
     .{ .name = "expansion_panel", .category = "layout", .build = buildExpansionPanel, .schema = schemaExpansionPanel },
     .{ .name = "stepper", .category = "navigation", .build = buildStepper, .schema = schemaStepper },
+    .{ .name = "calendar", .category = "input", .build = buildCalendar, .schema = schemaCalendar },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -1013,6 +1015,22 @@ fn schemaStepper(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
     return value_mod.schemaOf(stepper_w.StepperOptions, allocator);
 }
 
+fn buildCalendar(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    const copts = try value_mod.optionsFromValue(calendar_w.CalendarOptions, opts, null, null);
+    const sel = try buildOptI64Signal(allocator, opts, ctx, "selected");
+    if (sel.peek()) |d| sel.set(date_picker_w.clampDay(d));
+    const today = date_picker_w.clampDay(date_picker_w.todayDay(copts.today));
+    const disp_val = sel.peek() orelse today;
+    const disp = try state.Signal(i64).init(allocator, date_picker_w.firstOfMonthOf(disp_val));
+    try ctx.track(disp, deinitI64Signal);
+    const n = try calendar_w.calendar(allocator, sel, disp, copts);
+    return .{ .node = n, .live = .{ .signal = sel, .field = "selected", .read = readOptI64Signal }, .skip_children = true };
+}
+
+fn schemaCalendar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(calendar_w.CalendarOptions, allocator);
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1476,7 +1494,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 43), widgets.len);
+    try std.testing.expectEqual(@as(usize, 44), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
