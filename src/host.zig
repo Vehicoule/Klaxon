@@ -366,7 +366,11 @@ pub const Host = struct {
         // retained pixels) → full repaint until retained composition lands.
         const raster = kx.c.kx_backend_of(host.ctx) == kx.c.KX_BACKEND_RASTER;
         const focus = semantics_mod.currentFocus();
-        if (raster and root.damage_valid) {
+        // The DevTools overlay paints translucent pixels over the whole panel
+        // area; a dirty-rect partial repaint would blend the new overlay over
+        // retained old overlay pixels (ghosting). Force a full repaint when
+        // the overlay is enabled so the panel area is cleared first.
+        if (raster and root.damage_valid and !host.devtools.enabled) {
             // Repaint the tree clipped to the damaged region — and clear the
             // clip first (SkCanvas::clear is clip-aware): vacated pixels
             // (moving widgets) are erased, not trailed. The focus ring paints
@@ -434,7 +438,8 @@ pub const Host = struct {
         if (event.type == sdl.c.SDL_EVENT_QUIT) return true;
         // DevTools (Phase 4a): F12 toggles the overlay — checked before any
         // other key handling so it works regardless of the focused node.
-        if (event.type == sdl.c.SDL_EVENT_KEY_DOWN and event.key.key == sdl.c.SDLK_F12) {
+        // Key-repeat events are ignored (holding F12 would toggle per repeat).
+        if (event.type == sdl.c.SDL_EVENT_KEY_DOWN and event.key.key == sdl.c.SDLK_F12 and !event.key.repeat) {
             host.devtools.toggle();
             root.dirty = true; // force a repaint to show/hide the overlay
             return false;

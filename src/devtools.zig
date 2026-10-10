@@ -61,6 +61,11 @@ pub const DevTools = struct {
     // clock is SDL_GetTicks (ms since SDL_Init) — the host's own clock.
     rss_mb: f32 = 0,
     rss_last_read_ms: ?u64 = null,
+    // Frame cadence: wall-clock delta between consecutive paint() calls
+    // (i.e. between consecutive rendered frames). FPS is derived from this,
+    // NOT from frame_time_ms (which is the render DURATION, not the rate).
+    cadence_ms: f32 = 0,
+    last_paint_ms: ?u64 = null,
 
     pub fn init() DevTools {
         return .{};
@@ -70,10 +75,28 @@ pub const DevTools = struct {
         devtools.enabled = !devtools.enabled;
     }
 
-    /// Push a frame time into the ring buffer (oldest sample is overwritten
-    /// once the buffer is full).
+    /// Push a frame sample into the ring buffer. The sample is the frame
+    /// CADENCE (wall-clock ms between consecutive frames), not the render
+    /// duration — FPS must reflect the true frame rate, including paced/idle
+    /// time between frames. The render duration is displayed separately (the
+    /// "Frame:" line reads stats.frame_time_ms directly).
     pub fn recordFrame(devtools: *DevTools, frame_time_ms: f32) void {
-        devtools.frame_times[devtools.history_index] = frame_time_ms;
+        _ = frame_time_ms; // render duration shown in the Frame line, not here
+        const now_ms = sdl.c.SDL_GetTicks();
+        if (devtools.last_paint_ms) |last| {
+            const delta = now_ms - last;
+            if (delta > 0) {
+                devtools.cadence_ms = @floatFromInt(delta);
+                devtools.pushSample(devtools.cadence_ms);
+            }
+        }
+        devtools.last_paint_ms = now_ms;
+    }
+
+    /// Push a raw sample into the ring buffer (oldest overwritten when full).
+    /// Used by recordFrame (with the cadence) and by tests (with known values).
+    fn pushSample(devtools: *DevTools, ms: f32) void {
+        devtools.frame_times[devtools.history_index] = ms;
         devtools.history_index = (devtools.history_index + 1) % HISTORY_LEN;
         if (devtools.history_count < HISTORY_LEN) devtools.history_count += 1;
     }
@@ -115,9 +138,12 @@ pub const DevTools = struct {
         kx.c.kx_stroke_rrect(ctx, PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 8, 1, PANEL_BORDER);
         // Stats lines. The stats still describe the PREVIOUS frame here (the
         // host updates them after present) — one frame of display lag.
+        // FPS uses the frame CADENCE (wall-clock delta between frames), not
+        // the render duration: during paced/idle rendering the cadence is
+        // the true frame rate.
         var buf: [96]u8 = undefined;
         const fps_line = std.fmt.bufPrintSentinel(&buf, "FPS: {d:.1} (avg {d:.1}, p99 {d:.1})", .{
-            fpsFromMs(stats.frame_time_ms),
+            fpsFromMs(devtools.cadence_ms),
             fpsFromMs(devtools.avgFrameTimeMs()),
             fpsFromMs(devtools.p99FrameTimeMs()),
         }, 0) catch return;
@@ -226,13 +252,13 @@ test "toggle flips enabled" {
 test "rolling buffer wraps correctly" {
     var dt = DevTools.init();
     // Fill less than the buffer: sequential slots, count grows.
-    for (0..10) |i| dt.recordFrame(@floatFromInt(i));
+    for (0..10) |i| dt.pushSample(@floatFromInt(i));
     try std.testing.expectEqual(@as(usize, 10), dt.history_count);
     try std.testing.expectEqual(@as(usize, 10), dt.history_index);
     for (0..10) |i| try std.testing.expectEqual(@as(f32, @floatFromInt(i)), dt.frame_times[i]);
     // Record 200 frames into a fresh 120-slot buffer: only the last 120 are kept.
     var full = DevTools.init();
-    for (0..200) |i| full.recordFrame(@floatFromInt(i));
+    for (0..200) |i| full.pushSample(@floatFromInt(i));
     try std.testing.expectEqual(@as(usize, HISTORY_LEN), full.history_count);
     try std.testing.expectEqual(@as(usize, 200 % HISTORY_LEN), full.history_index);
     // Slot s holds the last value v in [80..200) with v % HISTORY_LEN == s.
@@ -244,7 +270,7 @@ test "rolling buffer wraps correctly" {
 
 test "fps computation: avg and p99 over known frame times" {
     var dt = DevTools.init();
-    for (1..101) |i| dt.recordFrame(@floatFromInt(i)); // 1.0 .. 100.0 ms
+    for (1..101) |i| dt.pushSample(@floatFromInt(i)); // 1.0 .. 100.0 ms
     try std.testing.expectApproxEqAbs(@as(f32, 50.5), dt.avgFrameTimeMs(), 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 100.0), dt.p99FrameTimeMs(), 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 100.0), fpsFromMs(10.0), 0.001);
