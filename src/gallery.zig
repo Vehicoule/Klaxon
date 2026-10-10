@@ -53,6 +53,7 @@ const avatar_w = widgets.avatar;
 const expansion_panel_w = widgets.expansion_panel;
 const stepper_w = widgets.stepper;
 const calendar_w = widgets.calendar;
+const table_w = widgets.table;
 const split_button_w = widgets.split_button;
 const gestures_w = widgets.gestures;
 const anim_w = widgets.anim;
@@ -550,6 +551,7 @@ fn buildTree(g: *Gallery, theme: Theme) !*Node {
     content.add(try section(a, theme, "Expansion panel (M3E)", try buildExpansionPanelSection(g, theme)));
     content.add(try section(a, theme, "Stepper (M3E)", try buildStepperSection(g, theme)));
     content.add(try section(a, theme, "Calendar (M3E)", try buildCalendarSection(g, theme)));
+    content.add(try section(a, theme, "Table (M3E)", try buildTableSection(g, theme)));
     content.add(try section(a, theme, "Navigation chrome", try buildNavSection(g, theme)));
     content.add(try section(a, theme, "Feedback", try buildFeedbackSection(g, theme)));
     content.add(try section(a, theme, "Gestures", try buildGestureSection(g, theme)));
@@ -1178,6 +1180,17 @@ fn buildCalendarSection(g: *Gallery, theme: Theme) !*Node {
     const sel = try state.Signal(?i64).init(a, null);
     defer sel.deinit();
     return calendar_w.calendar(a, sel, null, .{ .theme = theme });
+}
+
+/// Table (M3E P2): a small data table (3 columns × 3 rows).
+fn buildTableSection(g: *Gallery, theme: Theme) !*Node {
+    const a = g.allocator;
+    const cols = [_][]const u8{ "Name", "Role", "Team" };
+    const row0 = [_][]const u8{ "Alice", "Dev", "Core" };
+    const row1 = [_][]const u8{ "Bob", "Design", "UI" };
+    const row2 = [_][]const u8{ "Carol", "PM", "Core" };
+    const rows = [_][]const []const u8{ &row0, &row1, &row2 };
+    return table_w.table(a, &cols, &rows, null, .{ .theme = theme });
 }
 
 /// Navigation chrome (M3E batch 1): AppBar, NavBar, Tabs, Drawer.

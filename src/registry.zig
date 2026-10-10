@@ -50,6 +50,7 @@ const avatar_w = @import("widgets/avatar.zig");
 const expansion_panel_w = @import("widgets/expansion_panel.zig");
 const stepper_w = @import("widgets/stepper.zig");
 const calendar_w = @import("widgets/calendar.zig");
+const table_w = @import("widgets/table.zig");
 const app_bar_w = @import("widgets/app_bar.zig");
 const nav_bar_w = @import("widgets/nav_bar.zig");
 const drawer_w = @import("widgets/drawer.zig");
@@ -151,6 +152,7 @@ pub const widgets = [_]WidgetEntry{
     .{ .name = "expansion_panel", .category = "layout", .build = buildExpansionPanel, .schema = schemaExpansionPanel },
     .{ .name = "stepper", .category = "navigation", .build = buildStepper, .schema = schemaStepper },
     .{ .name = "calendar", .category = "input", .build = buildCalendar, .schema = schemaCalendar },
+    .{ .name = "table", .category = "display", .build = buildTable, .schema = schemaTable },
     .{ .name = "app_bar", .category = "navigation", .build = buildAppBar, .schema = schemaAppBar },
     .{ .name = "nav_bar", .category = "navigation", .build = buildNavBar, .schema = schemaNavBar },
     .{ .name = "drawer", .category = "navigation", .build = buildDrawer, .schema = schemaDrawer },
@@ -1031,6 +1033,49 @@ fn schemaCalendar(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema 
     return value_mod.schemaOf(calendar_w.CalendarOptions, allocator);
 }
 
+fn buildTable(allocator: std.mem.Allocator, opts: Value, ctx: *BuildCtx) anyerror!BuildResult {
+    _ = ctx;
+    const topts = try value_mod.optionsFromValue(table_w.TableOptions, opts, null, null);
+    // Parse columns + rows arrays (borrowed from the snapshot).
+    var cols: std.array_list.Managed([]const u8) = .init(allocator);
+    defer cols.deinit();
+    var rows: std.array_list.Managed([]const []const u8) = .init(allocator);
+    defer rows.deinit();
+    var row_cells: std.array_list.Managed([][]const u8) = .init(allocator);
+    defer {
+        for (row_cells.items) |cells| allocator.free(cells);
+        row_cells.deinit();
+    }
+    if (opts.get("columns")) |cv| switch (cv) {
+        .array => |arr| for (arr) |iv| switch (iv) {
+            .string => |s| try cols.append(s),
+            else => try cols.append(""),
+        },
+        else => {},
+    };
+    if (opts.get("rows")) |rv| switch (rv) {
+        .array => |arr| for (arr) |row_v| switch (row_v) {
+            .array => |cells_v| {
+                const cells = try allocator.alloc([]const u8, cells_v.len);
+                for (cells_v, 0..) |cv2, ci| switch (cv2) {
+                    .string => |s| cells[ci] = s,
+                    else => cells[ci] = "",
+                };
+                try row_cells.append(cells);
+                try rows.append(cells);
+            },
+            else => {},
+        },
+        else => {},
+    };
+    const n = try table_w.table(allocator, cols.items, rows.items, null, topts);
+    return .{ .node = n, .skip_children = true };
+}
+
+fn schemaTable(allocator: std.mem.Allocator) anyerror![]value_mod.PropSchema {
+    return value_mod.schemaOf(table_w.TableOptions, allocator);
+}
+
 /// Parse the "items" option: an array of {label, icon?, enabled?} objects.
 /// The strings are BORROWED from the options snapshot (the rail factory
 /// copies them).
@@ -1494,7 +1539,7 @@ test "registry: byName finds entries, rejects unknown" {
     try std.testing.expect(byName("slider") != null);
     try std.testing.expect(byName("snackbar") != null);
     try std.testing.expect(byName("nope") == null);
-    try std.testing.expectEqual(@as(usize, 44), widgets.len);
+    try std.testing.expectEqual(@as(usize, 45), widgets.len);
 }
 
 test "registry: builds a node with defaults from a minimal value" {
